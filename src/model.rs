@@ -147,3 +147,20 @@ impl Session {
         self.turns.iter().filter_map(|turn| turn.working).sum()
     }
 }
+
+/// A pull request the labeling model found in a conversation, with the conversation's role in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequest {
+    pub url: String,
+    pub role: String,
+}
+
+/// The labels one session received.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Label {
+    pub work: String,
+    pub topic: String,
+    pub prs: Vec<PullRequest>,
+    pub model: String,
+    pub from_cache: bool,
+}
