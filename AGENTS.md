@@ -16,24 +16,31 @@ cargo test --locked
 Add dependencies with `cargo add` and commit `Cargo.toml` and `Cargo.lock` together. Tests use
 synthetic sessions only, never real conversations.
 
-Read the [labeling](docs/LABELING.md) and [taxonomy](docs/TAXONOMY.md) pages before changing
-behavior they define, and update the page whose fact changed.
+Read the [command line](docs/CLI.md), [report](docs/REPORT.md), [labeling](docs/LABELING.md), and
+[taxonomy](docs/TAXONOMY.md) pages before changing behavior they define, and update the page whose
+fact changed. The [next steps](docs/NEXT_STEPS.md) list what is not built yet.
 
 ## Code
 
-| Module        | Responsibility                                                                |
-| ------------- | ----------------------------------------------------------------------------- |
-| `lib.rs`      | The library: the modules below                                                |
-| `config.rs`   | The saved settings and the config and cache folders                           |
-| `ingest/`     | Find and parse both clients' sessions; forks; each request once               |
-| `model.rs`    | What is kept of a session: its parts, turns, and model requests               |
-| `account.rs`  | The period, each session's cost, and totals                                   |
-| `place.rs`    | A chat's project and repository, from the folder it started in                |
-| `prices.rs`   | The built-in price table, `prices.toml`                                       |
-| `text.rs`     | Render a session's parts and split them into chunks                           |
-| `taxonomy.rs` | Read the label lists and rules from `docs/TAXONOMY.md`, built into the binary |
-| `labeler.rs`  | One labeling call through Claude Code or Codex                                |
-| `label.rs`    | The cache, the estimate, the parallel calls, and the chunk vote               |
+| Module         | Responsibility                                                                |
+| -------------- | ----------------------------------------------------------------------------- |
+| `main.rs`      | The `atlas-nano` command: parse the arguments and run a command               |
+| `lib.rs`       | The library the command is built on: the modules below                        |
+| `cli.rs`       | The commands and flags                                                        |
+| `configure.rs` | `configure`: detection, questions, the test call, saving                      |
+| `config.rs`    | The saved settings and the config and cache folders                           |
+| `run.rs`       | `run`: load, select the period, label, print                                  |
+| `ingest/`      | Find and parse both clients' sessions; forks; each request once               |
+| `model.rs`     | What is kept of a session: its parts, turns, and model requests               |
+| `account.rs`   | The period, each session's cost, and totals                                   |
+| `place.rs`     | A chat's project and repository, from the folder it started in                |
+| `prices.rs`    | The built-in price table, `prices.toml`                                       |
+| `text.rs`      | Render a session's parts and split them into chunks                           |
+| `taxonomy.rs`  | Read the label lists and rules from `docs/TAXONOMY.md`, built into the binary |
+| `labeler.rs`   | One labeling call through Claude Code or Codex                                |
+| `label.rs`     | The cache, the estimate, the parallel calls, and the chunk vote               |
+| `report.rs`    | The printed report and the CSV                                                |
+| `tests/cli.rs` | The binary end to end, with a stand-in client                                 |
 
 Parsers and accounting are pure functions tested on synthetic records. Money is `Decimal`.
 
