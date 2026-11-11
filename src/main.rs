@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use clap::Parser;
 
 use atlas_nano::cli::{Cli, Command};
-use atlas_nano::{configure, run};
+use atlas_nano::{configure, paint, run};
 
 fn main() -> ExitCode {
     let result = match Cli::parse().command {
@@ -15,7 +15,8 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("atlas-nano: {error}");
+            let paint = paint::Paint::stderr(paint::Theme::default());
+            eprintln!("{} {error}", paint.tone(paint::Tone::Error, "atlas-nano:"));
             ExitCode::FAILURE
         }
     }

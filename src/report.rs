@@ -10,6 +10,9 @@ use rust_decimal::prelude::ToPrimitive;
 use crate::account::{Cost, Tokens, Totals};
 use crate::label::Labeling;
 use crate::model::{Kind, Label, Role, Session};
+#[cfg(test)]
+use crate::paint::Theme;
+use crate::paint::{self, Paint, Tone};
 use crate::place::Place;
 use crate::prices::PriceTable;
 use crate::taxonomy::{Entry, Taxonomy};
@@ -40,6 +43,7 @@ pub struct Report<'a> {
     pub labeling: Option<Labeling>,
     pub pull_requests: bool,
     pub prices: &'a PriceTable,
+    pub paint: Paint,
 }
 
 fn money(amount: Decimal) -> String {
@@ -85,31 +89,30 @@ fn span(duration: Duration) -> String {
     }
 }
 
-/// Text from a transcript or folder name, with control characters, such as terminal escape codes,
-/// replaced so they show as data and cannot act on the terminal.
-fn printable(text: &str) -> String {
-    text.chars()
-        .map(|c| if c.is_control() { '\u{fffd}' } else { c })
-        .collect()
-}
-
 /// Lay out rows of cells: the first column left-aligned, the others right-aligned.
-fn table(out: &mut String, header: &[&str], rows: &[Vec<String>]) {
-    let rows: Vec<Vec<String>> = rows
+///
+/// Every cell comes from `paint`, which shows control characters as data, so text from a
+/// transcript or folder name cannot act on the terminal. The header's first cell is the table's
+/// title unless it is indented, in which case it names a column like the other header cells.
+fn table(out: &mut String, paint: Paint, header: &[&str], rows: &[Vec<String>]) {
+    let header: Vec<String> = header
         .iter()
-        .map(|row| row.iter().map(|cell| printable(cell)).collect())
+        .enumerate()
+        .map(|(n, cell)| {
+            let title = n == 0 && !cell.starts_with(' ');
+            paint.tone(if title { Tone::Heading } else { Tone::Dim }, cell)
+        })
         .collect();
-    let rows = &rows;
-    let mut widths: Vec<usize> = header.iter().map(|cell| cell.chars().count()).collect();
+    let mut widths: Vec<usize> = header.iter().map(|cell| paint::width(cell)).collect();
     for row in rows {
         for (width, cell) in widths.iter_mut().zip(row) {
-            *width = (*width).max(cell.chars().count());
+            *width = (*width).max(paint::width(cell));
         }
     }
     let line = |cells: &mut dyn Iterator<Item = &str>| {
         let mut text = String::new();
         for (n, (cell, width)) in cells.zip(&widths).enumerate() {
-            let pad = " ".repeat(width - cell.chars().count());
+            let pad = " ".repeat(width - paint::width(cell));
             if n == 0 {
                 write!(text, "{cell}{pad}").unwrap();
             } else {
@@ -118,7 +121,7 @@ fn table(out: &mut String, header: &[&str], rows: &[Vec<String>]) {
         }
         text.trim_end().to_string()
     };
-    writeln!(out, "{}", line(&mut header.iter().copied())).unwrap();
+    writeln!(out, "{}", line(&mut header.iter().map(String::as_str))).unwrap();
     for row in rows {
         writeln!(out, "{}", line(&mut row.iter().map(String::as_str))).unwrap();
     }
@@ -136,24 +139,30 @@ const COLUMNS: [&str; 9] = [
     "Spend%",
 ];
 
-fn cells(name: String, totals: &Totals, all: &Totals) -> Vec<String> {
+/// A row of the category and project tables; `strong` rows head a group of members.
+fn cells(paint: Paint, strong: bool, name: &str, totals: &Totals, all: &Totals) -> Vec<String> {
+    let cell = |tone: Tone, text: String| paint.styled(tone, strong, &text);
     vec![
-        name,
-        totals.conversations.to_string(),
-        share(totals.conversations.into(), all.conversations.into()),
-        (totals.subagents + totals.reviews).to_string(),
-        totals.turns.to_string(),
-        span(totals.working),
-        span(totals.wall),
-        count(totals.tokens.total()),
-        money(totals.spend),
-        share(totals.spend, all.spend),
+        cell(Tone::Plain, name.to_string()),
+        cell(Tone::Plain, totals.conversations.to_string()),
+        cell(
+            Tone::Dim,
+            share(totals.conversations.into(), all.conversations.into()),
+        ),
+        cell(Tone::Plain, (totals.subagents + totals.reviews).to_string()),
+        cell(Tone::Plain, totals.turns.to_string()),
+        cell(Tone::Plain, span(totals.working)),
+        cell(Tone::Plain, span(totals.wall)),
+        cell(Tone::Plain, count(totals.tokens.total())),
+        cell(Tone::Money, money(totals.spend)),
+        cell(Tone::Dim, share(totals.spend, all.spend)),
     ]
 }
 
 /// Print a table of groups, largest spend first, each followed by its members when it has names.
 fn grouped(
     out: &mut String,
+    paint: Paint,
     title: &str,
     groups: &[(String, Vec<(String, Totals)>)],
     all: &Totals,
@@ -172,20 +181,22 @@ fn grouped(
         })
         .collect();
     ordered.sort_by(|a, b| b.1.spend.cmp(&a.1.spend).then(a.0.cmp(b.0)));
+    let flat = |members: &[(String, Totals)]| members.len() == 1 && members[0].0.is_empty();
+    // Groups are bold only when some have members under them.
+    let nested = ordered.iter().any(|(_, _, members)| !flat(members));
     for (group, sum, members) in ordered {
-        let flat = members.len() == 1 && members[0].0.is_empty();
-        rows.push(cells(format!("  {group}"), &sum, all));
-        if !flat {
+        rows.push(cells(paint, nested, &format!("  {group}"), &sum, all));
+        if !flat(members) {
             let mut members: Vec<&(String, Totals)> = members.iter().collect();
             members.sort_by(|a, b| b.1.spend.cmp(&a.1.spend).then(a.0.cmp(&b.0)));
             rows.extend(
                 members
                     .iter()
-                    .map(|(name, totals)| cells(format!("    {name}"), totals, all)),
+                    .map(|(name, totals)| cells(paint, false, &format!("    {name}"), totals, all)),
             );
         }
     }
-    table(out, &header, &rows);
+    table(out, paint, &header, &rows);
     out.push('\n');
 }
 
@@ -295,16 +306,21 @@ impl Report<'_> {
         for row in &self.rows {
             all.add(row.session, &row.cost);
         }
+        let p = self.paint;
+        let dot = p.dot();
         let mut out = String::new();
         let reviews = if all.reviews > 0 {
-            format!(" · {} reviews", all.reviews)
+            format!("{dot}{} reviews", all.reviews)
         } else {
             String::new()
         };
         writeln!(
             out,
-            "atlas-nano · {} · {} conversations · {} subagents{reviews}\n",
-            self.period, all.conversations, all.subagents
+            "{}{dot}{}{dot}{} conversations{dot}{} subagents{reviews}\n",
+            p.tone(Tone::Heading, "atlas-nano"),
+            p.bold(self.period),
+            all.conversations,
+            all.subagents
         )
         .unwrap();
 
@@ -314,41 +330,60 @@ impl Report<'_> {
             cache_write,
             output,
         } = all.tokens;
+        let note = |text: String| format!(" {}", p.tone(Tone::Warning, &text));
         let unknown = match all.unknown_turns {
             0 => String::new(),
-            turns => format!(" ({turns} turns with no recorded completion)"),
+            turns => note(format!("({turns} turns with no recorded completion)")),
         };
         let unpriced = match all.unpriced_requests {
             0 => String::new(),
-            requests => format!(" ({requests} requests have no price and count as $0)"),
+            requests => note(format!(
+                "({requests} requests have no price and count as $0)"
+            )),
         };
-        writeln!(out, "Totals").unwrap();
+        // Labels are dim so the values stand out.
+        let (d, b) = (|text: &str| p.dim(text), |text: String| p.bold(&text));
+        writeln!(out, "{}", p.tone(Tone::Heading, "Totals")).unwrap();
         writeln!(
             out,
-            "  Spend (API-equivalent)  {}{unpriced}",
-            money(all.spend)
+            "  {}  {}{unpriced}",
+            d("Spend (API-equivalent)"),
+            p.styled(Tone::Money, true, &money(all.spend))
         )
         .unwrap();
         writeln!(
             out,
-            "  Time    working {}{unknown} · wall {}",
-            span(all.working),
-            span(all.wall)
+            "  {}    {} {}{unknown}{dot}{} {}",
+            d("Time"),
+            d("working"),
+            b(span(all.working)),
+            d("wall"),
+            b(span(all.wall))
         )
         .unwrap();
         writeln!(
             out,
-            "  Tokens  in {} · cached {} · cache-write {} · out {}",
-            count(input),
-            count(cached),
-            count(cache_write),
-            count(output)
+            "  {}  {} {}{dot}{} {}{dot}{} {}{dot}{} {}",
+            d("Tokens"),
+            d("in"),
+            b(count(input)),
+            d("cached"),
+            b(count(cached)),
+            d("cache-write"),
+            b(count(cache_write)),
+            d("out"),
+            b(count(output))
         )
         .unwrap();
         writeln!(
             out,
-            "  Conversations {} · subagents {} · turns {}\n",
-            all.conversations, all.subagents, all.turns
+            "  {} {}{dot}{} {}{dot}{} {}\n",
+            d("Conversations"),
+            b(all.conversations.to_string()),
+            d("subagents"),
+            b(all.subagents.to_string()),
+            d("turns"),
+            b(all.turns.to_string())
         )
         .unwrap();
 
@@ -356,22 +391,22 @@ impl Report<'_> {
             let work = buckets(&self.rows, |row| {
                 category(row, &taxonomy.work, |label| &label.work)
             });
-            grouped(&mut out, "By type of work", &work, &all);
+            grouped(&mut out, p, "By type of work", &work, &all);
             let topics = buckets(&self.rows, |row| {
                 category(row, &taxonomy.topics, |label| &label.topic)
             });
-            grouped(&mut out, "By topic", &topics, &all);
+            grouped(&mut out, p, "By topic", &topics, &all);
         }
 
         self.models(&mut out, &all);
         let projects = buckets(&self.rows, |row| (row.place.project.clone(), String::new()));
-        grouped(&mut out, "By project", &projects, &all);
+        grouped(&mut out, p, "By project", &projects, &all);
         let repos = buckets(&self.rows, |row| {
             let repo = &row.place.repo;
             let repo = if repo.is_empty() { NO_REPO } else { repo };
             (repo.to_string(), String::new())
         });
-        grouped(&mut out, "By repo", &repos, &all);
+        grouped(&mut out, p, "By repo", &repos, &all);
         self.days(&mut out);
         self.top(&mut out);
 
@@ -379,7 +414,9 @@ impl Report<'_> {
             let listed = pull_requests(&self.rows);
             writeln!(
                 out,
-                "Pull requests (experimental; ~ marks an amount split across several)"
+                "{} {}",
+                p.tone(Tone::Heading, "Pull requests"),
+                p.dim("(experimental; ~ marks an amount split across several)")
             )
             .unwrap();
             let rows: Vec<Vec<String>> = listed
@@ -388,45 +425,47 @@ impl Report<'_> {
                 .map(|(url, sessions, spend, split)| {
                     let mark = if *split { "~" } else { "" };
                     vec![
-                        format!("  {url}"),
+                        p.tone(Tone::Plain, &format!("  {url}")),
                         sessions.to_string(),
-                        format!("{mark}{}", money(*spend)),
+                        p.tone(Tone::Money, &format!("{mark}{}", money(*spend))),
                     ]
                 })
                 .collect();
-            table(&mut out, &["  Pull request", "Sessions", "Spend"], &rows);
+            table(&mut out, p, &["  Pull request", "Sessions", "Spend"], &rows);
             if listed.len() > 15 {
-                writeln!(out, "  and {} more", listed.len() - 15).unwrap();
+                let more = format!("and {} more", listed.len() - 15);
+                writeln!(out, "  {}", p.dim(&more)).unwrap();
             }
             out.push('\n');
         }
 
+        // The run's own details close the report, dimmed.
         if let Some(labeling) = &self.labeling {
-            writeln!(
-                out,
+            let run = format!(
                 "Labeling run: {} labeled, {} from cache, {} unlabeled · {}",
                 labeling.labeled, labeling.from_cache, labeling.unlabeled, labeling.model
-            )
-            .unwrap();
+            );
+            writeln!(out, "{}", p.dim(&run)).unwrap();
             let cost = labeling
                 .cost
                 .map_or("no price for this model".to_string(), |cost| {
                     format!("API-equivalent {}", money(cost))
                 });
-            writeln!(
-                out,
+            let tokens = format!(
                 "  in {} · out {} tokens · {cost}",
                 count(labeling.input_tokens),
                 count(labeling.output_tokens)
-            )
-            .unwrap();
+            );
+            writeln!(out, "{}", p.dim(&tokens)).unwrap();
         }
-        writeln!(out, "Prices checked {}", self.prices.checked).unwrap();
+        let checked = format!("Prices checked {}", self.prices.checked);
+        writeln!(out, "{}", p.dim(&checked)).unwrap();
         out
     }
 
     /// Requests, tokens, and spend per client and model.
     fn models(&self, out: &mut String, all: &Totals) {
+        let p = self.paint;
         let mut models: BTreeMap<String, (u64, u64, Decimal, u64)> = BTreeMap::new();
         for row in &self.rows {
             for usage in &row.session.usage {
@@ -446,21 +485,22 @@ impl Report<'_> {
             .into_iter()
             .map(|(name, (requests, tokens, spend, unpriced))| {
                 let shown = if unpriced == requests {
-                    "no price".to_string()
+                    p.tone(Tone::Warning, "no price")
                 } else {
-                    money(spend)
+                    p.tone(Tone::Money, &money(spend))
                 };
                 vec![
-                    name,
+                    p.tone(Tone::Plain, &name),
                     requests.to_string(),
                     count(tokens),
                     shown,
-                    share(spend, all.spend),
+                    p.dim(&share(spend, all.spend)),
                 ]
             })
             .collect();
         table(
             out,
+            p,
             &["By client / model", "Requests", "Tokens", "Spend", "Spend%"],
             &rows,
         );
@@ -479,8 +519,9 @@ impl Report<'_> {
                     .unwrap_or_default();
             }
         }
+        let p = self.paint;
         let top = days.values().copied().max().unwrap_or_default();
-        writeln!(out, "By day").unwrap();
+        writeln!(out, "{}", p.tone(Tone::Heading, "By day")).unwrap();
         for (day, spend) in &days {
             let width = if top.is_zero() {
                 0
@@ -490,7 +531,13 @@ impl Report<'_> {
                     .to_usize()
                     .unwrap_or(0)
             };
-            writeln!(out, "  {day}  {:>10}  {}", money(*spend), "█".repeat(width)).unwrap();
+            writeln!(
+                out,
+                "  {day}  {}  {}",
+                p.tone(Tone::Money, &format!("{:>10}", money(*spend))),
+                p.tone(Tone::Accent, &"█".repeat(width))
+            )
+            .unwrap();
         }
         out.push('\n');
     }
@@ -507,7 +554,14 @@ impl Report<'_> {
             .filter(|&(root, _)| self.rows[root].session.kind == Kind::Primary)
             .collect();
         chats.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        writeln!(out, "Top 5 conversations by spend, subagents included").unwrap();
+        let p = self.paint;
+        writeln!(
+            out,
+            "{}{}",
+            p.tone(Tone::Heading, "Top 5 conversations by spend"),
+            p.dim(", subagents included")
+        )
+        .unwrap();
         let rows: Vec<Vec<String>> = chats
             .iter()
             .take(5)
@@ -515,15 +569,16 @@ impl Report<'_> {
                 let session = self.rows[root].session;
                 let day = session.started.map_or(String::new(), local_day);
                 vec![
-                    format!("  {}", title(session)),
-                    day,
-                    self.rows[root].place.project.clone(),
-                    money(spend),
+                    p.tone(Tone::Plain, &format!("  {}", title(session))),
+                    p.dim(&day),
+                    p.tone(Tone::Plain, &self.rows[root].place.project),
+                    p.tone(Tone::Money, &money(spend)),
                 ]
             })
             .collect();
         table(
             out,
+            p,
             &["  Conversation", "Started", "Project", "Spend"],
             &rows,
         );
@@ -643,8 +698,30 @@ mod tests {
     }
 
     #[test]
-    fn shows_control_characters_as_data() {
-        assert_eq!(printable("a\u{1b}[2Jb"), "a\u{fffd}[2Jb");
-        assert_eq!(printable("plain"), "plain");
+    fn colors_keep_the_table_aligned() {
+        let render = |paint: Paint| {
+            let all = Totals {
+                spend: Decimal::from(12),
+                conversations: 3,
+                ..Totals::default()
+            };
+            let rows = vec![
+                cells(paint, true, "  Software", &all, &all),
+                cells(paint, false, "    Writing code", &Totals::default(), &all),
+            ];
+            let mut out = String::new();
+            table(
+                &mut out,
+                paint,
+                &["By type of work", "Convs", "Spend"],
+                &rows,
+            );
+            out
+        };
+        for theme in Theme::ALL {
+            let colored = render(Paint::colored(theme));
+            assert_ne!(colored, render(Paint::OFF));
+            assert_eq!(paint::strip(&colored), render(Paint::OFF));
+        }
     }
 }
