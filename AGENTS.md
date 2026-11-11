@@ -40,6 +40,7 @@ fact changed. The [next steps](docs/NEXT_STEPS.md) list what is not built yet.
 | `labeler.rs`   | One labeling call through Claude Code or Codex                                |
 | `label.rs`     | The cache, the estimate, the parallel calls, and the chunk vote               |
 | `report.rs`    | The printed report and the CSV                                                |
+| `paint.rs`     | Terminal colors, and when they are on                                         |
 | `tests/cli.rs` | The binary end to end, with a stand-in client                                 |
 
 Parsers and accounting are pure functions tested on synthetic records. Money is `Decimal`.

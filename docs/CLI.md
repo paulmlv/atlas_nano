@@ -6,6 +6,9 @@ the user is signed in to: on a subscription it counts against the plan's usage l
 billed as API calls, and every dollar figure is what the API would cost, not a charge. Both commands
 say so.
 
+Output to a terminal is in color, in the theme chosen in `configure`. Output to a file or a pipe is
+plain text, and so is any output when `NO_COLOR` is set to a non-empty value or `TERM` is `dumb`.
+
 ## `atlas-nano configure`
 
 Asks its questions on the terminal and saves the answers to `~/.config/atlas-nano/config.toml`, or
@@ -18,8 +21,11 @@ not asked. `codex` covers Codex and ChatGPT desktop sessions, and `claude` Claud
   (`~/.claude/projects`, `~/.codex/sessions`, `~/.codex/archived_sessions`). A client that is not
   installed is skipped. With neither installed, configuration fails.
 - **Settings:** the unit (conversation), the coverage (Claude Code, Codex, or both), the labeling
-  model, the no-tools mode, the experimental pull request mapping, and how many labeling calls run
-  at once (16 by default).
+  model, the no-tools mode, the experimental pull request mapping, how many labeling calls run at
+  once (16 by default), and the color theme.
+- **Theme:** `minimal` (the default) uses bold, dim, and the terminal's own colors, so it suits any
+  background. `soft` has muted blue headings and sage money; `warm` has amber headings and bars.
+  Both use fixed 256-color shades. On a terminal, each theme is previewed before the question.
 - **Labeling model:** `anthropic/claude-haiku-5-5` through Claude Code, or `openai/gpt-6-luna`
   through Codex. With one client installed, its model labels and the question is not asked. No other
   model is accepted, in `configure` or in the saved file.
