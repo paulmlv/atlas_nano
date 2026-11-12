@@ -80,8 +80,6 @@ fn unworktreed(cwd: &str) -> String {
     }
 }
 
-/// Place a session that started in `cwd`, reading `.git` entries on disk; `home` is never a
-/// repository, so a dotfiles repository does not swallow every project.
 /// The place of a session whose folder cannot be told.
 pub fn unknown() -> Place {
     Place {
@@ -90,6 +88,8 @@ pub fn unknown() -> Place {
     }
 }
 
+/// Place a session that started in `cwd`, reading `.git` entries on disk; `home` is never a
+/// repository, so a dotfiles repository does not swallow every project.
 pub fn place(cwd: &str, home: &Path) -> Place {
     let cwd = unworktreed(cwd.trim_end_matches('/'));
     let named = |project: &str| Place {
