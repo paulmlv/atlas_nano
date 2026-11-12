@@ -68,7 +68,8 @@ Prices checked 2026-11-03
   at that moment.
 - **Top 5** adds to each chat the spend of the subagents and reviews it started. A subagent whose
   chat was not loaded is not ranked. A conversation is shown by its title, else by the first line of
-  its first request. Control characters in titles and folder names are shown as `�`.
+  its first request. Control characters and text-direction marks in titles and folder names are
+  shown as `�`.
 - With `--no-label` the category tables and the labeling summary are left out.
 - The pull request section appears only with pull request mapping on.
 

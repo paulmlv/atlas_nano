@@ -16,20 +16,21 @@ not asked. `codex` covers Codex and ChatGPT desktop sessions, and `claude` Claud
 
 - **Detection:** Claude Code and Codex are checked separately, along with their session folders
   (`~/.claude/projects`, `~/.codex/sessions`, `~/.codex/archived_sessions`). A client that is not
-  installed is skipped. With neither installed, configuration fails.
+  installed, or whose version lacks its no-save flag, is skipped. With neither usable, configuration
+  fails.
 - **Settings:** the unit (conversation), the coverage (Claude Code, Codex, or both), the labeling
   model, the no-tools mode, the experimental pull request mapping, and how many labeling calls run
-  at once (16 by default).
+  at once (16 by default; asked again until it is a whole number of at least 1).
 - **Labeling model:** `anthropic/claude-haiku-5-5` through Claude Code, or `openai/gpt-6-luna`
   through Codex. With one client installed, its model labels and the question is not asked. No other
   model is accepted, in `configure` or in the saved file.
 - **Test call:** for each installed client, configuration runs one small labeling call with the
-  [required flags](LABELING.md#required-flags). It fails if the call is rejected, if the client is
-  not signed in, or if the client's version lacks its no-save flag. A missing or invalid answer does
-  not fail configuration.
+  [required flags](LABELING.md#required-flags). Configuration fails if the chosen labeler's call is
+  rejected, as when its client is not signed in; another client's rejected call is a warning. A
+  missing or invalid answer does not fail configuration.
 - **Provider warning:** when the chosen labeler would send one client's conversations to the other
-  provider, configuration prints a warning. This arises when both clients are covered, since one
-  labeler reads everything.
+  provider, configuration prints a warning right after the labeler is chosen, before any call or
+  save. This arises when both clients are covered, since one labeler reads everything.
 
 ## `atlas-nano run`
 

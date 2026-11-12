@@ -141,8 +141,9 @@ fn configure_then_run_labels_reports_and_reuses_the_cache() {
     assert!(text(&cancelled.stderr).contains("nothing was saved"));
     assert!(!sandbox.root.join("config/atlas-nano/config.toml").exists());
 
-    // Blank answers take the defaults: tool calls kept, no pull requests, 16 calls at once.
-    let configured = sandbox.answer(&["configure"], "\n\n\n");
+    // Blank answers take the defaults: tool calls kept, no pull requests, and, once 0 is refused, 16
+    // calls at once.
+    let configured = sandbox.answer(&["configure"], "\n\n0\n\n");
     let said = text(&configured.stdout);
     assert!(
         configured.status.success(),
@@ -152,6 +153,7 @@ fn configure_then_run_labels_reports_and_reuses_the_cache() {
     assert!(said.contains("codex (Codex/ChatGPT): not installed, skipped"));
     assert!(said.contains("reading Claude Code sessions, the only ones on this computer"));
     assert!(said.contains("(y / n) [n]"));
+    assert!(said.contains("please answer a whole number of at least 1"));
     assert!(said.contains("is not billed as API calls"));
     assert!(said.contains("anthropic/claude-haiku-5-5 labels, through the only client installed"));
     assert!(said.contains("test call with claude-haiku-5-5: Writing code / Frontend and UI"));

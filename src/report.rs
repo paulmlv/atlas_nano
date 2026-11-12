@@ -4,8 +4,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 
 use chrono::{DateTime, Duration, Local, Utc};
-use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::{Decimal, RoundingStrategy};
 
 use crate::account::{Cost, Tokens, Totals};
 use crate::label::Labeling;
@@ -42,8 +42,11 @@ pub struct Report<'a> {
     pub prices: &'a PriceTable,
 }
 
+/// Halves round up, as people expect of a price: $0.125 is $0.13, not $0.12.
+const HALF_UP: RoundingStrategy = RoundingStrategy::MidpointAwayFromZero;
+
 fn money(amount: Decimal) -> String {
-    let cents = amount.round_dp(2).to_string();
+    let cents = amount.round_dp_with_strategy(2, HALF_UP).to_string();
     let (whole, fraction) = cents.split_once('.').unwrap_or((&cents, "00"));
     let mut grouped = String::new();
     for (n, digit) in whole.chars().enumerate() {
@@ -59,7 +62,8 @@ fn share(part: Decimal, whole: Decimal) -> String {
     if whole.is_zero() {
         return "-".to_string();
     }
-    format!("{}%", (part * Decimal::from(100) / whole).round())
+    let percent = part * Decimal::from(100) / whole;
+    format!("{}%", percent.round_dp_with_strategy(0, HALF_UP))
 }
 
 fn count(tokens: u64) -> String {
@@ -86,11 +90,26 @@ fn span(duration: Duration) -> String {
 }
 
 /// Text from a transcript or folder name, with control characters, such as terminal escape codes,
-/// replaced so they show as data and cannot act on the terminal.
+/// and text-direction marks replaced so they show as data and cannot act on the terminal or reorder
+/// what it shows.
 fn printable(text: &str) -> String {
     text.chars()
-        .map(|c| if c.is_control() { '\u{fffd}' } else { c })
+        .map(|c| {
+            if c.is_control() || reorders(c) {
+                '\u{fffd}'
+            } else {
+                c
+            }
+        })
         .collect()
+}
+
+/// The marks that change the direction text shows in: embeddings, overrides, and isolates.
+fn reorders(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+    )
 }
 
 /// Lay out rows of cells: the first column left-aligned, the others right-aligned.
@@ -645,6 +664,14 @@ mod tests {
     #[test]
     fn shows_control_characters_as_data() {
         assert_eq!(printable("a\u{1b}[2Jb"), "a\u{fffd}[2Jb");
+        assert_eq!(printable("file\u{202e}txt.exe"), "file\u{fffd}txt.exe");
         assert_eq!(printable("plain"), "plain");
+    }
+
+    #[test]
+    fn rounds_halves_up() {
+        assert_eq!(money(Decimal::new(125, 3)), "$0.13");
+        assert_eq!(money(Decimal::new(1_234_565, 3)), "$1,234.57");
+        assert_eq!(share(Decimal::new(25, 1), Decimal::from(100)), "3%");
     }
 }

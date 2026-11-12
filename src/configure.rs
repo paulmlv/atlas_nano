@@ -133,11 +133,10 @@ pub fn configure() -> Result<(), String> {
         let name = format!("{} ({})", client.name(), label(client));
         match labeler::no_save_support(client) {
             Err(_) => println!("{name}: not installed, skipped"),
-            Ok(false) => {
-                return Err(format!(
-                    "{name} is installed, but this version cannot run a call without saving it; update it"
-                ));
-            }
+            Ok(false) => println!(
+                "{name}: installed, but this version cannot run a call without saving it; \
+                 skipped until it is updated"
+            ),
             Ok(true) => {
                 println!("{name}: installed");
                 installed.push(client);
@@ -145,7 +144,9 @@ pub fn configure() -> Result<(), String> {
         }
     }
     if installed.is_empty() {
-        return Err("neither Claude Code nor Codex is installed".to_string());
+        return Err(
+            "neither Claude Code nor Codex is installed in a version that can label".to_string(),
+        );
     }
     let recorded: Vec<Client> = [Client::Claude, Client::Codex]
         .into_iter()
@@ -201,29 +202,31 @@ pub fn configure() -> Result<(), String> {
                 .expect("the choice was offered")]
         }
     };
-    let model = labeling_model(client).to_string();
+    // Warned before any call or save, so the user can stop here and choose again.
+    if let Some(warning) = provider_warning(&covered, client) {
+        println!("{warning}");
+    }
     let tools = !yes(
         "Leave tool calls out of what is sent (no-tools mode)?",
         false,
     )?;
     let pull_requests = yes("Map conversations to pull requests (experimental)?", false)?;
-    let jobs: usize = ask("How many labeling calls at once?", "a whole number", "16")?
-        .parse()
-        .map_err(|_| "the number of calls at once must be a whole number".to_string())?;
+    let jobs = loop {
+        match ask("How many labeling calls at once?", "a whole number", "16")?.parse::<usize>() {
+            Ok(jobs) if jobs > 0 => break jobs,
+            _ => println!("  please answer a whole number of at least 1"),
+        }
+    };
 
+    // Only the labeler's call must work; another client's failure is reported and not used.
     println!("testing a labeling call for each installed client");
     for &tested in &installed {
-        test_call(
-            tested,
-            if tested == client {
-                &model
-            } else {
-                labeling_model(tested)
-            },
-        )?;
-    }
-    if let Some(warning) = provider_warning(&covered, client) {
-        println!("{warning}");
+        match test_call(tested, labeling_model(tested)) {
+            Err(error) if tested != client => {
+                println!("  warning: {error}; it does not label, so configuration goes on");
+            }
+            result => result?,
+        }
     }
     let config = Config {
         unit: "conversation".to_string(),
@@ -233,7 +236,7 @@ pub fn configure() -> Result<(), String> {
             .collect(),
         labeler: Settings {
             client: client.name().to_string(),
-            model,
+            model: labeling_model(client).to_string(),
             tools,
             pull_requests,
             jobs,
