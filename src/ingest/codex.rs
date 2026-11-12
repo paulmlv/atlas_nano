@@ -89,21 +89,15 @@ fn request(text: &str) -> String {
     IMAGE.replace_all(text, "[image]").trim().to_string()
 }
 
-fn usage(payload: &Value, timestamp: &str, turn: Option<&str>, model: &str) -> Option<Usage> {
-    let info = &payload["info"];
-    let (last, total) = (&info["last_token_usage"], &info["total_token_usage"]);
-    let count = |name: &str| last[name].as_u64().unwrap_or(0);
+/// One model response's usage, from Codex's token counts and an ID that a fork's copy keeps.
+fn usage(id: String, counts: &Value, timestamp: &str, model: &str) -> Option<Usage> {
+    let count = |name: &str| counts[name].as_u64().unwrap_or(0);
     let (cached, cache_write) = (
         count("cached_input_tokens"),
         count("cache_write_input_tokens"),
     );
     Some(Usage {
-        id: format!(
-            "{}:{timestamp}:{}:{}",
-            turn.unwrap_or("-"),
-            total["input_tokens"],
-            total["output_tokens"]
-        ),
+        id,
         at: time(timestamp)?,
         model: model.to_string(),
         fast: false,
@@ -235,6 +229,10 @@ pub(super) fn parse(path: &Path, records: &[Value]) -> (Session, Option<Version>
     let mut tools: HashSet<&str> = HashSet::new();
     let mut goals: HashSet<i64> = HashSet::new();
     let mut typed_goals: Vec<String> = Vec::new();
+    // Newer clients record each response's usage; older ones only a running total.
+    let per_response = records
+        .iter()
+        .any(|record| record["type"] == "token_usage_record");
     for (line, record) in (0u64..).zip(records) {
         let position = record["ordinal"].as_u64().unwrap_or(line);
         let timestamp = record["timestamp"].as_str().unwrap_or_default();
@@ -306,12 +304,30 @@ pub(super) fn parse(path: &Path, records: &[Value]) -> (Session, Option<Version>
                     turn_requests = 0;
                 }
             }
-            ("event_msg", "token_count") => {
-                // A changed running total within a turn marks a new request.
-                let total = &payload["info"]["total_token_usage"];
+            ("token_usage_record", _) => {
+                // Each record is one response; its ID survives a fork's copy.
+                if let Some(response) = payload["response_id"].as_str()
+                    && let Some(reported) =
+                        usage(response.to_string(), &payload["usage"], timestamp, &model)
+                {
+                    session.usage.push(reported);
+                }
+            }
+            ("event_msg", "token_count") if !per_response => {
+                // A changed running total within a turn marks a new request. The turn and total
+                // identify it; a fork's copy keeps both but not the timestamp.
+                let info = &payload["info"];
+                let total = &info["total_token_usage"];
                 if total.is_object() && total != totals {
+                    let id = format!(
+                        "{}:{}:{}",
+                        turn.as_deref().unwrap_or(&thread),
+                        total["input_tokens"],
+                        total["output_tokens"]
+                    );
                     if running
-                        && let Some(reported) = usage(payload, timestamp, turn.as_deref(), &model)
+                        && let Some(reported) =
+                            usage(id, &info["last_token_usage"], timestamp, &model)
                     {
                         session.usage.push(reported);
                     }
@@ -532,6 +548,49 @@ mod tests {
         assert_eq!(usage.model, "gpt-6-luna");
         assert_eq!(session.turns.len(), 1);
         assert_eq!(session.turns[0].working, Some(chrono::Duration::seconds(6)));
+    }
+
+    #[test]
+    fn per_response_usage_replaces_the_running_total() {
+        let response = |second: u32, id: &str, input: u64, output: u64| {
+            json!({"type": "token_usage_record",
+                "timestamp": format!("2026-01-01T00:00:{second:02}Z"),
+                "payload": {"turn_id": "t1", "response_id": id, "usage": {
+                    "input_tokens": input, "cached_input_tokens": 10, "output_tokens": output}}})
+        };
+        // The running total lags: it reports only the first response.
+        let records = [
+            json!({"type": "turn_context", "payload": {"turn_id": "t1", "model": "gpt-6-luna"}}),
+            event("task_started", 1, json!({})),
+            user("u1", 2, "Fix it", true),
+            response(3, "resp_a", 100, 7),
+            tokens(3, 100, 7),
+            response(4, "resp_b", 200, 9),
+        ];
+        let (session, _) = parse(&path(), &records);
+        let usage: Vec<_> = session
+            .usage
+            .iter()
+            .map(|u| (u.id.as_str(), u.input, u.cached, u.output, u.model.as_str()))
+            .collect();
+        assert_eq!(
+            usage,
+            [
+                ("resp_a", 90, 10, 7, "gpt-6-luna"),
+                ("resp_b", 190, 10, 9, "gpt-6-luna")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_running_total_is_identified_without_its_timestamp() {
+        let records = [
+            event("task_started", 1, json!({})),
+            user("u1", 2, "Fix it", true),
+            tokens(3, 100, 7),
+        ];
+        let (session, _) = parse(&path(), &records);
+        assert_eq!(session.usage[0].id, "t1:100:7");
     }
 
     #[test]

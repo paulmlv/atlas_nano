@@ -508,6 +508,62 @@ mod tests {
     }
 
     #[test]
+    fn a_codex_fork_keeps_a_copied_request_with_its_parent() {
+        let home = home("codex-fork-copies");
+        let folder = home.join(".codex/sessions");
+        let at = |second: u32| format!("2026-01-01T00:00:{second:02}Z");
+        let started = |second| json!({"type": "event_msg", "timestamp": at(second), "payload": {"type": "task_started", "turn_id": "t1"}});
+        let total = |second, output: u64| {
+            json!({"type": "event_msg", "timestamp": at(second), "payload": {"type": "token_count",
+                "turn_id": "t1", "info": {"last_token_usage": {"input_tokens": 10, "output_tokens": 1},
+                "total_token_usage": {"input_tokens": 10, "output_tokens": output}}}})
+        };
+        let response = |second, id: &str| {
+            json!({"type": "token_usage_record", "timestamp": at(second), "payload": {
+                "turn_id": "t1", "response_id": id, "usage": {"input_tokens": 10, "output_tokens": 1}}})
+        };
+        let file = |id: &str| folder.join(format!("rollout-2026-01-01T00-00-00-{id}.jsonl"));
+        let [old, new, old_fork, new_fork] = ["a", "b", "c", "d"].map(|id| id.repeat(36));
+        // Each fork copies its parent's records with new timestamps, then adds its own.
+        write(&file(&old), &[started(1), total(2, 1)], false);
+        write(
+            &file(&format!("{old}_{old_fork}")),
+            &[started(30), total(30, 1), total(31, 2)],
+            false,
+        );
+        write(&file(&new), &[started(1), response(2, "resp_old")], false);
+        write(
+            &file(&format!("{new}_{new_fork}")),
+            &[
+                started(30),
+                response(30, "resp_old"),
+                response(31, "resp_new"),
+            ],
+            false,
+        );
+
+        let sessions = load(&home, &[Client::Codex]).sessions;
+        fs::remove_dir_all(&home).unwrap();
+        let mut usage: Vec<_> = sessions
+            .iter()
+            .map(|session| {
+                let ids: Vec<_> = session.usage.iter().map(|u| u.id.as_str()).collect();
+                (session.parent.is_some(), ids.join(" "))
+            })
+            .collect();
+        usage.sort();
+        assert_eq!(
+            usage,
+            [
+                (false, "resp_old".to_string()),
+                (false, "t1:10:1".to_string()),
+                (true, "resp_new".to_string()),
+                (true, "t1:10:2".to_string()),
+            ]
+        );
+    }
+
+    #[test]
     fn a_codex_child_uses_the_parent_rollout_current_at_its_start() {
         use crate::account::{in_period, roots};
 
