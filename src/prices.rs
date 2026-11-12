@@ -174,6 +174,7 @@ mod tests {
     fn usage(model: &str, input: u64) -> Usage {
         Usage {
             id: String::new(),
+            owner: None,
             at: Utc::now(),
             model: model.to_string(),
             fast: false,
@@ -250,6 +251,34 @@ mod tests {
             "cached = 0.10, bonus = 1.0, output = 10.00",
         );
         assert!(PriceTable::decode(&rate).is_err());
+    }
+
+    #[test]
+    fn the_built_in_table_prices_terra_and_long_gpt_5_4_requests() {
+        let table = PriceTable::built_in();
+        for (model, input, cache_write, expected) in [
+            ("gpt-6.1-terra", 122_000, 50_000, "0.2395"),
+            ("gpt-6.1-terra", 122_001, 50_000, "0.454002"),
+            ("gpt-5.6-terra", 122_000, 50_000, "0.509"),
+            ("gpt-5.6-terra", 122_001, 50_000, "0.958004"),
+            ("gpt-5.4", 172_000, 0, "0.605"),
+            ("gpt-5.4", 172_001, 0, "1.135005"),
+            ("codex-auto-review", 172_001, 0, "1.135005"),
+        ] {
+            let request = Usage {
+                cached: 100_000,
+                cache_write,
+                cache_write_1h: 0,
+                output: 10_000,
+                ..usage(model, input)
+            };
+            assert_eq!(
+                table.cost(Client::Codex, &request),
+                Some(Decimal::from_str(expected).unwrap()),
+                "{model} with {} prompt tokens",
+                request.prompt()
+            );
+        }
     }
 
     #[test]

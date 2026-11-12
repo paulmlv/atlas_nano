@@ -28,13 +28,14 @@ pub struct Event {
 /// Pair each request with the completion recorded before the next request.
 ///
 /// Working time is known only when the last terminal signal of the turn is a completion with no
-/// work after it, at or after the request, and neither this request nor the next is a steer. A
-/// signal of another request's run is not evidence for this one.
+/// work after it, at or after the request, and neither this request nor the next is a steer.
+/// When both the request and the signal have a run ID, the IDs must match. A request without a
+/// run ID can use a signal from a run with no recorded request.
 pub fn turns(events: &[Event]) -> Vec<Turn> {
     let requests: Vec<usize> = (0..events.len())
         .filter(|&n| matches!(events[n].signal, Signal::Request { .. }))
         .collect();
-    let owned: Vec<&str> = requests
+    let request_runs: Vec<&str> = requests
         .iter()
         .filter_map(|&n| events[n].run.as_deref())
         .collect();
@@ -47,12 +48,13 @@ pub fn turns(events: &[Event]) -> Vec<Turn> {
             .get(end)
             .is_some_and(|e| e.signal == Signal::Request { steer: true });
         let steer = request.signal == Signal::Request { steer: true };
-        let evidence = events[start + 1..end]
-            .iter()
-            .filter(|event| match event.run.as_deref() {
-                None => true,
-                Some(run) => request.run.as_deref() == Some(run) || !owned.contains(&run),
-            });
+        let evidence = events[start + 1..end].iter().filter(|event| {
+            match (request.run.as_deref(), event.run.as_deref()) {
+                (Some(request_run), Some(run)) => request_run == run,
+                (None, Some(run)) => !request_runs.contains(&run),
+                (_, None) => true,
+            }
+        });
         let mut terminal: Option<&Event> = None;
         let mut work_after = false;
         for event in evidence {
