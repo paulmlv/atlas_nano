@@ -1,6 +1,7 @@
 # Atlas Nano
 
-Atlas Nano labels and accounts for local Claude Code and Codex conversations from the command line.
+Atlas Nano labels and accounts for all local Claude Code and Codex conversations to give insight
+into AI spend.
 
 It reads the sessions both clients keep on this computer and prices every model request at API list
 prices. The command and the labeling are not built yet.
