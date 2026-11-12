@@ -186,6 +186,14 @@ mod tests {
     }
 
     #[test]
+    fn instructions_name_every_pull_request_role() {
+        let mapped = Prompt::new(&Taxonomy::built_in(), true);
+        for role in crate::model::PrRole::ALL {
+            assert!(mapped.instructions.contains(role.name()), "{}", role.name());
+        }
+    }
+
+    #[test]
     fn the_conversation_states_the_repository_only_with_pull_requests() {
         let taxonomy = Taxonomy::built_in();
         let plain = Prompt::new(&taxonomy, false).conversation("r", "b", "[user] hi {branch}");

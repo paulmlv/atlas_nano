@@ -120,13 +120,15 @@ pub struct Session {
     /// a Claude Code scratchpad names a Claude Code parent whichever client recorded it.
     pub parent: Option<SessionRef>,
     pub kind: Kind,
-    pub cwd: String,
+    pub cwd: Option<String>,
     pub title: Option<String>,
     pub repository: Option<String>,
     pub branch: Option<String>,
     pub started: Option<DateTime<Utc>>,
     pub ended: Option<DateTime<Utc>>,
     pub items: Vec<Item>,
+    /// The tool calls in this session's own transcript, a call with an id counted once. `items` can
+    /// repeat a call and, for a Codex fork, also holds the history inherited from its base.
     pub tool_calls: u64,
     pub turns: Vec<Turn>,
     pub usage: Vec<Usage>,
@@ -137,6 +139,14 @@ pub struct Session {
 }
 
 impl Session {
+    /// The client and id that name this session.
+    pub fn reference(&self) -> SessionRef {
+        SessionRef {
+            client: self.client,
+            id: self.id.clone(),
+        }
+    }
+
     /// `client:id`, unique across both clients.
     pub fn key(&self) -> String {
         format!("{}:{}", self.client.name(), self.id)
@@ -157,7 +167,41 @@ impl Session {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PullRequest {
     pub url: String,
-    pub role: String,
+    pub role: PrRole,
+}
+
+/// A conversation's role in a pull request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrRole {
+    ContributedTo,
+    Reviewed,
+    MentionedOnly,
+}
+
+impl PrRole {
+    pub const ALL: [PrRole; 3] = [
+        PrRole::ContributedTo,
+        PrRole::Reviewed,
+        PrRole::MentionedOnly,
+    ];
+
+    /// The role's name in prompts, answers, the cache, and the CSV.
+    pub fn name(self) -> &'static str {
+        match self {
+            PrRole::ContributedTo => "Contributed to",
+            PrRole::Reviewed => "Reviewed",
+            PrRole::MentionedOnly => "Mentioned only",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<PrRole> {
+        PrRole::ALL.into_iter().find(|role| role.name() == name)
+    }
+
+    /// Whether the conversation worked on the pull request, not only mentioned it.
+    pub fn worked_on(self) -> bool {
+        self != PrRole::MentionedOnly
+    }
 }
 
 /// The labels one session received.

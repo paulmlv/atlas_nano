@@ -13,11 +13,10 @@ use std::time::{Duration, Instant};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
 
-use crate::model::{Client, PullRequest};
+use crate::model::{Client, PrRole, PullRequest};
 use crate::prompt::Prompt;
 use crate::taxonomy::Taxonomy;
 
-const ROLES: [&str; 3] = ["Contributed to", "Reviewed", "Mentioned only"];
 const CODEX_DISABLED: [&str; 18] = [
     "shell_tool",
     "unified_exec",
@@ -112,7 +111,7 @@ pub fn schema(taxonomy: &Taxonomy, pull_requests: bool) -> Value {
                 "type": "object",
                 "properties": {
                     "url": {"type": "string"},
-                    "role": {"type": "string", "enum": ROLES},
+                    "role": {"type": "string", "enum": PrRole::ALL.map(PrRole::name)},
                 },
                 "required": ["url", "role"],
                 "additionalProperties": false,
@@ -170,7 +169,7 @@ fn answer(value: &Value, schema: &Value) -> Result<(String, String, Vec<PullRequ
         let entries = listed
             .iter()
             .map(|pr| {
-                let role = pr["role"].as_str().filter(|role| ROLES.contains(role));
+                let role = pr["role"].as_str().and_then(PrRole::from_name);
                 match (pr["url"].as_str(), role) {
                     (Some(url), Some(role)) => Ok((url, role)),
                     _ => Err(invalid()),
@@ -183,10 +182,7 @@ fn answer(value: &Value, schema: &Value) -> Result<(String, String, Vec<PullRequ
             if let Some(url) = pull_request_url(url)
                 && !prs.iter().any(|seen| seen.url == url)
             {
-                prs.push(PullRequest {
-                    url,
-                    role: role.to_string(),
-                });
+                prs.push(PullRequest { url, role });
             }
         }
         prs
@@ -440,7 +436,7 @@ mod tests {
         assert_eq!(mapped["required"], json!(["work", "topic", "prs"]));
         assert_eq!(
             mapped["properties"]["prs"]["items"]["properties"]["role"]["enum"],
-            json!(ROLES)
+            json!(PrRole::ALL.map(PrRole::name))
         );
     }
 
@@ -480,7 +476,7 @@ mod tests {
             prs,
             [PullRequest {
                 url: "https://github.com/o/r/pull/7".into(),
-                role: "Reviewed".into()
+                role: PrRole::Reviewed
             }]
         );
     }
@@ -496,7 +492,7 @@ mod tests {
             prs,
             [PullRequest {
                 url: "https://github.com/o/r/pull/1".into(),
-                role: "Reviewed".into()
+                role: PrRole::Reviewed
             }]
         );
         // With mapping on, a missing list or an unlisted role makes the whole answer invalid.

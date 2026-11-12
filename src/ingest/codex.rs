@@ -210,7 +210,7 @@ pub(super) fn parse(path: &Path, records: &[Value]) -> (Session, Option<Version>
         id: rollout,
         parent,
         kind,
-        cwd: meta["cwd"].as_str().unwrap_or_default().to_string(),
+        cwd: known(&meta["cwd"]),
         title: None,
         repository: known(&meta["git"]["repository_url"]),
         branch: known(&meta["git"]["branch"]),
@@ -578,7 +578,7 @@ mod tests {
             ]
         );
         assert_eq!(session.kind, Kind::Primary);
-        assert_eq!(session.cwd, "/work/app");
+        assert_eq!(session.cwd.as_deref(), Some("/work/app"));
         assert_eq!(session.usage.len(), 1);
         let usage = &session.usage[0];
         assert_eq!((usage.input, usage.cached, usage.output), (96, 4, 7));

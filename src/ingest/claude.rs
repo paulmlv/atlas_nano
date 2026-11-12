@@ -168,7 +168,7 @@ pub fn parse(path: &Path, records: &[Value]) -> Session {
             Kind::Primary
         },
         parent: owner,
-        cwd: String::new(),
+        cwd: None,
         title: None,
         repository: None,
         branch: None,
@@ -206,8 +206,8 @@ pub fn parse(path: &Path, records: &[Value]) -> Session {
         } else {
             span.add(at);
         }
-        if session.cwd.is_empty() {
-            session.cwd = record["cwd"].as_str().unwrap_or_default().to_string();
+        if session.cwd.is_none() {
+            session.cwd = known(&record["cwd"]);
         }
         if session.branch.is_none() {
             session.branch = known(&record["gitBranch"]);
@@ -375,7 +375,7 @@ mod tests {
             ]
         );
         assert_eq!(session.tool_calls, 1);
-        assert_eq!(session.cwd, "/work/app");
+        assert_eq!(session.cwd.as_deref(), Some("/work/app"));
         assert_eq!(session.turns.len(), 1);
         assert_eq!(session.turns[0].working, Some(chrono::Duration::seconds(9)));
         assert_eq!(session.wall(), Some(chrono::Duration::seconds(9)));

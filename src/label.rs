@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 
 use crate::config::{self, Config};
 use crate::labeler::{self, Answer, Call, Failure, Labeler};
-use crate::model::{Client, Kind, Label, PullRequest, Session, Usage};
+use crate::model::{Client, Kind, Label, PrRole, PullRequest, Session, Usage};
 use crate::paint::{self, Paint, Tone};
 use crate::prices::PriceTable;
 use crate::prompt::Prompt;
@@ -134,16 +134,17 @@ fn read_cache(path: &Path) -> HashMap<String, Value> {
 }
 
 fn stored(entry: &Value) -> Option<Label> {
-    let prs = entry["prs"].as_array()?.iter().filter_map(|pr| {
+    // An unreadable pull request makes the whole entry a miss, so the session is labeled again.
+    let prs = entry["prs"].as_array()?.iter().map(|pr| {
         Some(PullRequest {
             url: pr["url"].as_str()?.to_string(),
-            role: pr["role"].as_str()?.to_string(),
+            role: PrRole::from_name(pr["role"].as_str()?)?,
         })
     });
     Some(Label {
         work: entry["work"].as_str()?.to_string(),
         topic: entry["topic"].as_str()?.to_string(),
-        prs: prs.collect(),
+        prs: prs.collect::<Option<_>>()?,
         model: entry["model"].as_str()?.to_string(),
         from_cache: true,
     })
@@ -153,7 +154,7 @@ fn store(file: &Mutex<Option<fs::File>>, key: &str, label: &Label) {
     let prs: Vec<Value> = label
         .prs
         .iter()
-        .map(|pr| json!({"url": pr.url, "role": pr.role}))
+        .map(|pr| json!({"url": pr.url, "role": pr.role.name()}))
         .collect();
     let entry = json!({
         "key": key, "work": label.work, "topic": label.topic, "prs": prs, "model": label.model,
@@ -361,9 +362,11 @@ pub fn label(
         }
         let url = match session.client {
             Client::Codex => session.repository.clone(),
-            Client::Claude if settings.pull_requests => {
-                Some(repository(&session.cwd, &mut remotes)).filter(|url| !url.is_empty())
-            }
+            Client::Claude if settings.pull_requests => session
+                .cwd
+                .as_deref()
+                .map(|cwd| repository(cwd, &mut remotes))
+                .filter(|url| !url.is_empty()),
             Client::Claude => None,
         };
         let url = url.map_or("unknown".to_string(), |url| without_credentials(&url));
@@ -678,7 +681,7 @@ mod tests {
                 .into_iter()
                 .map(|(url, role)| PullRequest {
                     url: url.into(),
-                    role: role.into(),
+                    role: PrRole::from_name(role).unwrap(),
                 })
                 .collect(),
         }
@@ -725,7 +728,7 @@ mod tests {
         let prs: Vec<(&str, &str)> = label
             .prs
             .iter()
-            .map(|pr| (pr.url.as_str(), pr.role.as_str()))
+            .map(|pr| (pr.url.as_str(), pr.role.name()))
             .collect();
         assert_eq!(prs, [("u1", "Reviewed"), ("u2", "Contributed to")]);
         assert!(!label.from_cache);

@@ -87,14 +87,14 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
         )?)
     };
     // A session starts where its root chat did; each starting folder is placed once.
-    let starts: Vec<&str> = (0..sessions.len())
-        .map(|n| sessions[roots[n]].cwd.as_str())
+    let starts: Vec<Option<&str>> = (0..sessions.len())
+        .map(|n| sessions[roots[n]].cwd.as_deref())
         .collect();
-    let mut places: HashMap<&str, Place> = HashMap::new();
+    let mut places: HashMap<Option<&str>, Place> = HashMap::new();
     for &n in &covered {
-        places
-            .entry(starts[n])
-            .or_insert_with(|| place::place(starts[n], &home));
+        places.entry(starts[n]).or_insert_with(|| {
+            starts[n].map_or_else(place::unknown, |cwd| place::place(cwd, &home))
+        });
     }
     let rows: Vec<Row> = covered
         .iter()
@@ -108,7 +108,7 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
             root: covered
                 .binary_search(&roots[n])
                 .expect("a covered session's root is covered"),
-            place: &places[starts[n]],
+            place: &places[&starts[n]],
         })
         .collect();
     let report = Report {
