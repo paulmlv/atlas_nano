@@ -102,9 +102,9 @@ references its parent's history without copying it, the text is rebuilt from the
 
 - The stripping rule does not change. The session is split into chunks and each chunk is labeled.
 - A chunk fills at most 80% of the model's context window, the fixed context and the instructions
-  included, counting 2 characters per token. The window is taken as 500,000 tokens for Claude Haiku
-  and 272,000 for GPT-6 Luna. With `CLAUDE_CODE_DISABLE_1M_CONTEXT` set, Claude Code caps Haiku at
-  200,000, and so does Atlas Nano.
+  included, counting 2 characters per token. The window is taken as 1,000,000 tokens for Claude
+  Haiku and 272,000 for GPT-6 Luna. With `CLAUDE_CODE_DISABLE_1M_CONTEXT` set, Claude Code caps
+  Haiku at 200,000, and so does Atlas Nano.
 - A chunk starts at a user message, so it holds whole turns. A session with no user messages starts
   its chunks at messages from other agents. A single turn larger than the window is cut between
   records, and a single record larger than the window is truncated.

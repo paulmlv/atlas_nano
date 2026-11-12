@@ -43,13 +43,12 @@ fn fixed_tokens(client: Client) -> u64 {
 
 /// The context window assumed for a labeling model, in tokens.
 ///
-/// Codex lists 272K for its GPT-6 models; Claude Haiku has accepted prompts above 500K tokens through
-/// Claude Code, unless `capped`: Claude Code's 1M context is turned off. Any other model gets a
-/// conservative 200K.
+/// Codex lists 272K for its GPT-6 models; Claude Haiku 5.5 has a 1M window, unless `capped`: Claude
+/// Code's 1M context is turned off. Any other model gets a conservative 200K.
 fn window(client: Client, model: &str, capped: bool) -> usize {
     match client {
         Client::Codex if model.starts_with("gpt-6") => 272_000,
-        Client::Claude if model.starts_with("claude-haiku") && !capped => 500_000,
+        Client::Claude if model.starts_with("claude-haiku") && !capped => 1_000_000,
         _ => 200_000,
     }
 }
@@ -755,7 +754,7 @@ mod tests {
                 &"x".repeat(2_000),
                 false
             ),
-            (400_000 - 1_425 - 1_000) * 2
+            (800_000 - 1_425 - 1_000) * 2
         );
         assert_eq!(window(Client::Claude, "something-else", false), 200_000);
         // With Claude Code's 1M context off, Haiku gets 200K.
