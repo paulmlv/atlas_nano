@@ -91,29 +91,6 @@ fn span(duration: Duration) -> String {
     }
 }
 
-/// Text from a transcript or folder name, with control characters, such as terminal escape codes,
-/// and text-direction marks replaced so they show as data and cannot act on the terminal or reorder
-/// what it shows.
-fn printable(text: &str) -> String {
-    text.chars()
-        .map(|c| {
-            if c.is_control() || reorders(c) {
-                '\u{fffd}'
-            } else {
-                c
-            }
-        })
-        .collect()
-}
-
-/// The marks that change the direction text shows in: embeddings, overrides, and isolates.
-fn reorders(c: char) -> bool {
-    matches!(
-        c,
-        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
-    )
-}
-
 /// Lay out rows of cells: the first column left-aligned, the others right-aligned.
 ///
 /// Every cell comes from `paint`, which shows control characters as data, so text from a
@@ -168,7 +145,7 @@ const COLUMNS: [&str; 9] = [
 fn cells(paint: Paint, strong: bool, name: &str, totals: &Totals, all: &Totals) -> Vec<String> {
     let cell = |tone: Tone, text: String| paint.styled(tone, strong, &text);
     vec![
-        cell(Tone::Plain, printable(name)),
+        cell(Tone::Plain, name.to_string()),
         cell(Tone::Plain, totals.conversations.to_string()),
         cell(
             Tone::Dim,
@@ -450,8 +427,8 @@ impl Report<'_> {
                 .map(|(url, sessions, spend, split)| {
                     let mark = if *split { "~" } else { "" };
                     vec![
-                        p.tone(Tone::Plain, &printable(&format!("  {url}"))),
-                        sessions.to_string(),
+                        p.tone(Tone::Plain, &format!("  {url}")),
+                        p.tone(Tone::Plain, &sessions.to_string()),
                         p.tone(Tone::Money, &format!("{mark}{}", money(*spend))),
                     ]
                 })
@@ -515,9 +492,9 @@ impl Report<'_> {
                     p.tone(Tone::Money, &money(spend))
                 };
                 vec![
-                    p.tone(Tone::Plain, &printable(&name)),
-                    requests.to_string(),
-                    count(tokens),
+                    p.tone(Tone::Plain, &name),
+                    p.tone(Tone::Plain, &requests.to_string()),
+                    p.tone(Tone::Plain, &count(tokens)),
                     shown,
                     p.dim(&share(spend, all.spend)),
                 ]
@@ -594,9 +571,9 @@ impl Report<'_> {
                 let session = self.rows[root].session;
                 let day = session.started.map_or(String::new(), local_day);
                 vec![
-                    p.tone(Tone::Plain, &printable(&format!("  {}", title(session)))),
+                    p.tone(Tone::Plain, &format!("  {}", title(session))),
                     p.dim(&day),
-                    p.tone(Tone::Plain, &printable(&self.rows[root].place.project)),
+                    p.tone(Tone::Plain, &self.rows[root].place.project),
                     p.tone(Tone::Money, &money(spend)),
                 ]
             })
@@ -751,22 +728,6 @@ mod tests {
             assert_ne!(colored, render(Paint::OFF));
             assert_eq!(paint::strip(&colored), render(Paint::OFF));
         }
-    }
-
-    #[test]
-    fn shows_control_characters_as_data() {
-        assert_eq!(printable("a\u{1b}[2Jb"), "a\u{fffd}[2Jb");
-        assert_eq!(printable("file\u{202e}txt.exe"), "file\u{fffd}txt.exe");
-        assert_eq!(printable("plain"), "plain");
-        let none = Totals::default();
-        let named = cells(
-            Paint::colored(Theme::default()),
-            false,
-            "a\u{1b}[2Jb",
-            &none,
-            &none,
-        );
-        assert_eq!(paint::strip(&named[0]), "a\u{fffd}[2Jb");
     }
 
     #[test]

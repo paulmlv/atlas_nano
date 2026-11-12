@@ -158,8 +158,8 @@ pub fn configure() -> Result<(), String> {
                 "{} {}",
                 paint.bold(&format!("{name}:")),
                 paint.dim(
-                    "installed, but this version cannot run a call without saving it; skipped \
-                     until it is updated"
+                    "installed, but this version cannot run a call without saving it; \
+                     skipped until it is updated"
                 )
             ),
             Ok(true) => {
@@ -233,7 +233,7 @@ pub fn configure() -> Result<(), String> {
     };
     // Warned before any call or save, so the user can stop here and choose again.
     if let Some(warning) = provider_warning(&covered, client) {
-        println!("{warning}");
+        println!("{}", paint.tone(Tone::Warning, &warning));
     }
     let tools = !yes(
         "Leave tool calls out of what is sent (no-tools mode)?",
@@ -243,7 +243,10 @@ pub fn configure() -> Result<(), String> {
     let jobs = loop {
         match ask("How many labeling calls at once?", "a whole number", "32")?.parse::<usize>() {
             Ok(jobs) if jobs > 0 => break jobs,
-            _ => println!("  please answer a whole number of at least 1"),
+            _ => println!(
+                "  {}",
+                paint.tone(Tone::Warning, "please answer a whole number of at least 1")
+            ),
         }
     };
     // Without colors there is nothing to preview.

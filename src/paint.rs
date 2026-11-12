@@ -1,9 +1,9 @@
-//! Terminal colors in the chosen theme, on only when the stream is a terminal and the user has not
-//! turned them off.
+//! Terminal colors in the chosen theme. Whether a stream gets them is `anstream`'s choice, the one
+//! clap makes for its help.
 
-use std::env;
-use std::io::{self, IsTerminal};
+use std::io;
 
+use anstream::{AutoStream, ColorChoice};
 use serde::{Deserialize, Serialize};
 
 /// How a piece of text is shown.
@@ -29,7 +29,7 @@ pub enum Tone {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Theme {
-    /// Bold and dim with gray bars, in the terminal's own colors.
+    /// Bold and dim with dim bars, in the terminal's own colors.
     #[default]
     Minimal,
     /// Muted blue headings and bars, sage money.
@@ -57,7 +57,9 @@ impl Theme {
             (Theme::Minimal, Tone::Dim) => "2",
             (Theme::Minimal, Tone::Heading) => "1",
             (Theme::Minimal, Tone::Money) => "",
-            (Theme::Minimal, Tone::Accent) => "90",
+            // Dim rather than bright black, which some palettes, like Solarized Dark, use as the
+            // background.
+            (Theme::Minimal, Tone::Accent) => "2",
             (Theme::Minimal, Tone::Warning) => "33",
             (Theme::Minimal, Tone::Error) => "1;31",
             (Theme::Minimal, Tone::Done) => "1",
@@ -85,11 +87,6 @@ pub struct Paint {
     theme: Theme,
 }
 
-/// Colors are on for a terminal, unless `NO_COLOR` is set to anything or `TERM` is `dumb`.
-fn wanted(terminal: bool, no_color: Option<&str>, term: Option<&str>) -> bool {
-    terminal && no_color.is_none_or(str::is_empty) && term != Some("dumb")
-}
-
 impl Paint {
     #[cfg(test)]
     pub const OFF: Paint = Paint {
@@ -102,21 +99,20 @@ impl Paint {
         Paint { on: true, theme }
     }
 
-    fn detect(terminal: bool, theme: Theme) -> Paint {
-        let no_color = env::var("NO_COLOR").ok();
-        let term = env::var("TERM").ok();
+    /// Colors are on for a terminal whose `TERM` supports them, unless `NO_COLOR` is set to a
+    /// non-empty value or `CLICOLOR` is `0`; a non-empty `CLICOLOR_FORCE` turns them on anywhere.
+    pub fn stdout(theme: Theme) -> Paint {
         Paint {
-            on: wanted(terminal, no_color.as_deref(), term.as_deref()),
+            on: AutoStream::choice(&io::stdout()) != ColorChoice::Never,
             theme,
         }
     }
 
-    pub fn stdout(theme: Theme) -> Paint {
-        Paint::detect(io::stdout().is_terminal(), theme)
-    }
-
     pub fn stderr(theme: Theme) -> Paint {
-        Paint::detect(io::stderr().is_terminal(), theme)
+        Paint {
+            on: AutoStream::choice(&io::stderr()) != ColorChoice::Never,
+            theme,
+        }
     }
 
     pub fn is_on(self) -> bool {
@@ -176,11 +172,26 @@ impl Paint {
 }
 
 /// Text from a transcript or folder name, with control characters, such as terminal escape codes,
-/// replaced so they show as data and cannot act on the terminal.
+/// and text-direction marks replaced so they show as data and cannot act on the terminal or reorder
+/// what it shows.
 fn printable(text: &str) -> String {
     text.chars()
-        .map(|c| if c.is_control() { '\u{fffd}' } else { c })
+        .map(|c| {
+            if c.is_control() || reorders(c) {
+                '\u{fffd}'
+            } else {
+                c
+            }
+        })
         .collect()
+}
+
+/// The marks that change the direction text shows in: embeddings, overrides, and isolates.
+fn reorders(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+    )
 }
 
 /// The width of `text` on screen, leaving out color codes.
@@ -212,15 +223,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn colors_need_a_terminal_and_respect_no_color_and_dumb_terminals() {
-        assert!(wanted(true, None, Some("xterm-256color")));
-        assert!(wanted(true, Some(""), None));
-        assert!(!wanted(false, None, None));
-        assert!(!wanted(true, Some("1"), None));
-        assert!(!wanted(true, None, Some("dumb")));
-    }
-
-    #[test]
     fn off_leaves_text_unchanged_and_on_wraps_it_in_the_theme() {
         assert_eq!(Paint::OFF.tone(Tone::Heading, "Totals"), "Totals");
         let soft = Paint::colored(Theme::Soft);
@@ -241,6 +243,7 @@ mod tests {
     fn shows_control_characters_as_data() {
         let soft = Paint::colored(Theme::Soft);
         assert_eq!(Paint::OFF.dim("a\u{1b}[2Jb"), "a\u{fffd}[2Jb");
+        assert_eq!(Paint::OFF.dim("file\u{202e}txt.exe"), "file\u{fffd}txt.exe");
         assert_eq!(soft.tone(Tone::Plain, "a\u{1b}[2Jb"), "a\u{fffd}[2Jb");
         assert_eq!(
             soft.tone(Tone::Money, "\u{7}"),
