@@ -225,6 +225,8 @@ pub(super) fn parse(path: &Path, records: &[Value]) -> (Session, Option<Version>
     let mut running = false; // whether a turn has started and not ended
     let mut turn_requests = 0u32; // a user message in a turn that already has a request is a steer
     let mut model = String::new();
+    let mut turn_models: HashMap<&str, &str> = HashMap::new();
+    let mut unknown_model: Vec<(usize, &str)> = Vec::new(); // responses read before their turn's model
     let mut totals = &null;
     let mut seen: HashSet<&str> = HashSet::new();
     let mut tools: HashSet<&str> = HashSet::new();
@@ -281,6 +283,9 @@ pub(super) fn parse(path: &Path, records: &[Value]) -> (Session, Option<Version>
             ("turn_context", _) => {
                 if let Some(name) = payload["model"].as_str() {
                     model = name.to_string();
+                    if let Some(id) = payload["turn_id"].as_str() {
+                        turn_models.insert(id, name);
+                    }
                 }
             }
             ("event_msg", "task_started" | "task_complete" | "turn_aborted") => {
@@ -311,6 +316,12 @@ pub(super) fn parse(path: &Path, records: &[Value]) -> (Session, Option<Version>
                     && let Some(reported) =
                         usage(response.to_string(), &payload["usage"], timestamp, &model)
                 {
+                    // A turn's first response can be recorded before the turn's model.
+                    if let Some(id) = payload["turn_id"].as_str()
+                        && turn_models.get(id) != Some(&model.as_str())
+                    {
+                        unknown_model.push((session.usage.len(), id));
+                    }
                     session.usage.push(reported);
                 }
             }
@@ -426,6 +437,11 @@ pub(super) fn parse(path: &Path, records: &[Value]) -> (Session, Option<Version>
                 }
             }
             _ => {}
+        }
+    }
+    for (index, turn) in unknown_model {
+        if let Some(name) = turn_models.get(turn) {
+            session.usage[index].model = name.to_string();
         }
     }
     (session.started, session.ended) = span.bounds();
@@ -581,6 +597,19 @@ mod tests {
                 ("resp_b", 190, 10, 9, "gpt-6-luna")
             ]
         );
+    }
+
+    #[test]
+    fn a_response_recorded_before_its_turn_context_takes_the_turns_model() {
+        let records = [
+            json!({"type": "turn_context", "payload": {"turn_id": "t0", "model": "gpt-6-luna"}}),
+            event("task_started", 1, json!({})),
+            json!({"type": "token_usage_record", "timestamp": "2026-01-01T00:00:02Z",
+                "payload": {"turn_id": "t1", "response_id": "resp_a", "usage": {}}}),
+            json!({"type": "turn_context", "payload": {"turn_id": "t1", "model": "gpt-6.1-sol"}}),
+        ];
+        let (session, _) = parse(&path(), &records);
+        assert_eq!(session.usage[0].model, "gpt-6.1-sol");
     }
 
     #[test]
