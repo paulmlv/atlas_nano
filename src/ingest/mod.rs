@@ -272,20 +272,22 @@ fn link_scratchpads(sessions: &mut [Session]) {
 /// keeps the request. A request repeated within one session also counts once.
 fn count_requests_once(sessions: &mut [Session]) {
     // Every copy of a request records the same owner, so one usage ranks all its holders.
-    let rank = |session: &Session, usage: &Usage| {
+    let keys: Vec<String> = sessions.iter().map(Session::key).collect();
+    let rank = |n: usize, usage: &Usage| {
+        let session = &sessions[n];
         (
             usage.owner.as_deref() != Some(session.id.as_str()),
             session.started.is_none(),
             session.started,
             session.parent.is_some(),
-            session.key(),
+            &keys[n],
         )
     };
     let mut owner: HashMap<String, usize> = HashMap::new();
     for (index, session) in sessions.iter().enumerate() {
         for usage in &session.usage {
             let held = owner.entry(usage.id.clone()).or_insert(index);
-            if rank(session, usage) < rank(&sessions[*held], usage) {
+            if *held != index && rank(index, usage) < rank(*held, usage) {
                 *held = index;
             }
         }

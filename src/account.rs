@@ -39,9 +39,11 @@ pub struct Cost {
     pub tokens: Tokens,
     pub spend: Decimal,
     pub unpriced_requests: u64,
+    /// Each request's price, in the order of the session's usage; None when it has no price.
+    pub requests: Vec<Option<Decimal>>,
 }
 
-/// Price a session's own model requests.
+/// Price a session's own model requests, each once.
 pub fn cost(session: &Session, prices: &PriceTable) -> Cost {
     let mut cost = Cost::default();
     for usage in &session.usage {
@@ -51,10 +53,12 @@ pub fn cost(session: &Session, prices: &PriceTable) -> Cost {
             cache_write: usage.cache_write + usage.cache_write_1h,
             output: usage.output,
         };
-        match prices.cost(session.client, usage) {
+        let price = prices.cost(session.client, usage);
+        match price {
             Some(price) => cost.spend += price,
             None => cost.unpriced_requests += 1,
         }
+        cost.requests.push(price);
     }
     cost
 }
@@ -92,6 +96,21 @@ impl Totals {
         self.tokens += cost.tokens;
         self.spend += cost.spend;
         self.unpriced_requests += cost.unpriced_requests;
+    }
+}
+
+impl AddAssign<&Totals> for Totals {
+    fn add_assign(&mut self, other: &Totals) {
+        self.conversations += other.conversations;
+        self.subagents += other.subagents;
+        self.reviews += other.reviews;
+        self.turns += other.turns;
+        self.unknown_turns += other.unknown_turns;
+        self.working += other.working;
+        self.wall += other.wall;
+        self.tokens += other.tokens;
+        self.spend += other.spend;
+        self.unpriced_requests += other.unpriced_requests;
     }
 }
 

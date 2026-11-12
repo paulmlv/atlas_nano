@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
-use std::io::{self, IsTerminal as _, Write as _};
+use std::io::{self, IsTerminal as _, Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::Path;
 use std::process::Command;
 use std::sync::Mutex;
@@ -131,6 +131,14 @@ fn read_cache(path: &Path) -> HashMap<String, Value> {
         .filter_map(|line| serde_json::from_slice::<Value>(line).ok())
         .filter_map(|entry| Some((entry["key"].as_str()?.to_string(), entry)))
         .collect()
+}
+
+/// Whether a file's last byte is not a line break, read without reading the whole file.
+fn ends_mid_line(path: &Path) -> bool {
+    let mut last = [0];
+    fs::File::open(path).is_ok_and(|mut file| {
+        file.seek(SeekFrom::End(-1)).is_ok() && file.read_exact(&mut last).is_ok()
+    }) && last[0] != b'\n'
 }
 
 fn stored(entry: &Value) -> Option<Label> {
@@ -486,8 +494,7 @@ pub fn label(
                 .ok(),
         );
         // A line cut short by an interrupted run is ended, so the next record starts its own line.
-        let cut = fs::read(&cache_path).is_ok_and(|data| data.last().is_some_and(|b| *b != b'\n'));
-        if cut
+        if ends_mid_line(&cache_path)
             && let Some(file) = cache_file
                 .lock()
                 .expect("the cache lock is not poisoned")
@@ -614,7 +621,11 @@ mod tests {
         data.extend_from_slice(b"\xff\xfe not json\n{\"key\": \"b\"}\n{\"key\": \"c");
         fs::write(&path, data).unwrap();
         let cache = read_cache(&path);
+        assert!(ends_mid_line(&path));
+        fs::write(&path, b"{\"key\": \"a\"}\n").unwrap();
+        assert!(!ends_mid_line(&path));
         fs::remove_file(&path).unwrap();
+        assert!(!ends_mid_line(&path));
         let mut keys: Vec<&str> = cache.keys().map(String::as_str).collect();
         keys.sort_unstable();
         assert_eq!(keys, ["a", "b"]);

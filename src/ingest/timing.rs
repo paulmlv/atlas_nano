@@ -1,5 +1,7 @@
 //! Working time: from a user request to the model's recorded completion.
 
+use std::collections::HashSet;
+
 use chrono::{DateTime, Utc};
 
 use crate::model::Turn;
@@ -35,7 +37,7 @@ pub fn turns(events: &[Event]) -> Vec<Turn> {
     let requests: Vec<usize> = (0..events.len())
         .filter(|&n| matches!(events[n].signal, Signal::Request { .. }))
         .collect();
-    let request_runs: Vec<&str> = requests
+    let request_runs: HashSet<&str> = requests
         .iter()
         .filter_map(|&n| events[n].run.as_deref())
         .collect();
