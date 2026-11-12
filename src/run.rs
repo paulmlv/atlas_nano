@@ -50,6 +50,19 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
             errors.tone(Tone::Warning, "warning:")
         );
     }
+    if !loaded.unknown.is_empty() {
+        let listed: Vec<String> = loaded
+            .unknown
+            .iter()
+            .map(|((client, label), count)| format!("{} {label:?} ({count})", client.name()))
+            .collect();
+        eprintln!(
+            "{} skipped records of types Atlas Nano does not know, so a client may have changed \
+             its format: {}",
+            errors.tone(Tone::Warning, "warning:"),
+            listed.join(", ")
+        );
+    }
     let sessions = loaded.sessions;
     let roots = account::roots(&sessions);
     let cutoff = hours(args.period).map(|hours| now - Duration::hours(hours));

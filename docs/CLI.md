@@ -57,6 +57,10 @@ Requires a saved configuration; without one it stops and says to run `configure`
 - A conversation that is in counts with its whole spend, turns, and time.
 - A subagent is in the report exactly when the chat that spawned it is.
 
+- A file or folder that cannot be read, and any record of a type Atlas Nano does not know, is
+  reported on standard error as a warning. Unknown records are counted by client and type in the
+  copy of each session that is read; a count there can mean a client changed its format.
+
 ### Labeling cost
 
 - After reading all sessions and before labeling, the run prints an estimate on standard error: the

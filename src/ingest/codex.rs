@@ -35,6 +35,7 @@ const READ: &[&str] = &[
     "event_msg/turn_aborted",
     "event_msg/token_count",
     "event_msg/thread_goal_updated",
+    "token_usage_record",
     "response_item/message",
     "response_item/agent_message",
 ];
@@ -52,8 +53,6 @@ const DROPPED: &[&str] = &[
     // Internal state.
     "world_state",
     "inter_agent_communication_metadata",
-    // Left out for now: the same usage as `token_count`, in a newer form.
-    "token_usage_record",
 ];
 
 /// A record's type, with an event's or a response item's own type.
