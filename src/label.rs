@@ -243,6 +243,24 @@ fn clock(time: Duration) -> String {
     }
 }
 
+/// Who pays for the calls. Claude Code bills an exported `ANTHROPIC_API_KEY` before a subscription.
+fn billing(client: Client, api_key: bool) -> &'static str {
+    match client {
+        Client::Claude if api_key => {
+            "ANTHROPIC_API_KEY is set, so Claude Code bills these calls to that API key: the dollar \
+             figure is a charge."
+        }
+        Client::Claude => {
+            "The calls go through your signed-in Claude Code client: on a subscription they use \
+             your plan's limits, and the dollar figure is what the API would cost, not a charge."
+        }
+        Client::Codex => {
+            "The calls go through your signed-in Codex client: on a subscription they use your \
+             plan's limits, and the dollar figure is what the API would cost, not a charge."
+        }
+    }
+}
+
 /// One line of progress: a bar, the calls done, the share, and the time spent and left.
 fn bar(done: usize, total: usize, elapsed: Duration) -> String {
     const WIDTH: usize = 30;
@@ -422,15 +440,8 @@ pub fn label(
     });
     eprintln!("  {characters} characters to send, roughly {tokens} tokens, {cost}");
     if !pending.is_empty() {
-        eprintln!(
-            "  The calls go through your signed-in {} client: on a subscription they use your \
-             plan's limits, and the dollar figure is what the API would cost, not a charge.",
-            if client == Client::Claude {
-                "Claude Code"
-            } else {
-                "Codex"
-            }
-        );
+        let api_key = std::env::var_os("ANTHROPIC_API_KEY").is_some_and(|key| !key.is_empty());
+        eprintln!("  {}", billing(client, api_key));
     }
     if confirm && !pending.is_empty() {
         eprint!("Proceed? (y / n) [n] ");
@@ -572,6 +583,14 @@ pub fn label(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn says_when_an_api_key_pays_for_claude_calls() {
+        assert!(billing(Client::Claude, true).contains("ANTHROPIC_API_KEY"));
+        assert!(billing(Client::Claude, false).contains("not a charge"));
+        // Codex does not read ANTHROPIC_API_KEY.
+        assert!(billing(Client::Codex, true).contains("not a charge"));
+    }
 
     #[test]
     fn sends_no_credentials_from_a_repository_url() {
