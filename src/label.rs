@@ -297,7 +297,7 @@ pub fn label(
     confirm: bool,
 ) -> Result<Outcome, String> {
     let settings = &config.labeler;
-    let client = config::client(&settings.client)?;
+    let client = settings.client;
     let instructions = labeler::instructions(taxonomy, settings.pull_requests);
     let schema = labeler::schema(taxonomy, settings.pull_requests);
     let budget = budget(client, &settings.model, &instructions);
@@ -345,7 +345,7 @@ pub fn label(
         let mut parts = vec![
             instructions.as_str(),
             schema_text.as_str(),
-            settings.client.as_str(),
+            client.name(),
             settings.model.as_str(),
             config.unit.as_str(),
         ];

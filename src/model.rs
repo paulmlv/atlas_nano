@@ -3,16 +3,18 @@
 use std::fmt;
 
 use chrono::{DateTime, Duration, Utc};
+use serde::{Deserialize, Serialize};
 
-/// The client that recorded a session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+/// The client that recorded a session, named in the settings as `claude` or `codex`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Client {
     Claude,
     Codex,
 }
 
 impl Client {
-    /// The client's name in keys, the price table, and the CSV.
+    /// The client's name in keys, the settings, the price table, and the CSV.
     pub fn name(self) -> &'static str {
         match self {
             Client::Claude => "claude",

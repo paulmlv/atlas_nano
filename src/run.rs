@@ -41,7 +41,7 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
     };
     let now = Utc::now();
     let home = config::home()?;
-    let loaded = ingest::load(&home, &config.clients()?);
+    let loaded = ingest::load(&home, &config.coverage);
     // Paths are quoted with escapes, so a file name cannot send control characters to the terminal.
     let errors = Paint::stderr(config.theme);
     for (path, error) in &loaded.unreadable {

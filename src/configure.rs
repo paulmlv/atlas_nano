@@ -197,7 +197,8 @@ pub fn configure() -> Result<(), String> {
         .as_str()
         {
             "both" => recorded.clone(),
-            one => vec![config::client(one)?],
+            "claude" => vec![Client::Claude],
+            _ => vec![Client::Codex],
         },
     };
     println!(
@@ -269,13 +270,10 @@ pub fn configure() -> Result<(), String> {
     }
     let config = Config {
         unit: "conversation".to_string(),
-        coverage: covered
-            .iter()
-            .map(|client| client.name().to_string())
-            .collect(),
+        coverage: covered,
         theme,
         labeler: Settings {
-            client: client.name().to_string(),
+            client,
             model,
             tools,
             pull_requests,

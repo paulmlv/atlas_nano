@@ -13,8 +13,7 @@ use crate::paint::Theme;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Labeler {
-    /// `claude` or `codex`.
-    pub client: String,
+    pub client: Client,
     pub model: String,
     /// Whether tool calls are sent; false is the no-tools mode.
     pub tools: bool,
@@ -30,23 +29,12 @@ pub struct Labeler {
 pub struct Config {
     /// `conversation`; per-turn labeling is not built.
     pub unit: String,
-    /// The clients whose sessions are read: `claude`, `codex`, or both.
-    pub coverage: Vec<String>,
+    /// The clients whose sessions are read.
+    pub coverage: Vec<Client>,
     /// The color theme of the output; settings saved before themes existed use the default.
     #[serde(default)]
     pub theme: Theme,
     pub labeler: Labeler,
-}
-
-/// Parse a client's name as the configuration writes it.
-pub fn client(name: &str) -> Result<Client, String> {
-    match name {
-        "claude" => Ok(Client::Claude),
-        "codex" => Ok(Client::Codex),
-        other => Err(format!(
-            "unknown client `{other}`; expected `claude` or `codex`"
-        )),
-    }
 }
 
 /// The one model each client labels with.
@@ -58,18 +46,13 @@ pub fn labeling_model(client: Client) -> &'static str {
 }
 
 impl Config {
-    /// The clients whose sessions are read.
-    pub fn clients(&self) -> Result<Vec<Client>, String> {
-        self.coverage.iter().map(|name| client(name)).collect()
-    }
-
     fn validate(self) -> Result<Config, String> {
-        self.clients()?;
-        let expected = labeling_model(client(&self.labeler.client)?);
+        let expected = labeling_model(self.labeler.client);
         if self.labeler.model != expected {
             return Err(format!(
                 "unknown labeling model `{}`; {} labels with `{expected}`",
-                self.labeler.model, self.labeler.client
+                self.labeler.model,
+                self.labeler.client.name()
             ));
         }
         if self.unit != "conversation" {
@@ -149,10 +132,10 @@ pub mod tests {
     pub fn config() -> Config {
         Config {
             unit: "conversation".to_string(),
-            coverage: vec!["claude".to_string(), "codex".to_string()],
+            coverage: vec![Client::Claude, Client::Codex],
             theme: Theme::Soft,
             labeler: Labeler {
-                client: "claude".to_string(),
+                client: Client::Claude,
                 model: "claude-haiku-5-5".to_string(),
                 tools: true,
                 pull_requests: false,
