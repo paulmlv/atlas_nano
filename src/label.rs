@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 use crate::config::{self, Config};
 use crate::labeler::{self, Answer, Call, Failure, Labeler};
 use crate::model::{Client, Kind, Label, PrRole, PullRequest, Session, Usage};
-use crate::paint::{Paint, Tone};
+use crate::paint::{self, Paint, Tone};
 use crate::prices::PriceTable;
 use crate::prompt::Prompt;
 use crate::taxonomy::Taxonomy;
@@ -255,12 +255,23 @@ fn clock(time: Duration) -> String {
 }
 
 /// Whether `ANTHROPIC_API_KEY` is exported, which Claude Code bills before a subscription.
-pub fn api_key() -> bool {
+fn api_key() -> bool {
     std::env::var_os("ANTHROPIC_API_KEY").is_some_and(|key| !key.is_empty())
 }
 
+/// The billing note for `client`'s calls: a warning when they are a real charge, else a quiet aside.
+pub fn billing_note(paint: Paint, client: Client) -> String {
+    let api_key = api_key();
+    let note = billing(client, api_key);
+    if api_key && client == Client::Claude {
+        format!("{} {note}", paint.tone(Tone::Warning, "warning:"))
+    } else {
+        paint.dim(note)
+    }
+}
+
 /// Who pays for the calls. Claude Code bills an exported `ANTHROPIC_API_KEY` before a subscription.
-pub fn billing(client: Client, api_key: bool) -> &'static str {
+fn billing(client: Client, api_key: bool) -> &'static str {
     match client {
         Client::Claude if api_key => {
             "ANTHROPIC_API_KEY is set, so Claude Code bills these calls to that API key: the dollar \
@@ -274,17 +285,6 @@ pub fn billing(client: Client, api_key: bool) -> &'static str {
             "The calls go through your signed-in Codex client: on a subscription they use your \
              plan's limits, and the dollar figure is what the API would cost, not a charge."
         }
-    }
-}
-
-/// Who pays, styled: a real charge is a warning; the subscription note is a quiet aside.
-pub fn payer(paint: Paint, client: Client) -> String {
-    let api_key = api_key();
-    let note = billing(client, api_key);
-    if api_key && client == Client::Claude {
-        format!("{} {note}", paint.tone(Tone::Warning, "warning:"))
-    } else {
-        paint.dim(note)
     }
 }
 
@@ -480,7 +480,7 @@ pub fn label(
     });
     eprintln!("  {characters} characters to send, roughly {tokens} tokens, {cost}");
     if !pending.is_empty() {
-        eprintln!("  {}", payer(paint, client));
+        eprintln!("  {}", billing_note(paint, client));
     }
     if confirm && !pending.is_empty() {
         eprint!("{} {} ", paint.bold("Proceed?"), paint.dim("(y / n) [n]"));
@@ -528,8 +528,18 @@ pub fn label(
         let done = AtomicUsize::new(0);
         let progress = io::stderr().is_terminal();
         let started = Instant::now();
+        // Each line is redrawn over the last with a carriage return and padded to the widest so far,
+        // so no escape code is needed to clear what a longer line left.
+        let widest = AtomicUsize::new(0);
+        let redraw = |line: String| {
+            let width = paint::width(&line);
+            let pad = widest
+                .fetch_max(width, Ordering::Relaxed)
+                .saturating_sub(width);
+            eprint!("\r{line}{}", " ".repeat(pad));
+        };
         if progress {
-            eprint!("{}", bar(paint, 0, tasks.len(), started.elapsed()));
+            redraw(bar(paint, 0, tasks.len(), started.elapsed()));
         }
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(settings.jobs.min(tasks.len()))
@@ -551,8 +561,7 @@ pub fn label(
                     }
                     let finished = done.fetch_add(1, Ordering::Relaxed) + 1;
                     if progress {
-                        let line = bar(paint, finished, tasks.len(), started.elapsed());
-                        eprint!("\r\x1b[2K{line}");
+                        redraw(bar(paint, finished, tasks.len(), started.elapsed()));
                     }
                     result
                 })
@@ -594,8 +603,8 @@ pub fn label(
                 eprintln!(
                     "{} {} is unlabeled: {}",
                     paint.tone(Tone::Warning, "warning:"),
-                    plan.session.key(),
-                    failure.message()
+                    paint.tone(Tone::Plain, &plan.session.key()),
+                    paint.tone(Tone::Plain, failure.message())
                 );
                 summary.unlabeled += 1;
                 continue;

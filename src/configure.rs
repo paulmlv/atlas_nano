@@ -117,12 +117,8 @@ fn test_call(paint: Paint, client: Client, model: &str) -> Result<(), String> {
         schema: labeler::schema(&taxonomy, false),
         folder: &folder,
     };
-    let conversation = prompt.conversation(
-        "unknown",
-        "unknown",
-        "[user] What is the capital of France?\n\n[assistant] Paris.",
-    );
-    let result = labeler.call(&conversation);
+    let text = "[user] What is the capital of France?\n\n[assistant] Paris.";
+    let result = labeler.call(&prompt.conversation("unknown", "unknown", text));
     let _ = fs::remove_dir_all(&folder);
     match result.answer {
         Ok(answer) => {
@@ -161,10 +157,9 @@ pub fn configure() -> Result<(), String> {
             Ok(false) => println!(
                 "{} {}",
                 paint.bold(&format!("{name}:")),
-                paint.tone(
-                    Tone::Warning,
-                    "installed, but this version cannot run a call without saving it; skipped \
-                     until it is updated"
+                paint.dim(
+                    "installed, but this version cannot run a call without saving it; \
+                     skipped until it is updated"
                 )
             ),
             Ok(true) => {
@@ -216,7 +211,7 @@ pub fn configure() -> Result<(), String> {
     };
     // Said before the test calls, which an exported API key pays for like any other.
     for &client in &installed {
-        println!("{}", label::payer(paint, client));
+        println!("{}", label::billing_note(paint, client));
     }
     // Each client labels with one model for now: Claude Code when it is installed, otherwise Codex.
     let offered: Vec<String> = installed
@@ -249,7 +244,10 @@ pub fn configure() -> Result<(), String> {
     let jobs = loop {
         match ask("How many labeling calls at once?", "a whole number", "32")?.parse::<usize>() {
             Ok(jobs) if jobs > 0 => break jobs,
-            _ => println!("  please answer a whole number of at least 1"),
+            _ => println!(
+                "  {}",
+                paint.tone(Tone::Warning, "please answer a whole number of at least 1")
+            ),
         }
     };
     // Without colors there is nothing to preview.
@@ -274,8 +272,8 @@ pub fn configure() -> Result<(), String> {
     for &tested in &installed {
         match test_call(paint, tested, labeling_model(tested)) {
             Err(error) if tested != client => {
-                let note = format!("{error}; it does not label, so configuration goes on");
-                println!("  {} {note}", paint.tone(Tone::Warning, "warning:"));
+                let note = format!("warning: {error}; it does not label, so configuration goes on");
+                println!("  {}", paint.tone(Tone::Warning, &note));
             }
             result => result?,
         }

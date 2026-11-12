@@ -8,7 +8,9 @@ is an exported `ANTHROPIC_API_KEY`: Claude Code bills that key, and its dollar f
 Both commands say which applies before any call.
 
 Output to a terminal is in color, in the theme chosen in `configure`. Output to a file or a pipe is
-plain text, and so is any output when `NO_COLOR` is set to a non-empty value or `TERM` is `dumb`.
+plain text, and so is any output when `NO_COLOR` is set to a non-empty value, `CLICOLOR` is `0`, or
+`TERM` is `dumb` or unset. A non-empty `CLICOLOR_FORCE` turns color on, even for a pipe. These are
+the rules clap follows for its help. Plain output has no escape codes at all.
 
 ## `atlas-nano configure`
 
