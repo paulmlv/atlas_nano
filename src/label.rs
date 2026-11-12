@@ -17,6 +17,7 @@ use sha2::{Digest, Sha256};
 use crate::config::{self, Config};
 use crate::labeler::{self, Answer, Call, Failure, Labeler};
 use crate::model::{Client, Kind, Label, PullRequest, Session, Usage};
+use crate::paint::{self, Paint, Tone};
 use crate::prices::PriceTable;
 use crate::prompt::Prompt;
 use crate::taxonomy::Taxonomy;
@@ -244,6 +245,22 @@ fn clock(time: Duration) -> String {
     }
 }
 
+/// Whether `ANTHROPIC_API_KEY` is exported, which Claude Code bills before a subscription.
+fn api_key() -> bool {
+    std::env::var_os("ANTHROPIC_API_KEY").is_some_and(|key| !key.is_empty())
+}
+
+/// The billing note for `client`'s calls: a warning when they are a real charge, else a quiet aside.
+pub fn billing_note(paint: Paint, client: Client) -> String {
+    let api_key = api_key();
+    let note = billing(client, api_key);
+    if api_key && client == Client::Claude {
+        format!("{} {note}", paint.tone(Tone::Warning, "warning:"))
+    } else {
+        paint.dim(note)
+    }
+}
+
 /// Who pays for the calls. Claude Code bills an exported `ANTHROPIC_API_KEY` before a subscription.
 fn billing(client: Client, api_key: bool) -> &'static str {
     match client {
@@ -263,7 +280,7 @@ fn billing(client: Client, api_key: bool) -> &'static str {
 }
 
 /// One line of progress: a bar, the calls done, the share, and the time spent and left.
-fn bar(done: usize, total: usize, elapsed: Duration) -> String {
+fn bar(paint: Paint, done: usize, total: usize, elapsed: Duration) -> String {
     const WIDTH: usize = 30;
     let filled = (done * WIDTH).checked_div(total).unwrap_or(WIDTH);
     let percent = (done * 100).checked_div(total).unwrap_or(100);
@@ -275,11 +292,14 @@ fn bar(done: usize, total: usize, elapsed: Duration) -> String {
             format!(" · about {} left", clock(remaining))
         }
     };
+    let counts = format!("{done}/{total} calls");
+    let times = format!(" · {percent}% · {}{left}", clock(elapsed));
     format!(
-        "  {}{} {done}/{total} calls · {percent}% · {}{left}",
-        "█".repeat(filled),
-        "░".repeat(WIDTH - filled),
-        clock(elapsed)
+        "  {}{} {}{}",
+        paint.tone(Tone::Accent, &"█".repeat(filled)),
+        paint.dim(&"░".repeat(WIDTH - filled)),
+        paint.bold(&counts),
+        paint.dim(&times)
     )
 }
 
@@ -432,23 +452,34 @@ pub fn label(
             )
         })
         .sum();
+    let paint = Paint::stderr(config.theme);
     eprintln!(
-        "Labeling {} sessions in {calls} calls with {} ({} from cache, {} with no text)",
-        pending.len(),
-        settings.model,
-        summary.from_cache,
-        summary.unlabeled
+        "{} {}",
+        paint.tone(
+            Tone::Heading,
+            &format!(
+                "Labeling {} sessions in {calls} calls with {}",
+                pending.len(),
+                settings.model
+            )
+        ),
+        paint.dim(&format!(
+            "({} from cache, {} with no text)",
+            summary.from_cache, summary.unlabeled
+        ))
     );
     let cost = estimate.map_or("no price for this model".to_string(), |cost| {
-        format!("about ${} API-equivalent", cost.round_dp(2))
+        paint.tone(
+            Tone::Money,
+            &format!("about ${} API-equivalent", cost.round_dp(2)),
+        )
     });
     eprintln!("  {characters} characters to send, roughly {tokens} tokens, {cost}");
     if !pending.is_empty() {
-        let api_key = std::env::var_os("ANTHROPIC_API_KEY").is_some_and(|key| !key.is_empty());
-        eprintln!("  {}", billing(client, api_key));
+        eprintln!("  {}", billing_note(paint, client));
     }
     if confirm && !pending.is_empty() {
-        eprint!("Proceed? (y / n) [n] ");
+        eprint!("{} {} ", paint.bold("Proceed?"), paint.dim("(y / n) [n]"));
         io::stderr().flush().ok();
         let mut reply = String::new();
         io::stdin()
@@ -495,8 +526,18 @@ pub fn label(
         let (next, done) = (AtomicUsize::new(0), AtomicUsize::new(0));
         let progress = io::stderr().is_terminal();
         let started = Instant::now();
+        // Each line is redrawn over the last with a carriage return and padded to the widest so far,
+        // so no escape code is needed to clear what a longer line left.
+        let widest = AtomicUsize::new(0);
+        let redraw = |line: String| {
+            let width = paint::width(&line);
+            let pad = widest
+                .fetch_max(width, Ordering::Relaxed)
+                .saturating_sub(width);
+            eprint!("\r{line}{}", " ".repeat(pad));
+        };
         if progress {
-            eprint!("{}", bar(0, tasks.len(), started.elapsed()));
+            redraw(bar(paint, 0, tasks.len(), started.elapsed()));
         }
         std::thread::scope(|scope| {
             for _ in 0..settings.jobs.min(tasks.len()) {
@@ -517,7 +558,7 @@ pub fn label(
                         *results[n].lock().expect("the result lock is not poisoned") = Some(result);
                         let finished = done.fetch_add(1, Ordering::Relaxed) + 1;
                         if progress {
-                            eprint!("\r\x1b[2K{}", bar(finished, tasks.len(), started.elapsed()));
+                            redraw(bar(paint, finished, tasks.len(), started.elapsed()));
                         }
                     }
                 });
@@ -563,9 +604,10 @@ pub fn label(
         for ((plan, answers), failure) in pending.iter().zip(answers).zip(failures) {
             if let Some(failure) = failure {
                 eprintln!(
-                    "warning: {} is unlabeled: {}",
-                    plan.session.key(),
-                    failure.message()
+                    "{} {} is unlabeled: {}",
+                    paint.tone(Tone::Warning, "warning:"),
+                    paint.tone(Tone::Plain, &plan.session.key()),
+                    paint.tone(Tone::Plain, failure.message())
                 );
                 summary.unlabeled += 1;
                 continue;
@@ -579,7 +621,11 @@ pub fn label(
         }
     }
     if summary.unlabeled > 0 {
-        eprintln!("warning: {} sessions are unlabeled", summary.unlabeled);
+        eprintln!(
+            "{} {} sessions are unlabeled",
+            paint.tone(Tone::Warning, "warning:"),
+            summary.unlabeled
+        );
     }
     Ok(Outcome { labels, summary })
 }
@@ -642,11 +688,11 @@ mod tests {
     fn the_progress_bar_fills_with_the_calls_done() {
         let seconds = Duration::from_secs;
         assert_eq!(
-            bar(0, 314, seconds(0)),
+            bar(Paint::OFF, 0, 314, seconds(0)),
             format!("  {} 0/314 calls · 0% · 0s", "░".repeat(30))
         );
         assert_eq!(
-            bar(100, 300, seconds(50)),
+            bar(Paint::OFF, 100, 300, seconds(50)),
             format!(
                 "  {}{} 100/300 calls · 33% · 50s · about 1m40s left",
                 "█".repeat(10),
@@ -654,7 +700,7 @@ mod tests {
             )
         );
         assert_eq!(
-            bar(300, 300, seconds(150)),
+            bar(Paint::OFF, 300, 300, seconds(150)),
             format!("  {} 300/300 calls · 100% · 2m30s", "█".repeat(30))
         );
     }
