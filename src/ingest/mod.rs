@@ -607,6 +607,14 @@ mod tests {
             ],
             false,
         );
+        // Another fork relabels its copy with its own ID and records where it came from.
+        let mut relabelled = recorded("old", 1, "zz-fork");
+        relabelled["forkedFrom"] = json!({"sessionId": "z-original"});
+        write(
+            &projects.join("zz-fork.jsonl"),
+            &[relabelled, recorded("newer", 1, "zz-fork")],
+            false,
+        );
         // A subagent copied under the fork still belongs to the original.
         write(
             &projects.join("a-fork/subagents/agent-1.jsonl"),
@@ -621,6 +629,7 @@ mod tests {
             |id: &str| -> Vec<&str> { find(id).usage.iter().map(|u| u.id.as_str()).collect() };
         assert_eq!(ids("z-original"), ["old"]);
         assert_eq!(ids("a-fork"), ["new"]);
+        assert_eq!(ids("zz-fork"), ["newer"]);
         let parent = find("agent-1").parent.as_ref().map(|p| p.id.as_str());
         assert_eq!(parent, Some("z-original"));
     }

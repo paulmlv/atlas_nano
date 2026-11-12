@@ -276,15 +276,19 @@ pub(super) fn parse(path: &Path, records: &[Value]) -> (Session, Option<Version>
     let mut model = String::new();
     let mut turn_models: HashMap<&str, &str> = HashMap::new();
     let mut unknown_model: Vec<(usize, &str)> = Vec::new(); // responses read before their turn's model
+    let mut finished: HashSet<&str> = HashSet::new();
     let mut totals = &null;
     let mut seen: HashSet<&str> = HashSet::new();
     let mut tools: HashSet<&str> = HashSet::new();
     let mut goals: HashSet<i64> = HashSet::new();
     let mut typed_goals: Vec<String> = Vec::new();
-    // Newer clients record each response's usage; older ones only a running total.
-    let per_response = records
+    // Newer clients record each response's usage; older ones only a running total. A rollout
+    // resumed by a newer client holds both kinds, so the choice is made per turn.
+    let per_response: HashSet<&str> = records
         .iter()
-        .any(|record| record["type"] == "token_usage_record");
+        .filter(|record| record["type"] == "token_usage_record")
+        .filter_map(|record| record["payload"]["turn_id"].as_str())
+        .collect();
     for (line, record) in (0u64..).zip(records) {
         let position = record["ordinal"].as_u64().unwrap_or(line);
         let timestamp = record["timestamp"].as_str().unwrap_or_default();
@@ -338,6 +342,9 @@ pub(super) fn parse(path: &Path, records: &[Value]) -> (Session, Option<Version>
                 }
             }
             ("event_msg", "task_started" | "task_complete" | "turn_aborted") => {
+                if subtype != "task_started" {
+                    finished.extend(payload["turn_id"].as_str());
+                }
                 let done = subtype == "task_complete" && payload["error"].is_null();
                 let active = event_run == run;
                 if subtype == "task_started" {
@@ -374,7 +381,9 @@ pub(super) fn parse(path: &Path, records: &[Value]) -> (Session, Option<Version>
                     session.usage.push(reported);
                 }
             }
-            ("event_msg", "token_count") if !per_response => {
+            ("event_msg", "token_count")
+                if turn.as_deref().is_none_or(|id| !per_response.contains(id)) =>
+            {
                 // A changed running total within a turn marks a new request. The turn and total
                 // identify it; a fork's copy keeps both but not the timestamp.
                 let info = &payload["info"];
@@ -489,8 +498,13 @@ pub(super) fn parse(path: &Path, records: &[Value]) -> (Session, Option<Version>
         }
     }
     for (index, turn) in unknown_model {
-        if let Some(name) = turn_models.get(turn) {
-            session.usage[index].model = name.to_string();
+        match turn_models.get(turn) {
+            Some(name) => session.usage[index].model = name.to_string(),
+            // A finished turn with no context of its own, such as a compaction, ran on the model
+            // then current.
+            None if finished.contains(turn) => {}
+            // An unfinished one may yet record another model: leave it unpriced, not stale.
+            None => session.usage[index].model.clear(),
         }
     }
     (session.started, session.ended) = span.bounds();
@@ -684,6 +698,49 @@ mod tests {
         ];
         let (session, _) = parse(&path(), &records);
         assert_eq!(session.usage[0].model, "gpt-6.1-sol");
+    }
+
+    #[test]
+    fn a_resumed_rollout_counts_its_older_turns_from_the_running_total() {
+        let records = [
+            json!({"type": "turn_context", "payload": {"turn_id": "t1", "model": "gpt-6-luna"}}),
+            event("task_started", 1, json!({})),
+            user("u1", 2, "Old turn", true),
+            tokens(3, 100, 7),
+            event("task_complete", 4, json!({})),
+            json!({"type": "turn_context", "payload": {"turn_id": "t2", "model": "gpt-6-luna"}}),
+            event("task_started", 5, json!({"turn_id": "t2"})),
+            user("u2", 6, "New turn", true),
+            json!({"type": "token_usage_record", "timestamp": "2026-01-01T00:00:07Z",
+                "payload": {"turn_id": "t2", "response_id": "resp_b", "usage": {}}}),
+            event(
+                "token_count",
+                7,
+                json!({"turn_id": "t2", "info": {
+                "last_token_usage": {"input_tokens": 1}, "total_token_usage": {"input_tokens": 101}}}),
+            ),
+        ];
+        let (session, _) = parse(&path(), &records);
+        let ids: Vec<_> = session.usage.iter().map(|u| u.id.as_str()).collect();
+        assert_eq!(ids, ["t1:100:7", "resp_b"]);
+    }
+
+    #[test]
+    fn a_turn_without_a_model_keeps_the_current_one_only_once_finished() {
+        let response = |turn: &str, id: &str| {
+            json!({"type": "token_usage_record", "timestamp": "2026-01-01T00:00:02Z",
+                "payload": {"turn_id": turn, "response_id": id, "usage": {}}})
+        };
+        // A compaction turn finishes without a turn_context; the last turn has not finished.
+        let records = [
+            json!({"type": "turn_context", "payload": {"turn_id": "t0", "model": "gpt-6-luna"}}),
+            response("compact", "resp_a"),
+            event("task_complete", 3, json!({"turn_id": "compact"})),
+            response("t1", "resp_b"),
+        ];
+        let (session, _) = parse(&path(), &records);
+        let models: Vec<_> = session.usage.iter().map(|u| u.model.as_str()).collect();
+        assert_eq!(models, ["gpt-6-luna", ""]);
     }
 
     #[test]

@@ -222,7 +222,11 @@ fn usage(record: &Value, at: chrono::DateTime<chrono::Utc>) -> Option<Usage> {
         .unwrap_or(0);
     Some(Usage {
         id: reply["id"].as_str()?.to_string(),
-        owner: record["sessionId"].as_str().map(str::to_string),
+        // A fork can relabel a copied record with its own ID but keeps where it came from.
+        owner: record["forkedFrom"]["sessionId"]
+            .as_str()
+            .or_else(|| record["sessionId"].as_str())
+            .map(str::to_string),
         at,
         model: reply["model"].as_str().unwrap_or_default().to_string(),
         fast: reported["speed"].as_str() == Some("fast"),
