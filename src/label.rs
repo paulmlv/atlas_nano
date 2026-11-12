@@ -320,6 +320,7 @@ pub fn label(
         .is_ok_and(|value| !["", "0", "false"].contains(&value.trim().to_lowercase().as_str()));
     let budget = budget(client, &settings.model, &instructions, capped);
     let version = taxonomy.version();
+    let schema_text = schema.to_string();
 
     // A run with nothing to call costs nothing.
     let mut summary = Labeling {
@@ -357,11 +358,15 @@ pub fn label(
             .iter()
             .map(|chunk| format!("{header}<conversation>\n{chunk}\n</conversation>\n"))
             .collect();
+        // Everything sent besides the conversation is in the key, so changing it relabels.
         let mut parts = vec![
             version.as_str(),
             settings.client.as_str(),
             settings.model.as_str(),
             config.unit.as_str(),
+            instructions.as_str(),
+            schema_text.as_str(),
+            labeler::CODEX_INSTRUCTIONS,
         ];
         parts.push(if settings.pull_requests {
             "prs"

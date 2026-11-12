@@ -37,7 +37,7 @@ const CODEX_DISABLED: [&str; 18] = [
     "workspace_dependencies",
     "collaboration_modes",
 ];
-const CODEX_INSTRUCTIONS: &str =
+pub const CODEX_INSTRUCTIONS: &str =
     "You classify conversations. Answer only with the requested JSON.\n";
 
 /// Everything a call needs besides the conversation.
