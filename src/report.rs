@@ -4,8 +4,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 
 use chrono::{DateTime, Duration, Local, Utc};
-use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::{Decimal, RoundingStrategy};
 
 use crate::account::{Cost, Tokens, Totals};
 use crate::label::Labeling;
@@ -46,8 +46,11 @@ pub struct Report<'a> {
     pub paint: Paint,
 }
 
+/// Halves round up, as people expect of a price: $0.125 is $0.13, not $0.12.
+const HALF_UP: RoundingStrategy = RoundingStrategy::MidpointAwayFromZero;
+
 fn money(amount: Decimal) -> String {
-    let cents = amount.round_dp(2).to_string();
+    let cents = amount.round_dp_with_strategy(2, HALF_UP).to_string();
     let (whole, fraction) = cents.split_once('.').unwrap_or((&cents, "00"));
     let mut grouped = String::new();
     for (n, digit) in whole.chars().enumerate() {
@@ -63,7 +66,8 @@ fn share(part: Decimal, whole: Decimal) -> String {
     if whole.is_zero() {
         return "-".to_string();
     }
-    format!("{}%", (part * Decimal::from(100) / whole).round())
+    let percent = part * Decimal::from(100) / whole;
+    format!("{}%", percent.round_dp_with_strategy(0, HALF_UP))
 }
 
 fn count(tokens: u64) -> String {
@@ -723,5 +727,12 @@ mod tests {
             assert_ne!(colored, render(Paint::OFF));
             assert_eq!(paint::strip(&colored), render(Paint::OFF));
         }
+    }
+
+    #[test]
+    fn rounds_halves_up() {
+        assert_eq!(money(Decimal::new(125, 3)), "$0.13");
+        assert_eq!(money(Decimal::new(1_234_565, 3)), "$1,234.57");
+        assert_eq!(share(Decimal::new(25, 1), Decimal::from(100)), "3%");
     }
 }

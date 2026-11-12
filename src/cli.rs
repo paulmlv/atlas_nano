@@ -46,6 +46,9 @@ pub struct RunArgs {
 /// Which sessions a run covers, by when their conversation started.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Period {
+    /// The last 24 hours.
+    #[value(name = "1d")]
+    Day1,
     /// The last 168 hours.
     #[value(name = "7d")]
     Days7,
@@ -95,6 +98,11 @@ mod tests {
         assert!(run.no_label);
         assert!(run.confirm);
         assert_eq!(run.csv, Some(PathBuf::from("out.csv")));
+    }
+
+    #[test]
+    fn run_reads_one_day() {
+        assert_eq!(run_args(&["--period", "1d"]).period, Period::Day1);
     }
 
     #[test]

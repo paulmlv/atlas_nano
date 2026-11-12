@@ -245,6 +245,22 @@ fn clock(time: Duration) -> String {
     }
 }
 
+/// Whether `ANTHROPIC_API_KEY` is exported, which Claude Code bills before a subscription.
+fn api_key() -> bool {
+    std::env::var_os("ANTHROPIC_API_KEY").is_some_and(|key| !key.is_empty())
+}
+
+/// The billing note for `client`'s calls: a warning when they are a real charge, else a quiet aside.
+pub fn billing_note(paint: Paint, client: Client) -> String {
+    let api_key = api_key();
+    let note = billing(client, api_key);
+    if api_key && client == Client::Claude {
+        format!("{} {note}", paint.tone(Tone::Warning, "warning:"))
+    } else {
+        paint.dim(note)
+    }
+}
+
 /// Who pays for the calls. Claude Code bills an exported `ANTHROPIC_API_KEY` before a subscription.
 fn billing(client: Client, api_key: bool) -> &'static str {
     match client {
@@ -460,14 +476,7 @@ pub fn label(
     });
     eprintln!("  {characters} characters to send, roughly {tokens} tokens, {cost}");
     if !pending.is_empty() {
-        let api_key = std::env::var_os("ANTHROPIC_API_KEY").is_some_and(|key| !key.is_empty());
-        let note = billing(client, api_key);
-        // A real charge is a warning; the subscription note is a quiet aside.
-        if api_key && client == Client::Claude {
-            eprintln!("  {} {note}", paint.tone(Tone::Warning, "warning:"));
-        } else {
-            eprintln!("  {}", paint.dim(note));
-        }
+        eprintln!("  {}", billing_note(paint, client));
     }
     if confirm && !pending.is_empty() {
         eprint!("{} {} ", paint.bold("Proceed?"), paint.dim("(y / n) [n]"));

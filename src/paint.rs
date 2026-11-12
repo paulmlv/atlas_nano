@@ -176,11 +176,26 @@ impl Paint {
 }
 
 /// Text from a transcript or folder name, with control characters, such as terminal escape codes,
-/// replaced so they show as data and cannot act on the terminal.
+/// and text-direction marks replaced so they show as data and cannot act on the terminal or reorder
+/// what it shows.
 fn printable(text: &str) -> String {
     text.chars()
-        .map(|c| if c.is_control() { '\u{fffd}' } else { c })
+        .map(|c| {
+            if c.is_control() || reorders(c) {
+                '\u{fffd}'
+            } else {
+                c
+            }
+        })
         .collect()
+}
+
+/// The marks that change the direction text shows in: embeddings, overrides, and isolates.
+fn reorders(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+    )
 }
 
 /// The width of `text` on screen, leaving out color codes.
@@ -241,6 +256,7 @@ mod tests {
     fn shows_control_characters_as_data() {
         let soft = Paint::colored(Theme::Soft);
         assert_eq!(Paint::OFF.dim("a\u{1b}[2Jb"), "a\u{fffd}[2Jb");
+        assert_eq!(Paint::OFF.dim("file\u{202e}txt.exe"), "file\u{fffd}txt.exe");
         assert_eq!(soft.tone(Tone::Plain, "a\u{1b}[2Jb"), "a\u{fffd}[2Jb");
         assert_eq!(
             soft.tone(Tone::Money, "\u{7}"),

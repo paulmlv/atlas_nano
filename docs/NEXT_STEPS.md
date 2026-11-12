@@ -12,7 +12,7 @@ built.
 
 ## To decide
 
-- How many labeling calls run at once by default. It is 16, which has not been measured against each
+- How many labeling calls run at once by default. It is 32, which has not been measured against each
   client's rate limits.
 - Whether a `run` flag may override a configured value for one run.
 - Whether users can supply their own taxonomy.
