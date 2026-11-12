@@ -3,8 +3,9 @@
 `atlas-nano` is one binary for macOS and Linux with two commands. It reads only local files and
 makes no network request of its own. Labeling goes through the installed Claude Code or Codex client
 the user is signed in to: on a subscription it counts against the plan's usage limits and is not
-billed as API calls, and every dollar figure is what the API would cost, not a charge. Both commands
-say so.
+billed as API calls, and every dollar figure is what the API would cost, not a charge. The exception
+is an exported `ANTHROPIC_API_KEY`: Claude Code bills that key, and its dollar figures are charges.
+Both commands say which applies before any call.
 
 ## `atlas-nano configure`
 

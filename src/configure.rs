@@ -5,6 +5,7 @@ use std::io::{self, BufRead as _, Write as _};
 
 use crate::config::{self, Config, Labeler as Settings, labeling_model};
 use crate::ingest::FOLDERS;
+use crate::label;
 use crate::labeler::{self, Failure, Labeler};
 use crate::model::Client;
 use crate::prompt::Prompt;
@@ -179,10 +180,10 @@ pub fn configure() -> Result<(), String> {
             one => vec![config::client(one)?],
         },
     };
-    println!(
-        "Labeling goes through the Claude Code or Codex client you are signed in to. On a \
-         subscription it counts against your plan's usage limits and is not billed as API calls."
-    );
+    // Said before the test calls, which an exported API key pays for like any other.
+    for &client in &installed {
+        println!("{}", label::billing(client, label::api_key()));
+    }
     // Each client labels with one model for now: Claude Code when it is installed, otherwise Codex.
     let offered: Vec<String> = installed
         .iter()

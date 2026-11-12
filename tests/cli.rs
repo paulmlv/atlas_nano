@@ -154,7 +154,7 @@ fn configure_then_run_labels_reports_and_reuses_the_cache() {
     assert!(said.contains("reading Claude Code sessions, the only ones on this computer"));
     assert!(said.contains("(y / n) [n]"));
     assert!(said.contains("please answer a whole number of at least 1"));
-    assert!(said.contains("is not billed as API calls"));
+    assert!(said.contains("signed-in Claude Code client") && said.contains("not a charge"));
     assert!(said.contains("anthropic/claude-haiku-5-5 labels, through the only client installed"));
     assert!(said.contains("test call with claude-haiku-5-5: Writing code / Frontend and UI"));
     assert!(
