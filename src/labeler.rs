@@ -266,6 +266,8 @@ impl Labeler<'_> {
 
     fn claude(&self, prompt: &str, spent: &mut Spent) -> Result<Answer, Failure> {
         let mut command = Command::new("claude");
+        // Without this, an `@path` in the conversation makes Claude Code attach that file.
+        command.env("CLAUDE_CODE_DISABLE_ATTACHMENTS", "1");
         command.current_dir(self.folder).args([
             "-p",
             "--model",

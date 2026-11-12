@@ -155,7 +155,7 @@ Every labeling call must use these flags, and no others that add context. Config
 small labeling call per installed client with them and fails if the call is rejected.
 
 ```sh
-claude -p --model <model> --effort medium --no-session-persistence \
+CLAUDE_CODE_DISABLE_ATTACHMENTS=1 claude -p --model <model> --effort medium --no-session-persistence \
   --system-prompt "<labeling instructions>" --tools "" --strict-mcp-config \
   --disable-slash-commands --setting-sources "" \
   --output-format json --json-schema '<answer schema>'
@@ -175,3 +175,5 @@ codex exec -m <model> -c model_reasoning_effort='"medium"' --ephemeral \
 ```
 
 Both run from an empty working directory with the conversation on standard input.
+`CLAUDE_CODE_DISABLE_ATTACHMENTS=1` stops Claude Code from attaching a file named by an `@path` in
+the conversation.
