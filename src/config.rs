@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::model::Client;
+use crate::paint::Theme;
 
 /// Which client makes the labeling calls, and how.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,6 +32,8 @@ pub struct Config {
     pub unit: String,
     /// The clients whose sessions are read: `claude`, `codex`, or both.
     pub coverage: Vec<String>,
+    /// The color theme of the output.
+    pub theme: Theme,
     pub labeler: Labeler,
 }
 
@@ -146,6 +149,7 @@ pub mod tests {
         Config {
             unit: "conversation".to_string(),
             coverage: vec!["claude".to_string(), "codex".to_string()],
+            theme: Theme::Soft,
             labeler: Labeler {
                 client: "claude".to_string(),
                 model: "claude-haiku-5-5".to_string(),
@@ -164,6 +168,7 @@ pub mod tests {
         assert!(Config::decode(&saved.replace("\"codex\"]", "\"cursor\"]")).is_err());
         assert!(Config::decode(&saved.replace("conversation", "turn")).is_err());
         assert!(Config::decode(&saved.replace("jobs = 16", "jobs = 0")).is_err());
+        assert!(Config::decode(&saved.replace("\"soft\"", "\"neon\"")).is_err());
         // Each client labels with one model: Haiku through Claude Code, Luna through Codex.
         assert!(Config::decode(&saved.replace("claude-haiku-5-5", "claude-opus-5-5")).is_err());
         let luna = saved.replace("claude-haiku-5-5", "gpt-6-luna");

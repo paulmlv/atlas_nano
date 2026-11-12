@@ -141,9 +141,9 @@ fn configure_then_run_labels_reports_and_reuses_the_cache() {
     assert!(text(&cancelled.stderr).contains("nothing was saved"));
     assert!(!sandbox.root.join("config/atlas-nano/config.toml").exists());
 
-    // Blank answers take the defaults: tool calls kept, no pull requests, and, once 0 is refused, 32
-    // calls at once.
-    let configured = sandbox.answer(&["configure"], "\n\n0\n\n");
+    // Blank answers take the defaults: tool calls kept, no pull requests, once 0 is refused 32 calls
+    // at once, and the minimal theme.
+    let configured = sandbox.answer(&["configure"], "\n\n0\n\n\n");
     let said = text(&configured.stdout);
     assert!(
         configured.status.success(),
@@ -163,6 +163,7 @@ fn configure_then_run_labels_reports_and_reuses_the_cache() {
     );
     let saved = fs::read_to_string(sandbox.root.join("config/atlas-nano/config.toml")).unwrap();
     assert!(saved.contains("coverage = [\"claude\"]"));
+    assert!(saved.contains("theme = \"minimal\""));
     assert!(saved.contains("jobs = 32"));
     assert_eq!(sandbox.calls(), 1);
 

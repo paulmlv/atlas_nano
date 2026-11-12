@@ -12,6 +12,7 @@ use crate::config::{self, Config};
 use crate::ingest;
 use crate::label;
 use crate::model::Session;
+use crate::paint::{Paint, Tone};
 use crate::place::{self, Place};
 use crate::prices::PriceTable;
 use crate::report::{Report, Row};
@@ -44,8 +45,12 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
     let home = config::home()?;
     let loaded = ingest::load(&home, &config.clients()?);
     // Paths are quoted with escapes, so a file name cannot send control characters to the terminal.
+    let errors = Paint::stderr(config.theme);
     for (path, error) in &loaded.unreadable {
-        eprintln!("warning: could not read {path:?}: {error}");
+        eprintln!(
+            "{} could not read {path:?}: {error}",
+            errors.tone(Tone::Warning, "warning:")
+        );
     }
     let sessions = loaded.sessions;
     let roots = account::roots(&sessions);
@@ -100,11 +105,12 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
         labeling: outcome.as_ref().map(|outcome| outcome.summary.clone()),
         pull_requests: outcome.is_some() && config.labeler.pull_requests,
         prices: &prices,
+        paint: Paint::stdout(config.theme),
     };
     // The CSV is written first, so a reader that closes the report early, like `head`, loses none of it.
     if let Some(path) = &args.csv {
         fs::write(path, report.csv()).map_err(|error| format!("{}: {error}", path.display()))?;
-        eprintln!("wrote {}", path.display());
+        eprintln!("{} {}", errors.tone(Tone::Done, "wrote"), path.display());
     }
     match io::stdout().lock().write_all(report.render().as_bytes()) {
         Err(error) if error.kind() != io::ErrorKind::BrokenPipe => Err(error.to_string()),

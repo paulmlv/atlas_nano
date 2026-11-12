@@ -7,6 +7,11 @@ billed as API calls, and every dollar figure is what the API would cost, not a c
 is an exported `ANTHROPIC_API_KEY`: Claude Code bills that key, and its dollar figures are charges.
 Both commands say which applies before any call.
 
+Output to a terminal is in color, in the theme chosen in `configure`. Output to a file or a pipe is
+plain text, and so is any output when `NO_COLOR` is set to a non-empty value, `CLICOLOR` is `0`, or
+`TERM` is `dumb` or unset. A non-empty `CLICOLOR_FORCE` turns color on, even for a pipe. These are
+the rules clap follows for its help. Plain output has no escape codes at all.
+
 ## `atlas-nano configure`
 
 Asks its questions on the terminal and saves the answers to `~/.config/atlas-nano/config.toml`, or
@@ -20,8 +25,11 @@ not asked. `codex` covers Codex and ChatGPT desktop sessions, and `claude` Claud
   installed, or whose version lacks its no-save flag, is skipped. With neither usable, configuration
   fails.
 - **Settings:** the unit (conversation), the coverage (Claude Code, Codex, or both), the labeling
-  model, the no-tools mode, the experimental pull request mapping, and how many labeling calls run
-  at once (32 by default; asked again until it is a whole number of at least 1).
+  model, the no-tools mode, the experimental pull request mapping, how many labeling calls run at
+  once (32 by default; asked again until it is a whole number of at least 1), and the color theme.
+- **Theme:** `minimal` (the default) uses bold, dim, and the terminal's own colors, so it suits any
+  background. `soft` has muted blue headings and sage money; `warm` has amber headings and bars.
+  Both use fixed 256-color shades. On a terminal, each theme is previewed before the question.
 - **Labeling model:** `anthropic/claude-haiku-5-5` through Claude Code, or `openai/gpt-6-luna`
   through Codex. With one client installed, its model labels and the question is not asked. No other
   model is accepted, in `configure` or in the saved file.

@@ -8,6 +8,7 @@ use crate::ingest::FOLDERS;
 use crate::label;
 use crate::labeler::{self, Failure, Labeler};
 use crate::model::Client;
+use crate::paint::{Paint, Theme, Tone};
 use crate::prompt::Prompt;
 use crate::taxonomy::Taxonomy;
 
@@ -34,7 +35,13 @@ fn label(client: Client) -> &'static str {
 /// An empty answer takes the default. The end of input cancels, so nothing is saved: a closed or
 /// empty input never stands for the defaults.
 fn ask(question: &str, hint: &str, default: &str) -> Result<String, String> {
-    print!("{question} ({hint}) [{default}] ");
+    let paint = Paint::stdout(Theme::default());
+    print!(
+        "{} {} {} ",
+        paint.bold(question),
+        paint.dim(&format!("({hint})")),
+        paint.tone(Tone::Accent, &format!("[{default}]"))
+    );
     io::stdout().flush().map_err(|error| error.to_string())?;
     let mut reply = String::new();
     let read = io::stdin()
@@ -70,7 +77,11 @@ fn choose(question: &str, options: &[&str], default: &str) -> Result<String, Str
         if options.contains(&reply.as_str()) {
             return Ok(reply);
         }
-        println!("  please answer one of: {}", options.join(", "));
+        let hint = format!("please answer one of: {}", options.join(", "));
+        println!(
+            "  {}",
+            Paint::stdout(Theme::default()).tone(Tone::Warning, &hint)
+        );
     }
 }
 
@@ -94,7 +105,7 @@ pub fn provider_warning(coverage: &[Client], labeler: Client) -> Option<String> 
 }
 
 /// Run one small labeling call with the required flags; only a rejected call is an error.
-fn test_call(client: Client, model: &str) -> Result<(), String> {
+fn test_call(paint: Paint, client: Client, model: &str) -> Result<(), String> {
     let folder = config::cache_folder()?.join(format!("configure-{}", std::process::id()));
     fs::create_dir_all(&folder).map_err(|error| format!("{}: {error}", folder.display()))?;
     let taxonomy = Taxonomy::built_in();
@@ -111,14 +122,18 @@ fn test_call(client: Client, model: &str) -> Result<(), String> {
     let _ = fs::remove_dir_all(&folder);
     match result.answer {
         Ok(answer) => {
+            let answer = format!("{} / {}", answer.work, answer.topic);
             println!(
-                "  test call with {model}: {} / {}",
-                answer.work, answer.topic
+                "  {} {}",
+                paint.dim(&format!("test call with {model}:")),
+                paint.tone(Tone::Done, &answer)
             );
             Ok(())
         }
         Err(Failure::Invalid(reason)) => {
-            println!("  test call with {model} ran, but its answer was not usable: {reason}");
+            let note =
+                format!("test call with {model} ran, but its answer was not usable: {reason}");
+            println!("  {}", paint.tone(Tone::Warning, &note));
             Ok(())
         }
         Err(Failure::Rejected(reason)) => {
@@ -129,17 +144,30 @@ fn test_call(client: Client, model: &str) -> Result<(), String> {
 
 pub fn configure() -> Result<(), String> {
     let home = config::home()?;
+    let mut paint = Paint::stdout(Theme::default());
     let mut installed = Vec::new();
     for client in [Client::Claude, Client::Codex] {
         let name = format!("{} ({})", client.name(), label(client));
         match labeler::no_save_support(client) {
-            Err(_) => println!("{name}: not installed, skipped"),
+            Err(_) => println!(
+                "{} {}",
+                paint.bold(&format!("{name}:")),
+                paint.dim("not installed, skipped")
+            ),
             Ok(false) => println!(
-                "{name}: installed, but this version cannot run a call without saving it; \
-                 skipped until it is updated"
+                "{} {}",
+                paint.bold(&format!("{name}:")),
+                paint.dim(
+                    "installed, but this version cannot run a call without saving it; \
+                     skipped until it is updated"
+                )
             ),
             Ok(true) => {
-                println!("{name}: installed");
+                println!(
+                    "{} {}",
+                    paint.bold(&format!("{name}:")),
+                    paint.tone(Tone::Done, "installed")
+                );
                 installed.push(client);
             }
         }
@@ -182,7 +210,7 @@ pub fn configure() -> Result<(), String> {
     };
     // Said before the test calls, which an exported API key pays for like any other.
     for &client in &installed {
-        println!("{}", label::billing(client, label::api_key()));
+        println!("{}", label::billing_note(paint, client));
     }
     // Each client labels with one model for now: Claude Code when it is installed, otherwise Codex.
     let offered: Vec<String> = installed
@@ -205,7 +233,7 @@ pub fn configure() -> Result<(), String> {
     };
     // Warned before any call or save, so the user can stop here and choose again.
     if let Some(warning) = provider_warning(&covered, client) {
-        println!("{warning}");
+        println!("{}", paint.tone(Tone::Warning, &warning));
     }
     let tools = !yes(
         "Leave tool calls out of what is sent (no-tools mode)?",
@@ -215,16 +243,36 @@ pub fn configure() -> Result<(), String> {
     let jobs = loop {
         match ask("How many labeling calls at once?", "a whole number", "32")?.parse::<usize>() {
             Ok(jobs) if jobs > 0 => break jobs,
-            _ => println!("  please answer a whole number of at least 1"),
+            _ => println!(
+                "  {}",
+                paint.tone(Tone::Warning, "please answer a whole number of at least 1")
+            ),
         }
     };
+    // Without colors there is nothing to preview.
+    if paint.is_on() {
+        for theme in Theme::ALL {
+            println!("  {:<8} {}", theme.name(), paint.with(theme).sample());
+        }
+    }
+    let names = Theme::ALL.map(Theme::name);
+    let chosen = choose("Which color theme?", &names, Theme::default().name())?;
+    let theme = Theme::ALL[names
+        .iter()
+        .position(|name| *name == chosen)
+        .expect("offered")];
+    paint = paint.with(theme);
 
     // Only the labeler's call must work; another client's failure is reported and not used.
-    println!("testing a labeling call for each installed client");
+    println!(
+        "{}",
+        paint.dim("testing a labeling call for each installed client")
+    );
     for &tested in &installed {
-        match test_call(tested, labeling_model(tested)) {
+        match test_call(paint, tested, labeling_model(tested)) {
             Err(error) if tested != client => {
-                println!("  warning: {error}; it does not label, so configuration goes on");
+                let note = format!("warning: {error}; it does not label, so configuration goes on");
+                println!("  {}", paint.tone(Tone::Warning, &note));
             }
             result => result?,
         }
@@ -235,6 +283,7 @@ pub fn configure() -> Result<(), String> {
             .iter()
             .map(|client| client.name().to_string())
             .collect(),
+        theme,
         labeler: Settings {
             client: client.name().to_string(),
             model: labeling_model(client).to_string(),
@@ -246,7 +295,7 @@ pub fn configure() -> Result<(), String> {
     // Decode what will be saved, so a setting `run` would refuse is refused here.
     let config = Config::decode(&config.encode())?;
     let path = config.save()?;
-    println!("saved {}", path.display());
+    println!("{} {}", paint.tone(Tone::Done, "saved"), path.display());
     Ok(())
 }
 
