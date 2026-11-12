@@ -5,7 +5,8 @@ What Atlas Nano assumes about the clients' files, and why.
 ## A session stored in several files is read from the longest copy
 
 A session's key is its client and its file name without `.jsonl` or `.zst`. When several files share
-a key, `ingest::load` keeps the copy with the most records and ignores the others.
+a key, `ingest::load` keeps the copy with the most valid records and ignores the others. Malformed
+lines do not count, so a damaged copy cannot displace a good one.
 
 Claude Code writes the same session to more than one file in two cases:
 
@@ -13,7 +14,8 @@ Claude Code writes the same session to more than one file in two cases:
   folders, for example a worktree's and the main repository's, as when a chat is resumed from
   another folder.
 - **A subagent under several parent chats.** The same `subagents/agent-<id>.jsonl` sits under two
-  or three sessions, as when a chat is resumed or forked with its subagents.
+  or three sessions, as when a chat is resumed or forked with its subagents. Whichever copy is
+  kept, the subagent belongs to the session its records name in `sessionId`.
 
 Codex was not seen writing duplicates.
 

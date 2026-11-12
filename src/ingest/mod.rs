@@ -121,9 +121,9 @@ pub struct Loaded {
 
 /// Read every session of the covered clients beneath `home`.
 ///
-/// A session found in several files is read from the copy with the most records. A fork's text
-/// starts with the history it inherited, and each model request stays only in the session that
-/// started first among those holding a copy of it.
+/// A session found in several files is read from the copy with the most valid records. A fork's
+/// text starts with the history it inherited, and each model request stays only in the session
+/// recorded with it, or else the one that started first, among those holding a copy of it.
 pub fn load(home: &Path, clients: &[Client]) -> Loaded {
     let mut files = Vec::new();
     let mut unreadable = Vec::new();
@@ -142,7 +142,9 @@ pub fn load(home: &Path, clients: &[Client]) -> Loaded {
                     Client::Claude => (claude::parse(path, &records), None),
                     Client::Codex => codex::parse(path, &records),
                 };
-                (records.len(), parsed)
+                // Malformed lines keep their place for fork cutoffs but do not make a copy longer.
+                let valid = records.iter().filter(|record| !record.is_null()).count();
+                (valid, parsed)
             })
         })
         .collect();
@@ -508,6 +510,25 @@ mod tests {
             assert_eq!(session.usage.len(), 1);
             assert_eq!(session.usage[0].id, own_request);
         }
+    }
+
+    #[test]
+    fn a_copy_with_more_valid_records_wins_over_a_malformed_one() {
+        let home = home("malformed-copy");
+        let projects = home.join(".claude/projects");
+        write(
+            &projects.join("p/chat.jsonl"),
+            &[reply("m1", 1), reply("m2", 2)],
+            false,
+        );
+        let malformed = format!("{}\nnot json\nnot json\nnot json\n", reply("m1", 1));
+        fs::create_dir_all(projects.join("q")).unwrap();
+        fs::write(projects.join("q/chat.jsonl"), malformed).unwrap();
+
+        let sessions = load(&home, &[Client::Claude]).sessions;
+        fs::remove_dir_all(&home).unwrap();
+        let ids: Vec<_> = sessions[0].usage.iter().map(|u| u.id.as_str()).collect();
+        assert_eq!(ids, ["m1", "m2"]);
     }
 
     #[test]
