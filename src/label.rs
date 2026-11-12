@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 
 use crate::config::{self, Config};
 use crate::labeler::{self, Answer, Call, Failure, Labeler};
-use crate::model::{Client, Kind, Label, PullRequest, Session, Usage};
+use crate::model::{Client, Kind, Label, PrRole, PullRequest, Session, Usage};
 use crate::paint::{Paint, Tone};
 use crate::prices::PriceTable;
 use crate::taxonomy::Taxonomy;
@@ -136,7 +136,7 @@ fn stored(entry: &Value) -> Option<Label> {
     let prs = entry["prs"].as_array()?.iter().filter_map(|pr| {
         Some(PullRequest {
             url: pr["url"].as_str()?.to_string(),
-            role: pr["role"].as_str()?.to_string(),
+            role: PrRole::from_name(pr["role"].as_str()?)?,
         })
     });
     Some(Label {
@@ -152,7 +152,7 @@ fn store(file: &Mutex<Option<fs::File>>, key: &str, label: &Label) {
     let prs: Vec<Value> = label
         .prs
         .iter()
-        .map(|pr| json!({"url": pr.url, "role": pr.role}))
+        .map(|pr| json!({"url": pr.url, "role": pr.role.name()}))
         .collect();
     let entry = json!({
         "key": key, "work": label.work, "topic": label.topic, "prs": prs, "model": label.model,
@@ -322,9 +322,11 @@ pub fn label(
         let header = if settings.pull_requests {
             let url = match session.client {
                 Client::Codex => session.repository.clone(),
-                Client::Claude => {
-                    Some(repository(&session.cwd, &mut remotes)).filter(|url| !url.is_empty())
-                }
+                Client::Claude => session
+                    .cwd
+                    .as_deref()
+                    .map(|cwd| repository(cwd, &mut remotes))
+                    .filter(|url| !url.is_empty()),
             };
             format!(
                 "Session repository: {}\nSession branch: {}\n\n",
@@ -633,7 +635,7 @@ mod tests {
                 .into_iter()
                 .map(|(url, role)| PullRequest {
                     url: url.into(),
-                    role: role.into(),
+                    role: PrRole::from_name(role).unwrap(),
                 })
                 .collect(),
         }
@@ -680,7 +682,7 @@ mod tests {
         let prs: Vec<(&str, &str)> = label
             .prs
             .iter()
-            .map(|pr| (pr.url.as_str(), pr.role.as_str()))
+            .map(|pr| (pr.url.as_str(), pr.role.name()))
             .collect();
         assert_eq!(prs, [("u1", "Reviewed"), ("u2", "Contributed to")]);
         assert!(!label.from_cache);

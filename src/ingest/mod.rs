@@ -198,7 +198,7 @@ fn link_scratchpads(sessions: &mut [Session]) {
     let links: Vec<(usize, String)> = (0..sessions.len())
         .filter(|&n| sessions[n].kind == Kind::Primary && sessions[n].parent.is_none())
         .filter_map(|n| {
-            let owner = *claude.get(scratchpad_owner(&sessions[n].cwd)?)?;
+            let owner = *claude.get(scratchpad_owner(sessions[n].cwd.as_deref()?)?)?;
             (owner != n).then(|| (n, sessions[owner].id.clone()))
         })
         .collect();
@@ -325,7 +325,7 @@ mod tests {
         let in_folder = |id: &str, client: Client, cwd: &str| {
             let mut chat = session(id, Kind::Primary, None, 2);
             chat.client = client;
-            chat.cwd = cwd.to_string();
+            chat.cwd = Some(cwd.to_string());
             chat
         };
         let scratchpad = "/private/tmp/claude-501/-Code-app/owner/scratchpad";

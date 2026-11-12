@@ -83,8 +83,9 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
         )?)
     };
     // A session starts where its root chat did; each starting folder is placed once.
+    // A session with no recorded folder is placed as unknown.
     let starts: Vec<&str> = (0..sessions.len())
-        .map(|n| sessions[roots[n]].cwd.as_str())
+        .map(|n| sessions[roots[n]].cwd.as_deref().unwrap_or_default())
         .collect();
     let mut places: HashMap<&str, Place> = HashMap::new();
     for n in (0..sessions.len()).filter(|&n| covered[n]) {

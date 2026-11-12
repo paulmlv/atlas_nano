@@ -1,12 +1,12 @@
 //! Accounting: which sessions a run covers and what each one cost.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::AddAssign;
 
 use chrono::{DateTime, Duration, Utc};
 use rust_decimal::Decimal;
 
-use crate::model::{Kind, Session};
+use crate::model::{Kind, Session, SessionRef};
 use crate::prices::PriceTable;
 
 /// Token counts by billed category; `cache_write` holds both five-minute and one-hour writes.
@@ -97,21 +97,20 @@ impl Totals {
 
 /// Map each session to the chat the user started that it descends from, itself if it is one.
 ///
-/// A session whose parent was not loaded is its own root.
+/// A session whose parent was not loaded is its own root. A loop of parents, which valid records
+/// never form, ends at the first session it repeats.
 pub fn roots(sessions: &[Session]) -> Vec<usize> {
-    let index: HashMap<(_, &str), usize> = sessions
+    let index: HashMap<SessionRef, usize> = sessions
         .iter()
         .enumerate()
-        .map(|(n, session)| ((session.client, session.id.as_str()), n))
+        .map(|(n, session)| (session.reference(), n))
         .collect();
     (0..sessions.len())
         .map(|mut n| {
-            for _ in 0..64 {
+            let mut seen = HashSet::new();
+            while seen.insert(n) {
                 let session = &sessions[n];
-                let parent = session
-                    .parent
-                    .as_ref()
-                    .and_then(|parent| index.get(&(parent.client, parent.id.as_str())));
+                let parent = session.parent.as_ref().and_then(|parent| index.get(parent));
                 match parent {
                     Some(&parent) if session.kind != Kind::Primary => n = parent,
                     _ => break,
@@ -158,7 +157,7 @@ pub mod tests {
                 id: id.to_string(),
             }),
             kind,
-            cwd: "/work/app".to_string(),
+            cwd: Some("/work/app".to_string()),
             title: None,
             repository: None,
             branch: None,
@@ -223,6 +222,29 @@ pub mod tests {
                 .iter()
                 .all(|&covered| covered)
         );
+    }
+
+    #[test]
+    fn a_long_chain_reaches_its_chat_and_a_loop_ends() {
+        let mut sessions = vec![session("chat", Kind::Primary, None, 1)];
+        for n in 1..100 {
+            let parent = if n == 1 {
+                "chat".to_string()
+            } else {
+                format!("agent-{}", n - 1)
+            };
+            sessions.push(session(
+                &format!("agent-{n}"),
+                Kind::Subagent,
+                Some(&parent),
+                1,
+            ));
+        }
+        sessions.push(session("a", Kind::Subagent, Some("b"), 1));
+        sessions.push(session("b", Kind::Subagent, Some("a"), 1));
+        let roots = roots(&sessions);
+        assert!(roots[..100].iter().all(|&root| root == 0));
+        assert_eq!(roots[100..], [100, 101]);
     }
 
     #[test]

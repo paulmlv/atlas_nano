@@ -21,8 +21,6 @@ const UNLABELED: &str = "Unlabeled";
 const REVIEWS: &str = "Automatic reviews";
 const NO_REPO: &str = "(no repo)";
 /// The roles through which a conversation's cost goes to a pull request.
-const WORKED_ON: [&str; 2] = ["Contributed to", "Reviewed"];
-
 /// One session in the report, with its cost, its label, and the chat it descends from.
 pub struct Row<'a> {
     pub session: &'a Session,
@@ -281,7 +279,7 @@ fn pull_requests(rows: &[Row]) -> Vec<(String, u64, Decimal, bool)> {
             .label
             .iter()
             .flat_map(|label| &label.prs)
-            .filter(|pr| WORKED_ON.contains(&pr.role.as_str()))
+            .filter(|pr| pr.role.worked_on())
             .map(|pr| pr.url.as_str())
             .collect();
         for url in &worked {
@@ -647,7 +645,10 @@ impl Report<'_> {
                 label(|label| label.work.clone()),
                 label(|label| label.topic.clone()),
                 label(|label| {
-                    let prs = label.prs.iter().map(|pr| format!("{}={}", pr.role, pr.url));
+                    let prs = label
+                        .prs
+                        .iter()
+                        .map(|pr| format!("{}={}", pr.role.name(), pr.url));
                     prs.collect::<Vec<_>>().join("; ")
                 }),
                 label(|label| label.model.clone()),
