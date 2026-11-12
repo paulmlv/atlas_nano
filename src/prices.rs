@@ -174,6 +174,7 @@ mod tests {
     fn usage(model: &str, input: u64) -> Usage {
         Usage {
             id: String::new(),
+            owner: None,
             at: Utc::now(),
             model: model.to_string(),
             fast: false,
@@ -258,6 +259,8 @@ mod tests {
         for (model, input, cache_write, expected) in [
             ("gpt-6.1-terra", 122_000, 50_000, "0.2395"),
             ("gpt-6.1-terra", 122_001, 50_000, "0.454002"),
+            ("gpt-5.6-terra", 122_000, 50_000, "0.509"),
+            ("gpt-5.6-terra", 122_001, 50_000, "0.958004"),
             ("gpt-5.4", 172_000, 0, "0.605"),
             ("gpt-5.4", 172_001, 0, "1.135005"),
             ("codex-auto-review", 172_001, 0, "1.135005"),
