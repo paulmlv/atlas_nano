@@ -43,19 +43,20 @@ fn fixed_tokens(client: Client) -> u64 {
 /// The context window assumed for a labeling model, in tokens.
 ///
 /// Codex lists 272K for its GPT-6 models; Claude Haiku has accepted prompts above 500K tokens through
-/// Claude Code. Any other model gets a conservative 200K.
-fn window(client: Client, model: &str) -> usize {
+/// Claude Code, unless `capped`: Claude Code's 1M context is turned off. Any other model gets a
+/// conservative 200K.
+fn window(client: Client, model: &str, capped: bool) -> usize {
     match client {
         Client::Codex if model.starts_with("gpt-6") => 272_000,
-        Client::Claude if model.starts_with("claude-haiku") => 500_000,
+        Client::Claude if model.starts_with("claude-haiku") && !capped => 500_000,
         _ => 200_000,
     }
 }
 
 /// The bytes of conversation one call may carry: 80% of the window, less the fixed context.
-fn budget(client: Client, model: &str, instructions: &str) -> usize {
+fn budget(client: Client, model: &str, instructions: &str, capped: bool) -> usize {
     let fixed = usize::try_from(fixed_tokens(client)).unwrap_or(usize::MAX);
-    let tokens = (window(client, model) * 4 / 5)
+    let tokens = (window(client, model, capped) * 4 / 5)
         .saturating_sub(fixed)
         .saturating_sub(instructions.len() / CHUNK_CHARS_PER_TOKEN);
     tokens * CHUNK_CHARS_PER_TOKEN
@@ -314,7 +315,10 @@ pub fn label(
     let client = config::client(&settings.client)?;
     let instructions = labeler::instructions(taxonomy, settings.pull_requests);
     let schema = labeler::schema(taxonomy, settings.pull_requests);
-    let budget = budget(client, &settings.model, &instructions);
+    // Claude Code caps its window at 200K when this is set to anything but 0 or false.
+    let capped = std::env::var("CLAUDE_CODE_DISABLE_1M_CONTEXT")
+        .is_ok_and(|value| !["", "0", "false"].contains(&value.trim().to_lowercase().as_str()));
+    let budget = budget(client, &settings.model, &instructions, capped);
     let version = taxonomy.version();
 
     // A run with nothing to call costs nothing.
@@ -740,13 +744,21 @@ mod tests {
     #[test]
     fn the_budget_leaves_a_fifth_of_the_window_and_the_fixed_context() {
         assert_eq!(
-            budget(Client::Codex, "gpt-6-luna", ""),
+            budget(Client::Codex, "gpt-6-luna", "", false),
             (217_600 - 5_430) * 2
         );
         assert_eq!(
-            budget(Client::Claude, "claude-haiku-5-5", &"x".repeat(2_000)),
+            budget(
+                Client::Claude,
+                "claude-haiku-5-5",
+                &"x".repeat(2_000),
+                false
+            ),
             (400_000 - 1_425 - 1_000) * 2
         );
-        assert_eq!(window(Client::Claude, "something-else"), 200_000);
+        assert_eq!(window(Client::Claude, "something-else", false), 200_000);
+        // With Claude Code's 1M context off, Haiku gets 200K.
+        assert_eq!(window(Client::Claude, "claude-haiku-5-5", true), 200_000);
+        assert_eq!(window(Client::Codex, "gpt-6-luna", true), 272_000);
     }
 }
