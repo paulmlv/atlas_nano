@@ -115,6 +115,11 @@ fn is_turn(text: &str) -> bool {
 fn usage(record: &Value, at: chrono::DateTime<chrono::Utc>) -> Option<Usage> {
     let reply = &record["message"];
     let reported = reply.get("usage")?;
+    // Without its input and output counts the usage was not read, so the session is flagged.
+    let (input, output) = (
+        reported["input_tokens"].as_u64()?,
+        reported["output_tokens"].as_u64()?,
+    );
     let count = |name: &str| reported[name].as_u64().unwrap_or(0);
     let hour = reported["cache_creation"]["ephemeral_1h_input_tokens"]
         .as_u64()
@@ -129,11 +134,11 @@ fn usage(record: &Value, at: chrono::DateTime<chrono::Utc>) -> Option<Usage> {
         at,
         model: reply["model"].as_str().unwrap_or_default().to_string(),
         fast: reported["speed"].as_str() == Some("fast"),
-        input: count("input_tokens"),
+        input,
         cached: count("cache_read_input_tokens"),
         cache_write: count("cache_creation_input_tokens").saturating_sub(hour),
         cache_write_1h: hour,
-        output: count("output_tokens"),
+        output,
     })
 }
 

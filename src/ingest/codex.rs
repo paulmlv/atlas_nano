@@ -91,6 +91,11 @@ fn request(text: &str) -> String {
 
 /// One model response's usage, from Codex's token counts and an ID that a fork's copy keeps.
 fn usage(id: String, counts: &Value, timestamp: &str, model: &str) -> Option<Usage> {
+    // Without its input and output counts the usage was not read, so the session is flagged.
+    let (input, output) = (
+        counts["input_tokens"].as_u64()?,
+        counts["output_tokens"].as_u64()?,
+    );
     let count = |name: &str| counts[name].as_u64().unwrap_or(0);
     let (cached, cache_write) = (
         count("cached_input_tokens"),
@@ -102,11 +107,11 @@ fn usage(id: String, counts: &Value, timestamp: &str, model: &str) -> Option<Usa
         at: time(timestamp)?,
         model: model.to_string(),
         fast: false,
-        input: count("input_tokens").saturating_sub(cached + cache_write),
+        input: input.saturating_sub(cached + cache_write),
         cached,
         cache_write,
         cache_write_1h: 0,
-        output: count("output_tokens"),
+        output,
     })
 }
 
@@ -620,7 +625,7 @@ mod tests {
             json!({"type": "turn_context", "payload": {"turn_id": "t0", "model": "gpt-6-luna"}}),
             event("task_started", 1, json!({})),
             json!({"type": "token_usage_record", "timestamp": "2026-01-01T00:00:02Z",
-                "payload": {"turn_id": "t1", "response_id": "resp_a", "usage": {}}}),
+                "payload": {"turn_id": "t1", "response_id": "resp_a", "usage": {"input_tokens": 0, "output_tokens": 0}}}),
             json!({"type": "turn_context", "payload": {"turn_id": "t1", "model": "gpt-6.1-sol"}}),
         ];
         let (session, _) = parse(&path(), &records);
@@ -639,12 +644,12 @@ mod tests {
             event("task_started", 5, json!({"turn_id": "t2"})),
             user("u2", 6, "New turn", true),
             json!({"type": "token_usage_record", "timestamp": "2026-01-01T00:00:07Z",
-                "payload": {"turn_id": "t2", "response_id": "resp_b", "usage": {}}}),
+                "payload": {"turn_id": "t2", "response_id": "resp_b", "usage": {"input_tokens": 0, "output_tokens": 0}}}),
             event(
                 "token_count",
                 7,
                 json!({"turn_id": "t2", "info": {
-                "last_token_usage": {"input_tokens": 1}, "total_token_usage": {"input_tokens": 101}}}),
+                "last_token_usage": {"input_tokens": 1, "output_tokens": 0}, "total_token_usage": {"input_tokens": 101}}}),
             ),
         ];
         let (session, _) = parse(&path(), &records);
@@ -656,7 +661,7 @@ mod tests {
     fn a_turn_without_a_model_keeps_the_current_one_only_once_finished() {
         let response = |turn: &str, id: &str| {
             json!({"type": "token_usage_record", "timestamp": "2026-01-01T00:00:02Z",
-                "payload": {"turn_id": turn, "response_id": id, "usage": {}}})
+                "payload": {"turn_id": turn, "response_id": id, "usage": {"input_tokens": 0, "output_tokens": 0}}})
         };
         // A compaction turn finishes without a turn_context; the last turn has not finished.
         let records = [

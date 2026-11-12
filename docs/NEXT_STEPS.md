@@ -58,8 +58,11 @@ review also settles:
 - Codex code reviews run with `codex exec` (seen in versions 0.166 and 0.167) record no usage, so
   their spend is missing and the run warns. The commands they run appear only in `item_completed`
   events, so they are not counted as tool calls either.
-- The missing-usage warning looks at whole conversations: one with some replies priced and others
-  not is not flagged.
+- The missing-usage warning looks at whole sessions: one where some replies have usage and others
+  do not is not flagged. It also needs some replies to be read: a session whose replies and usage
+  both moved to records Atlas Nano does not read gets no warning.
+- Codex rollouts migrated by Codex 0.149 can carry their messages and replies only in
+  `item_completed` events, which are not read, so such a session has no text to label.
 - A Codex thread edited into several rollouts is one conversation per rollout.
 
 ## Later

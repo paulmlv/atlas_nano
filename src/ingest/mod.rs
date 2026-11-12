@@ -171,8 +171,8 @@ pub fn load(home: &Path, clients: &[Client]) -> Loaded {
         .filter_map(|key| Some(longest.remove(key)?.1))
         .unzip();
     codex::link_parents(&mut sessions, &versions);
-    // Before each request is kept once and forks inherit history, so only a session's own copy
-    // of its records counts: a fork's copied requests are still its own here.
+    // Flag before requests are kept once and forks inherit history: a Claude fork's copied usage
+    // still counts as its own, and a Codex fork's inherited replies do not.
     for session in &mut sessions {
         session.usage_missing = session.usage.is_empty()
             && session
@@ -721,20 +721,25 @@ mod tests {
     fn flags_the_sessions_with_replies_but_no_usage() {
         let home = home("usage-missing");
         let projects = home.join(".claude/projects/p");
-        let said = |text: &str| {
-            json!({"type": "assistant", "uuid": text,
-            "timestamp": "2026-01-01T00:00:01Z",
-            "message": {"id": text, "content": [{"type": "text", "text": text}]}})
-        };
-        let mut priced = reply("m1", 1);
-        priced["message"]["content"] = json!([{"type": "text", "text": "hi"}]);
-        write(&projects.join("priced.jsonl"), &[priced], false);
-        write(&projects.join("unpriced.jsonl"), &[said("hi")], false);
+        let mut answer = reply("m1", 1);
+        answer["sessionId"] = json!("with_usage");
+        answer["message"]["content"] = json!([{"type": "text", "text": "hi"}]);
+        let mut no_usage = answer.clone();
+        no_usage["message"].as_object_mut().unwrap().remove("usage");
+        let mut renamed = answer.clone();
+        renamed["message"]["usage"] = json!({"input": 1, "output": 1});
+        write(&projects.join("with_usage.jsonl"), &[answer.clone()], false);
+        write(&projects.join("no_usage.jsonl"), &[no_usage], false);
+        write(&projects.join("renamed.jsonl"), &[renamed], false);
         write(
             &projects.join("asked.jsonl"),
             &[json!({"type": "user", "message": {"content": "hi"}})],
             false,
         );
+        // A fork with no reply of its own: its copied request goes to the parent when each request
+        // is kept once, but the copy still counts as its usage.
+        write(&projects.join("fork.jsonl"), &[answer], false);
+
         let rollout = |thread: u8| {
             home.join(format!(
                 ".codex/sessions/rollout-2026-01-01T00-00-00-00000037-0205-7016-8024-00000000000{thread}.jsonl"
@@ -743,10 +748,20 @@ mod tests {
         let message = json!({"type": "response_item", "timestamp": "2026-01-01T00:00:01Z",
             "payload": {"type": "message", "role": "assistant",
                 "content": [{"type": "output_text", "text": "hi"}]}});
-        let record = json!({"type": "token_usage_record", "timestamp": "2026-01-01T00:00:01Z",
-            "payload": {"response_id": "r1", "usage": {"input_tokens": 1, "output_tokens": 1}}});
-        write(&rollout(1), &[message.clone(), record], false);
-        write(&rollout(2), &[message], false);
+        let record = |usage: Value| {
+            json!({"type": "token_usage_record", "timestamp": "2026-01-01T00:00:01Z",
+                "payload": {"response_id": "r1", "usage": usage}})
+        };
+        let counts = json!({"input_tokens": 1, "output_tokens": 1});
+        write(&rollout(1), &[message.clone(), record(counts)], false);
+        write(&rollout(2), std::slice::from_ref(&message), false);
+        let renamed = json!({"input": 1, "output": 1});
+        write(&rollout(3), &[message, record(renamed)], false);
+        // A fork with no reply of its own inherits its base's replies but not their usage.
+        let thread = "00000037-0205-7016-8024-000000000001";
+        let forked = json!({"type": "session_meta", "payload": {
+            "history_base": {"thread_id": thread, "end_ordinal_exclusive": 1}}});
+        write(&rollout(4), &[forked], false);
 
         let loaded = load(&home, &[Client::Claude, Client::Codex]);
         fs::remove_dir_all(&home).unwrap();
@@ -760,8 +775,10 @@ mod tests {
         assert_eq!(
             flagged,
             [
-                "claude:unpriced",
-                "codex:00000037-0205-7016-8024-000000000002"
+                "claude:no_usage",
+                "claude:renamed",
+                "codex:00000037-0205-7016-8024-000000000002",
+                "codex:00000037-0205-7016-8024-000000000003"
             ]
         );
     }

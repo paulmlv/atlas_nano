@@ -65,7 +65,7 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
             .count();
         if missing > 0 {
             eprintln!(
-                "{} {missing} {name} chat(s) have replies but no usage Atlas Nano could read, so \
+                "{} {missing} {name} session(s) have replies but no usage Atlas Nano could read, so \
                  their spend is missing from this report",
                 errors.tone(Tone::Warning, "warning:")
             );
