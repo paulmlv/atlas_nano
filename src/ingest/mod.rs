@@ -13,7 +13,7 @@ use chrono::{DateTime, Utc};
 use rayon::prelude::*;
 use serde_json::Value;
 
-use crate::model::{Client, Item, Kind, Session, SessionRef, Usage};
+use crate::model::{Client, Item, Kind, Role, Session, SessionRef, Usage};
 
 /// The folders each client keeps its sessions in, relative to the user's home.
 pub const FOLDERS: [(Client, &str); 3] = [
@@ -171,6 +171,15 @@ pub fn load(home: &Path, clients: &[Client]) -> Loaded {
         .filter_map(|key| Some(longest.remove(key)?.1))
         .unzip();
     codex::link_parents(&mut sessions, &versions);
+    // Flag before requests are kept once and forks inherit history: a Claude fork's copied usage
+    // still counts as its own, and a Codex fork's inherited replies do not.
+    for session in &mut sessions {
+        session.usage_missing = session.usage.is_empty()
+            && session
+                .items
+                .iter()
+                .any(|item| matches!(item.role, Role::Assistant | Role::Tool));
+    }
     count_requests_once(&mut sessions);
     inherit_history(&mut sessions);
     link_scratchpads(&mut sessions);
@@ -706,6 +715,72 @@ mod tests {
             assert_eq!(roots[child], index(parent));
             assert_eq!(included[child], in_period);
         }
+    }
+
+    #[test]
+    fn flags_the_sessions_with_replies_but_no_usage() {
+        let home = home("usage-missing");
+        let projects = home.join(".claude/projects/p");
+        let mut answer = reply("m1", 1);
+        answer["sessionId"] = json!("with_usage");
+        answer["message"]["content"] = json!([{"type": "text", "text": "hi"}]);
+        let mut no_usage = answer.clone();
+        no_usage["message"].as_object_mut().unwrap().remove("usage");
+        let mut renamed = answer.clone();
+        renamed["message"]["usage"] = json!({"input": 1, "output": 1});
+        write(&projects.join("with_usage.jsonl"), &[answer.clone()], false);
+        write(&projects.join("no_usage.jsonl"), &[no_usage], false);
+        write(&projects.join("renamed.jsonl"), &[renamed], false);
+        write(
+            &projects.join("asked.jsonl"),
+            &[json!({"type": "user", "message": {"content": "hi"}})],
+            false,
+        );
+        // A fork with no reply of its own: its copied request goes to the parent when each request
+        // is kept once, but the copy still counts as its usage.
+        write(&projects.join("fork.jsonl"), &[answer], false);
+
+        let rollout = |thread: u8| {
+            home.join(format!(
+                ".codex/sessions/rollout-2026-01-01T00-00-00-00000037-0205-7016-8024-00000000000{thread}.jsonl"
+            ))
+        };
+        let message = json!({"type": "response_item", "timestamp": "2026-01-01T00:00:01Z",
+            "payload": {"type": "message", "role": "assistant",
+                "content": [{"type": "output_text", "text": "hi"}]}});
+        let record = |usage: Value| {
+            json!({"type": "token_usage_record", "timestamp": "2026-01-01T00:00:01Z",
+                "payload": {"response_id": "r1", "usage": usage}})
+        };
+        let counts = json!({"input_tokens": 1, "output_tokens": 1});
+        write(&rollout(1), &[message.clone(), record(counts)], false);
+        write(&rollout(2), std::slice::from_ref(&message), false);
+        let renamed = json!({"input": 1, "output": 1});
+        write(&rollout(3), &[message, record(renamed)], false);
+        // A fork with no reply of its own inherits its base's replies but not their usage.
+        let thread = "00000037-0205-7016-8024-000000000001";
+        let forked = json!({"type": "session_meta", "payload": {
+            "history_base": {"thread_id": thread, "end_ordinal_exclusive": 1}}});
+        write(&rollout(4), &[forked], false);
+
+        let loaded = load(&home, &[Client::Claude, Client::Codex]);
+        fs::remove_dir_all(&home).unwrap();
+        let mut flagged: Vec<String> = loaded
+            .sessions
+            .iter()
+            .filter(|session| session.usage_missing)
+            .map(Session::key)
+            .collect();
+        flagged.sort();
+        assert_eq!(
+            flagged,
+            [
+                "claude:no_usage",
+                "claude:renamed",
+                "codex:00000037-0205-7016-8024-000000000002",
+                "codex:00000037-0205-7016-8024-000000000003"
+            ]
+        );
     }
 
     #[test]

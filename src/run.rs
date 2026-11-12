@@ -11,7 +11,7 @@ use crate::cli::{Period, RunArgs};
 use crate::config::{self, Config};
 use crate::ingest;
 use crate::label;
-use crate::model::Session;
+use crate::model::{Client, Session};
 use crate::paint::{Paint, Tone};
 use crate::place::{self, Place};
 use crate::prices::PriceTable;
@@ -58,6 +58,19 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
     let in_period = account::in_period(&sessions, &roots, cutoff);
     // The covered sessions' indexes, in order; a covered session's root is covered too.
     let covered: Vec<usize> = (0..sessions.len()).filter(|&n| in_period[n]).collect();
+    for (client, name) in [(Client::Claude, "Claude Code"), (Client::Codex, "Codex")] {
+        let missing = covered
+            .iter()
+            .filter(|&&n| sessions[n].client == client && sessions[n].usage_missing)
+            .count();
+        if missing > 0 {
+            eprintln!(
+                "{} {missing} {name} session(s) have replies but no usage Atlas Nano could read, so \
+                 their spend is missing from this report",
+                errors.tone(Tone::Warning, "warning:")
+            );
+        }
+    }
     let prices = PriceTable::built_in();
     let taxonomy = Taxonomy::built_in();
     let outcome = if args.no_label {
