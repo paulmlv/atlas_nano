@@ -1,0 +1,268 @@
+//! `atlas-nano configure`: detect the clients, ask for the settings, test a call, and save.
+
+use std::fs;
+use std::io::{self, BufRead as _, Write as _};
+
+use crate::config::{self, Config, Labeler as Settings, labeling_model};
+use crate::ingest::FOLDERS;
+use crate::label;
+use crate::labeler::{self, Failure, Labeler};
+use crate::model::Client;
+use crate::prompt::Prompt;
+use crate::taxonomy::Taxonomy;
+
+/// A client's labeling model as `provider/model`, with the model's API name.
+fn provider_model(client: Client) -> String {
+    let provider = if client == Client::Claude {
+        "anthropic"
+    } else {
+        "openai"
+    };
+    format!("{provider}/{}", labeling_model(client))
+}
+
+/// What a client's name covers, for messages.
+fn label(client: Client) -> &'static str {
+    match client {
+        Client::Claude => "Claude Code",
+        Client::Codex => "Codex/ChatGPT",
+    }
+}
+
+/// Ask a question on the terminal, showing what can be answered and the default in brackets.
+///
+/// An empty answer takes the default. The end of input cancels, so nothing is saved: a closed or
+/// empty input never stands for the defaults.
+fn ask(question: &str, hint: &str, default: &str) -> Result<String, String> {
+    print!("{question} ({hint}) [{default}] ");
+    io::stdout().flush().map_err(|error| error.to_string())?;
+    let mut reply = String::new();
+    let read = io::stdin()
+        .lock()
+        .read_line(&mut reply)
+        .map_err(|error| error.to_string())?;
+    if read == 0 {
+        println!();
+        return Err(
+            "configuration cancelled: the input ended before an answer; nothing was saved"
+                .to_string(),
+        );
+    }
+    let reply = reply.trim();
+    Ok(if reply.is_empty() {
+        default.to_string()
+    } else {
+        reply.to_string()
+    })
+}
+
+/// Ask until the answer is one of `options`; `yes` and `no` count as `y` and `n`.
+fn choose(question: &str, options: &[&str], default: &str) -> Result<String, String> {
+    loop {
+        let reply = match ask(question, &options.join(" / "), default)?
+            .to_lowercase()
+            .as_str()
+        {
+            "yes" => "y".to_string(),
+            "no" => "n".to_string(),
+            other => other.to_string(),
+        };
+        if options.contains(&reply.as_str()) {
+            return Ok(reply);
+        }
+        println!("  please answer one of: {}", options.join(", "));
+    }
+}
+
+fn yes(question: &str, default: bool) -> Result<bool, String> {
+    Ok(choose(question, &["y", "n"], if default { "y" } else { "n" })? == "y")
+}
+
+/// The warning when the labeler would read another provider's conversations, if it would.
+pub fn provider_warning(coverage: &[Client], labeler: Client) -> Option<String> {
+    let other = coverage.iter().find(|client| **client != labeler)?;
+    let provider = if labeler == Client::Claude {
+        "Anthropic"
+    } else {
+        "OpenAI"
+    };
+    Some(format!(
+        "warning: {} conversations will be sent to {provider}, because {} labels every session",
+        label(*other),
+        label(labeler)
+    ))
+}
+
+/// Run one small labeling call with the required flags; only a rejected call is an error.
+fn test_call(client: Client, model: &str) -> Result<(), String> {
+    let folder = config::cache_folder()?.join(format!("configure-{}", std::process::id()));
+    fs::create_dir_all(&folder).map_err(|error| format!("{}: {error}", folder.display()))?;
+    let taxonomy = Taxonomy::built_in();
+    let prompt = Prompt::new(&taxonomy, false);
+    let labeler = Labeler {
+        client,
+        model,
+        prompt: &prompt,
+        schema: labeler::schema(&taxonomy, false),
+        folder: &folder,
+    };
+    let text = "[user] What is the capital of France?\n\n[assistant] Paris.";
+    let result = labeler.call(&prompt.conversation("unknown", "unknown", text));
+    let _ = fs::remove_dir_all(&folder);
+    match result.answer {
+        Ok(answer) => {
+            println!(
+                "  test call with {model}: {} / {}",
+                answer.work, answer.topic
+            );
+            Ok(())
+        }
+        Err(Failure::Invalid(reason)) => {
+            println!("  test call with {model} ran, but its answer was not usable: {reason}");
+            Ok(())
+        }
+        Err(Failure::Rejected(reason)) => {
+            Err(format!("the test call with {model} was rejected: {reason}"))
+        }
+    }
+}
+
+pub fn configure() -> Result<(), String> {
+    let home = config::home()?;
+    let mut installed = Vec::new();
+    for client in [Client::Claude, Client::Codex] {
+        let name = format!("{} ({})", client.name(), label(client));
+        match labeler::no_save_support(client) {
+            Err(_) => println!("{name}: not installed, skipped"),
+            Ok(false) => println!(
+                "{name}: installed, but this version cannot run a call without saving it; \
+                 skipped until it is updated"
+            ),
+            Ok(true) => {
+                println!("{name}: installed");
+                installed.push(client);
+            }
+        }
+    }
+    if installed.is_empty() {
+        return Err(
+            "neither Claude Code nor Codex is installed in a version that can label".to_string(),
+        );
+    }
+    let recorded: Vec<Client> = [Client::Claude, Client::Codex]
+        .into_iter()
+        .filter(|client| {
+            FOLDERS
+                .iter()
+                .any(|(owner, folder)| owner == client && home.join(folder).is_dir())
+        })
+        .collect();
+    // A question with one possible answer is not asked.
+    let covered = match recorded[..] {
+        [] => {
+            return Err("no Claude Code or Codex sessions were found on this computer".to_string());
+        }
+        [only] => {
+            println!(
+                "reading {} sessions, the only ones on this computer",
+                label(only)
+            );
+            vec![only]
+        }
+        _ => match choose(
+            "Which sessions to read?",
+            &["claude", "codex", "both"],
+            "both",
+        )?
+        .as_str()
+        {
+            "both" => recorded.clone(),
+            one => vec![config::client(one)?],
+        },
+    };
+    // Said before the test calls, which an exported API key pays for like any other.
+    for &client in &installed {
+        println!("{}", label::billing(client, label::api_key()));
+    }
+    // Each client labels with one model for now: Claude Code when it is installed, otherwise Codex.
+    let offered: Vec<String> = installed
+        .iter()
+        .map(|&client| provider_model(client))
+        .collect();
+    let client = match installed[..] {
+        [only] => {
+            println!("{} labels, through the only client installed", offered[0]);
+            only
+        }
+        _ => {
+            let options: Vec<&str> = offered.iter().map(String::as_str).collect();
+            let chosen = choose("Which model labels?", &options, &offered[0])?;
+            installed[offered
+                .iter()
+                .position(|model| *model == chosen)
+                .expect("the choice was offered")]
+        }
+    };
+    // Warned before any call or save, so the user can stop here and choose again.
+    if let Some(warning) = provider_warning(&covered, client) {
+        println!("{warning}");
+    }
+    let tools = !yes(
+        "Leave tool calls out of what is sent (no-tools mode)?",
+        false,
+    )?;
+    let pull_requests = yes("Map conversations to pull requests (experimental)?", false)?;
+    let jobs = loop {
+        match ask("How many labeling calls at once?", "a whole number", "32")?.parse::<usize>() {
+            Ok(jobs) if jobs > 0 => break jobs,
+            _ => println!("  please answer a whole number of at least 1"),
+        }
+    };
+
+    // Only the labeler's call must work; another client's failure is reported and not used.
+    println!("testing a labeling call for each installed client");
+    for &tested in &installed {
+        match test_call(tested, labeling_model(tested)) {
+            Err(error) if tested != client => {
+                println!("  warning: {error}; it does not label, so configuration goes on");
+            }
+            result => result?,
+        }
+    }
+    let config = Config {
+        unit: "conversation".to_string(),
+        coverage: covered
+            .iter()
+            .map(|client| client.name().to_string())
+            .collect(),
+        labeler: Settings {
+            client: client.name().to_string(),
+            model: labeling_model(client).to_string(),
+            tools,
+            pull_requests,
+            jobs,
+        },
+    };
+    // Decode what will be saved, so a setting `run` would refuse is refused here.
+    let config = Config::decode(&config.encode())?;
+    let path = config.save()?;
+    println!("saved {}", path.display());
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn warns_only_when_another_providers_conversations_are_sent() {
+        let both = [Client::Claude, Client::Codex];
+        let warning = provider_warning(&both, Client::Claude).unwrap();
+        assert!(warning.contains("Codex/ChatGPT conversations will be sent to Anthropic"));
+        let warning = provider_warning(&both, Client::Codex).unwrap();
+        assert!(warning.contains("Claude Code conversations will be sent to OpenAI"));
+        assert_eq!(provider_warning(&[Client::Claude], Client::Claude), None);
+        assert_eq!(provider_model(Client::Claude), "anthropic/claude-haiku-5-5");
+        assert_eq!(provider_model(Client::Codex), "openai/gpt-6-luna");
+    }
+}

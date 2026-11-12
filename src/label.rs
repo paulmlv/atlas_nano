@@ -244,8 +244,13 @@ fn clock(time: Duration) -> String {
     }
 }
 
+/// Whether `ANTHROPIC_API_KEY` is exported, which Claude Code bills before a subscription.
+pub fn api_key() -> bool {
+    std::env::var_os("ANTHROPIC_API_KEY").is_some_and(|key| !key.is_empty())
+}
+
 /// Who pays for the calls. Claude Code bills an exported `ANTHROPIC_API_KEY` before a subscription.
-fn billing(client: Client, api_key: bool) -> &'static str {
+pub fn billing(client: Client, api_key: bool) -> &'static str {
     match client {
         Client::Claude if api_key => {
             "ANTHROPIC_API_KEY is set, so Claude Code bills these calls to that API key: the dollar \
@@ -444,8 +449,7 @@ pub fn label(
     });
     eprintln!("  {characters} characters to send, roughly {tokens} tokens, {cost}");
     if !pending.is_empty() {
-        let api_key = std::env::var_os("ANTHROPIC_API_KEY").is_some_and(|key| !key.is_empty());
-        eprintln!("  {}", billing(client, api_key));
+        eprintln!("  {}", billing(client, api_key()));
     }
     if confirm && !pending.is_empty() {
         eprint!("Proceed? (y / n) [n] ");
