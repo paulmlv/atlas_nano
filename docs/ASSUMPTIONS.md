@@ -8,9 +8,9 @@ When several files share a client and file name, `ingest::load` keeps the copy w
 records. Claude Code makes such copies when a chat is resumed from another folder, or forked with
 its subagents; a copied subagent still belongs to the session its records name.
 
-**Why it is safe:** every extra copy seen was identical to the longest or a prefix of it (24 of 861
-Claude Code sessions, none of 1,169 Codex sessions, November 2026). A shorter copy with records the
-longest lacks would lose them silently.
+**Why it is safe:** in a check in November 2026, every extra copy seen was identical to the longest
+or a prefix of it. Only Claude Code sessions had copies; Codex sessions had none. A shorter copy
+with records the longest lacks would lose them silently.
 
 ## A Codex child belongs to the latest version of its parent thread
 
