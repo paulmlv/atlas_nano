@@ -535,6 +535,23 @@ mod tests {
     }
 
     #[test]
+    fn manual_compaction_does_not_extend_the_previous_turn() {
+        let records = [
+            event("task_started", 0, json!({})),
+            user("u1", 1, "First request", true),
+            event("task_complete", 11, json!({})),
+            event("task_started", 50, json!({"turn_id": "compact"})),
+            event("task_complete", 52, json!({"turn_id": "compact"})),
+        ];
+        let (session, _) = parse(&path(), &records);
+        assert_eq!(session.turns.len(), 1);
+        assert_eq!(
+            session.turns[0].working,
+            Some(chrono::Duration::seconds(10))
+        );
+    }
+
+    #[test]
     fn names_kinds_parents_goals_and_shell_commands() {
         let records = [
             json!({"type": "session_meta", "payload": {"thread_source": "guardian_review",
