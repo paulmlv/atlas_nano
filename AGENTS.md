@@ -1,6 +1,7 @@
 # Working on Atlas Nano
 
-Atlas Nano labels and accounts for local Claude Code and Codex conversations from the command line.
+Atlas Nano labels and accounts for all local Claude Code and Codex conversations to give insight
+into AI spend.
 
 ## Development
 
