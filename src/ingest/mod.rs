@@ -4,7 +4,7 @@ mod claude;
 mod codex;
 mod timing;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -59,17 +59,48 @@ fn stem(path: &Path) -> String {
         .to_string()
 }
 
-/// Decode a JSON Lines file, which may be zstd-compressed. A line that is not JSON becomes `null`,
-/// so every record keeps its line's position, which fork cutoffs count by.
-fn read_jsonl(path: &Path) -> io::Result<Vec<Value>> {
+/// Decode a JSON Lines file, which may be zstd-compressed, and count its lines that are not JSON.
+/// Such a line, like a blank one, becomes `null`, so every record keeps its line's position, which
+/// fork cutoffs count by.
+fn read_jsonl(path: &Path) -> io::Result<(Vec<Value>, u64)> {
     let mut data = fs::read(path)?;
     if path.extension().is_some_and(|extension| extension == "zst") {
         data = zstd::decode_all(data.as_slice())?;
     }
-    Ok(data
+    let mut not_json = 0;
+    let records = data
         .split(|byte| *byte == b'\n')
-        .map(|line| serde_json::from_slice(line).unwrap_or(Value::Null))
-        .collect())
+        .map(|line| {
+            serde_json::from_slice(line).unwrap_or_else(|_| {
+                not_json += u64::from(!line.trim_ascii().is_empty());
+                Value::Null
+            })
+        })
+        .collect();
+    Ok((records, not_json))
+}
+
+/// The label `Loaded::unknown` counts lines that are not JSON under.
+pub const NOT_JSON: &str = "(not JSON)";
+
+/// Count a file's records of types its parser neither reads nor leaves out on purpose.
+fn count_unknown(
+    records: &[Value],
+    not_json: u64,
+    unknown: fn(&Value) -> Option<String>,
+) -> BTreeMap<String, u64> {
+    let mut counts = BTreeMap::new();
+    for label in records
+        .iter()
+        .filter(|record| !record.is_null())
+        .filter_map(unknown)
+    {
+        *counts.entry(label).or_default() += 1;
+    }
+    if not_json > 0 {
+        counts.insert(NOT_JSON.to_string(), not_json);
+    }
+    counts
 }
 
 /// List every transcript under `folder`, in path order.
@@ -109,6 +140,10 @@ pub struct Loaded {
     pub sessions: Vec<Session>,
     /// Files and folders that could not be read, with the reason.
     pub unreadable: Vec<(PathBuf, String)>,
+    /// Records of types Atlas Nano neither reads nor leaves out on purpose, by client and type,
+    /// counted in the copy each session is read from, with lines that are not JSON as `NOT_JSON`.
+    /// A count here can mean that a client changed its format and data is being missed.
+    pub unknown: BTreeMap<(Client, String), u64>,
 }
 
 /// Read every session of the covered clients beneath `home`.
@@ -129,43 +164,54 @@ pub fn load(home: &Path, clients: &[Client]) -> Loaded {
     let parsed: Vec<_> = files
         .par_iter()
         .map(|(client, path)| {
-            read_jsonl(path).map(|records| {
-                let session = match client {
-                    Client::Claude => claude::parse(path, &records),
-                    Client::Codex => codex::parse(path, &records),
+            read_jsonl(path).map(|(records, not_json)| {
+                let read = match client {
+                    Client::Claude => (
+                        claude::parse(path, &records),
+                        count_unknown(&records, not_json, claude::unknown),
+                    ),
+                    Client::Codex => (
+                        codex::parse(path, &records),
+                        count_unknown(&records, not_json, codex::unknown),
+                    ),
                 };
-                (records.len(), session)
+                (records.len(), read)
             })
         })
         .collect();
-    let mut longest: HashMap<String, (usize, Session)> = HashMap::new();
+    let mut longest = HashMap::new();
     let mut order = Vec::new();
     for ((_, path), result) in files.iter().zip(parsed) {
         match result {
             Err(error) => unreadable.push((path.clone(), error.to_string())),
-            Ok((length, session)) => {
-                let key = session.key();
+            Ok((length, read)) => {
+                let key = read.0.key();
                 match longest.get(&key) {
                     Some((best, _)) if *best >= length => {}
-                    Some(_) => drop(longest.insert(key, (length, session))),
+                    Some(_) => drop(longest.insert(key, (length, read))),
                     None => {
                         order.push(key.clone());
-                        longest.insert(key, (length, session));
+                        longest.insert(key, (length, read));
                     }
                 }
             }
         }
     }
-    let mut sessions: Vec<Session> = order
-        .iter()
-        .filter_map(|key| Some(longest.remove(key)?.1))
-        .collect();
+    let mut sessions = Vec::new();
+    let mut unknown = BTreeMap::new();
+    for (session, counts) in order.iter().filter_map(|key| Some(longest.remove(key)?.1)) {
+        for (label, count) in counts {
+            *unknown.entry((session.client, label)).or_default() += count;
+        }
+        sessions.push(session);
+    }
     count_requests_once(&mut sessions);
     inherit_history(&mut sessions);
     link_scratchpads(&mut sessions);
     Loaded {
         sessions,
         unreadable,
+        unknown,
     }
 }
 
@@ -435,8 +481,43 @@ mod tests {
             (Kind::Subagent, Some("first"))
         );
         assert!(loaded.unreadable.is_empty());
+        assert!(loaded.unknown.is_empty());
         assert_eq!(load(&home, &[Client::Codex]).sessions.len(), 1);
         fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn counts_unknown_records_and_lines_that_are_not_json_in_the_copy_read() {
+        let home = home("unknown");
+        let projects = home.join(".claude/projects/p");
+        let new = json!({"type": "new-record"});
+        let chat = projects.join("chat.jsonl");
+        write(&chat, &[reply("m1", 1), new.clone(), new.clone()], false);
+        let mut file = fs::OpenOptions::new().append(true).open(&chat).unwrap();
+        file.write_all(b"{\"type\": \"cut off\n\n").unwrap();
+        // A shorter copy of the same session is not read, so its records do not count.
+        write(&projects.join("copy/chat.jsonl"), &[new], false);
+        let rollout = "rollout-2026-01-01T00-00-00-00000037-0205-7016-8024-000000000001.jsonl";
+        write(
+            &home.join(".codex/sessions").join(rollout),
+            &[
+                json!({"type": "session_meta", "payload": {}}),
+                json!({"type": "event_msg", "payload": {"type": "new_event"}}),
+            ],
+            false,
+        );
+
+        let loaded = load(&home, &[Client::Claude, Client::Codex]);
+        fs::remove_dir_all(&home).unwrap();
+        let unknown = |client, label: &str, count| ((client, label.to_string()), count);
+        assert_eq!(
+            loaded.unknown,
+            BTreeMap::from([
+                unknown(Client::Claude, NOT_JSON, 1),
+                unknown(Client::Claude, "new-record", 2),
+                unknown(Client::Codex, "event_msg/new_event", 1),
+            ])
+        );
     }
 
     #[test]
