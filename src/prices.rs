@@ -254,7 +254,7 @@ mod tests {
     }
 
     #[test]
-    fn the_built_in_table_prices_terra_and_long_gpt_5_4_requests() {
+    fn the_built_in_table_prices_codex_requests() {
         let table = PriceTable::built_in();
         for (model, input, cache_write, expected) in [
             ("gpt-6.1-terra", 122_000, 50_000, "0.2395"),
@@ -264,6 +264,8 @@ mod tests {
             ("gpt-5.4", 172_000, 0, "0.605"),
             ("gpt-5.4", 172_001, 0, "1.135005"),
             ("codex-auto-review", 172_001, 0, "1.135005"),
+            ("gpt-6-cyber", 122_000, 50_000, "4.89"),
+            ("gpt-6-cyber", 122_001, 50_000, "9.28004"),
         ] {
             let request = Usage {
                 cached: 100_000,
@@ -282,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn the_built_in_table_prices_the_current_claude_models() {
+    fn the_built_in_table_prices_claude_models() {
         let table = PriceTable::built_in();
         // 100,000 tokens each of input, cached, five-minute write, one-hour write, and output.
         let cost = |model| {
@@ -298,5 +300,10 @@ mod tests {
         };
         assert_eq!(cost("claude-fable-5-2"), Decimal::from_str("7.42").ok());
         assert_eq!(cost("claude-sonnet-5-5"), Decimal::from_str("1.86").ok());
+        assert_eq!(cost("claude-fable-5"), Decimal::from_str("9.35").ok());
+        assert_eq!(cost("claude-opus-5"), Decimal::from_str("4.675").ok());
+        // Aliases take their target's rates.
+        assert_eq!(cost("claude-mythos-5"), Decimal::from_str("9.35").ok());
+        assert_eq!(cost("claude-opus-4-8"), Decimal::from_str("4.675").ok());
     }
 }
