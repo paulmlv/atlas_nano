@@ -220,6 +220,7 @@ pub mod tests {
                 },
             ],
             history_base: None,
+            usage_missing: false,
         }
     }
 

@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # One weekly PR for all Rust crates.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo:
+        patterns: ["*"]
+
+  # One weekly PR for the pinned GitHub Actions, keeping their SHAs current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]

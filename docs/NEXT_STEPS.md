@@ -55,6 +55,14 @@ review also settles:
 - Every run reads every session file, which takes a few seconds on a large history. An index of
   parsed sessions would make a short period faster.
 - Claude Code sessions recorded only in its typed history, with no transcript, are not read.
+- Codex code reviews run with `codex exec` (seen in versions 0.166 and 0.167) record no usage, so
+  their spend is missing and the run warns. The commands they run appear only in `item_completed`
+  events, so they are not counted as tool calls either.
+- The missing-usage warning looks at whole sessions: one where some replies have usage and others
+  do not is not flagged. It also needs some replies to be read: a session whose replies and usage
+  both moved to records Atlas Nano does not read gets no warning.
+- Codex rollouts migrated by Codex 0.149 can carry their messages and replies only in
+  `item_completed` events, which are not read, so such a session has no text to label.
 - A Codex thread edited into several rollouts is one conversation per rollout.
 
 ## Later
@@ -64,3 +72,5 @@ review also settles:
 - A stripping mode that sends each tool's name and the first 100 characters of its input.
 - Passing the parent's label as a hint when labeling a subagent with a thin task prompt.
 - A price override file, for models the built-in table does not price.
+- A check against Claude Code's own cost total, its `cost-state` records, to catch spend that is
+  missed or priced wrong.

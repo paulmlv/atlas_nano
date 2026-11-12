@@ -242,4 +242,25 @@ fn configure_then_run_labels_reports_and_reuses_the_cache() {
     assert!(!unlabeled.contains("By type of work") && !unlabeled.contains("Labeling run"));
     assert!(unlabeled.contains("By project"));
     assert_eq!(sandbox.calls(), 9);
+
+    // A reply with no usage warns, but only in a period that covers it.
+    sandbox.session(
+        "no-usage",
+        "A request whose usage was not recorded",
+        24 * 30,
+    );
+    let file = sandbox.root.join("home/.claude/projects/p/no-usage.jsonl");
+    let lines = fs::read_to_string(&file)
+        .unwrap()
+        .replace("\"usage\"", "\"moved\"");
+    fs::write(&file, lines).unwrap();
+    let recent = text(&sandbox.run(&["run", "--no-label"]).stderr);
+    assert!(!recent.contains("have replies but no usage"), "{recent}");
+    let all = text(
+        &sandbox
+            .run(&["run", "--no-label", "--period", "all"])
+            .stderr,
+    );
+    let missing = "1 Claude Code session(s) have replies but no usage";
+    assert!(all.contains(missing), "{all}");
 }
