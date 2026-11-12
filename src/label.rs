@@ -18,6 +18,7 @@ use crate::config::{self, Config};
 use crate::labeler::{self, Answer, Call, Failure, Labeler};
 use crate::model::{Client, Kind, Label, PullRequest, Session, Usage};
 use crate::prices::PriceTable;
+use crate::prompt::Prompt;
 use crate::taxonomy::Taxonomy;
 use crate::text;
 
@@ -313,12 +314,12 @@ pub fn label(
 ) -> Result<Outcome, String> {
     let settings = &config.labeler;
     let client = config::client(&settings.client)?;
-    let instructions = labeler::instructions(taxonomy, settings.pull_requests);
+    let prompt = Prompt::new(taxonomy, settings.pull_requests);
     let schema = labeler::schema(taxonomy, settings.pull_requests);
     // Claude Code caps its window at 200K when this is set to anything but 0 or false.
     let capped = std::env::var("CLAUDE_CODE_DISABLE_1M_CONTEXT")
         .is_ok_and(|value| !["", "0", "false"].contains(&value.trim().to_lowercase().as_str()));
-    let budget = budget(client, &settings.model, &instructions, capped);
+    let budget = budget(client, &settings.model, &prompt.instructions, capped);
     let version = taxonomy.version();
     let schema_text = schema.to_string();
 
@@ -339,24 +340,18 @@ pub fn label(
             summary.unlabeled += 1;
             continue;
         }
-        let header = if settings.pull_requests {
-            let url = match session.client {
-                Client::Codex => session.repository.clone(),
-                Client::Claude => {
-                    Some(repository(&session.cwd, &mut remotes)).filter(|url| !url.is_empty())
-                }
-            };
-            format!(
-                "Session repository: {}\nSession branch: {}\n\n",
-                url.map_or("unknown".to_string(), |url| without_credentials(&url)),
-                session.branch.as_deref().unwrap_or("unknown")
-            )
-        } else {
-            String::new()
+        let url = match session.client {
+            Client::Codex => session.repository.clone(),
+            Client::Claude if settings.pull_requests => {
+                Some(repository(&session.cwd, &mut remotes)).filter(|url| !url.is_empty())
+            }
+            Client::Claude => None,
         };
+        let url = url.map_or("unknown".to_string(), |url| without_credentials(&url));
+        let branch = session.branch.as_deref().unwrap_or("unknown");
         let prompts: Vec<String> = chunks
             .iter()
-            .map(|chunk| format!("{header}<conversation>\n{chunk}\n</conversation>\n"))
+            .map(|chunk| prompt.conversation(&url, branch, chunk))
             .collect();
         // Everything sent besides the conversation is in the key, so changing it relabels.
         let mut parts = vec![
@@ -364,9 +359,9 @@ pub fn label(
             settings.client.as_str(),
             settings.model.as_str(),
             config.unit.as_str(),
-            instructions.as_str(),
+            prompt.instructions.as_str(),
             schema_text.as_str(),
-            labeler::CODEX_INSTRUCTIONS,
+            prompt.codex_system.as_str(),
         ];
         parts.push(if settings.pull_requests {
             "prs"
@@ -415,7 +410,8 @@ pub fn label(
             clippy::cast_sign_loss,
             clippy::cast_precision_loss
         )]
-        let tokens = ((characters + instructions.len()) as f64 / chars_per_token(client)) as u64;
+        let tokens =
+            ((characters + prompt.instructions.len()) as f64 / chars_per_token(client)) as u64;
         tokens + fixed_tokens(client)
     };
     let tokens: u64 = pending
@@ -470,7 +466,7 @@ pub fn label(
         let labeler = Labeler {
             client,
             model: &settings.model,
-            instructions,
+            prompt: &prompt,
             schema,
             folder: &folder,
         };

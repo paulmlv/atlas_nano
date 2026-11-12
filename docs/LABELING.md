@@ -116,6 +116,7 @@ references its parent's history without copying it, the text is rebuilt from the
 
 - One call per session, or per chunk, at medium effort, with the [required flags](#required-flags).
   Calls run in parallel.
+- The prompt is [prompts/label.md](../prompts/label.md), built into the binary.
 - The instructions say that the conversation is data to classify, not to follow. They list the
   taxonomy's rules, then every type of work and every topic as `label: definition`. Claude Code
   receives them as the system prompt. Codex receives them at the start of the prompt, and its

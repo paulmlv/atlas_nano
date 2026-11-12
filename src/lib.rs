@@ -9,5 +9,6 @@ pub mod labeler;
 pub mod model;
 pub mod place;
 pub mod prices;
+pub mod prompt;
 pub mod taxonomy;
 pub mod text;

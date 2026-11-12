@@ -34,6 +34,7 @@ behavior they define, and update the page whose fact changed.
 | `text.rs`     | Render a session's parts and split them into chunks                           |
 | `taxonomy.rs` | Read the label lists and rules from `docs/TAXONOMY.md`, built into the binary |
 | `labeler.rs`  | One labeling call through Claude Code or Codex                                |
+| `prompt.rs`   | Fill the labeling prompt from `prompts/label.md`, built into the binary       |
 | `label.rs`    | The cache, the estimate, the parallel calls, and the chunk vote               |
 
 Parsers and accounting are pure functions tested on synthetic records. Money is `Decimal`.
