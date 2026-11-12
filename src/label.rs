@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
+use rayon::prelude::*;
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -477,7 +478,6 @@ pub fn label(
             .enumerate()
             .flat_map(|(n, plan)| plan.prompts.iter().map(move |prompt| (n, prompt.as_str())))
             .collect();
-        let results: Vec<Mutex<Option<Call>>> = tasks.iter().map(|_| Mutex::new(None)).collect();
         let cache_file = Mutex::new(
             OpenOptions::new()
                 .create(true)
@@ -495,37 +495,38 @@ pub fn label(
         {
             let _ = file.write_all(b"\n");
         }
-        let (next, done) = (AtomicUsize::new(0), AtomicUsize::new(0));
+        let done = AtomicUsize::new(0);
         let progress = io::stderr().is_terminal();
         let started = Instant::now();
         if progress {
             eprint!("{}", bar(paint, 0, tasks.len(), started.elapsed()));
         }
-        std::thread::scope(|scope| {
-            for _ in 0..settings.jobs.min(tasks.len()) {
-                scope.spawn(|| {
-                    loop {
-                        let n = next.fetch_add(1, Ordering::Relaxed);
-                        let Some(&(plan, prompt)) = tasks.get(n) else {
-                            break;
-                        };
-                        let result = labeler.call(prompt);
-                        // A session with one call is stored at once, so an interrupted run keeps it.
-                        if let Ok(answer) = &result.answer
-                            && pending[plan].prompts.len() == 1
-                        {
-                            let label = combine(std::slice::from_ref(answer), &settings.model);
-                            store(&cache_file, &pending[plan].key, &label);
-                        }
-                        *results[n].lock().expect("the result lock is not poisoned") = Some(result);
-                        let finished = done.fetch_add(1, Ordering::Relaxed) + 1;
-                        if progress {
-                            let line = bar(paint, finished, tasks.len(), started.elapsed());
-                            eprint!("\r\x1b[2K{line}");
-                        }
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(settings.jobs.min(tasks.len()))
+            .build()
+            .map_err(|error| error.to_string())?;
+        // One call per task, so an idle thread can always take the next one.
+        let results: Vec<Call> = pool.install(|| {
+            tasks
+                .par_iter()
+                .with_max_len(1)
+                .map(|&(plan, prompt)| {
+                    let result = labeler.call(prompt);
+                    // A session with one call is stored at once, so an interrupted run keeps it.
+                    if let Ok(answer) = &result.answer
+                        && pending[plan].prompts.len() == 1
+                    {
+                        let label = combine(std::slice::from_ref(answer), &settings.model);
+                        store(&cache_file, &pending[plan].key, &label);
                     }
-                });
-            }
+                    let finished = done.fetch_add(1, Ordering::Relaxed) + 1;
+                    if progress {
+                        let line = bar(paint, finished, tasks.len(), started.elapsed());
+                        eprint!("\r\x1b[2K{line}");
+                    }
+                    result
+                })
+                .collect()
         });
         if progress {
             eprintln!();
@@ -537,13 +538,7 @@ pub fn label(
         // Every call counts, failed or not. Claude Code reports each call's cost; Codex reports
         // tokens, priced call by call so one call's size sets its own rate.
         let mut cost = Some(Decimal::ZERO);
-        for ((plan, _), result) in tasks.iter().zip(results) {
-            let Some(Call { answer, spent }) = result
-                .into_inner()
-                .expect("the result lock is not poisoned")
-            else {
-                continue;
-            };
+        for ((plan, _), Call { answer, spent }) in tasks.iter().zip(results) {
             summary.input_tokens += spent.input_tokens;
             summary.output_tokens += spent.output_tokens;
             let priced = match client {
