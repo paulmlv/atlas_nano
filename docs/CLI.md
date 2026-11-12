@@ -20,7 +20,7 @@ not asked. `codex` covers Codex and ChatGPT desktop sessions, and `claude` Claud
   fails.
 - **Settings:** the unit (conversation), the coverage (Claude Code, Codex, or both), the labeling
   model, the no-tools mode, the experimental pull request mapping, and how many labeling calls run
-  at once (16 by default; asked again until it is a whole number of at least 1).
+  at once (32 by default; asked again until it is a whole number of at least 1).
 - **Labeling model:** `anthropic/claude-haiku-5-5` through Claude Code, or `openai/gpt-6-luna`
   through Codex. With one client installed, its model labels and the question is not asked. No other
   model is accepted, in `configure` or in the saved file.
@@ -38,7 +38,7 @@ Requires a saved configuration; without one it stops and says to run `configure`
 
 | Flag           | Default   | Meaning                                            |
 | -------------- | --------- | -------------------------------------------------- |
-| `--period`     | `7d`      | Time horizon: `7d`, `30d`, or `all`                |
+| `--period`     | `7d`      | Time horizon: `1d`, `7d`, `30d`, or `all`          |
 | `--no-cache`   | cache on  | Relabel everything, ignoring stored labels         |
 | `--csv <path>` | no file   | Also write the per-session [CSV](REPORT.md#csv)    |
 | `--no-label`   | label     | Accounting only, with no model calls               |
@@ -47,8 +47,8 @@ Requires a saved configuration; without one it stops and says to run `configure`
 ### Period
 
 - A conversation is in the period when it started within it, measured from the exact time of the
-  run: `7d` is the last 168 hours and `30d` the last 720. Run at noon, a conversation started seven
-  days ago at 10:00 is out.
+  run: `1d` is the last 24 hours, `7d` the last 168, and `30d` the last 720. Run at noon, a
+  conversation started seven days ago at 10:00 is out of `7d`.
 - A conversation that is in counts with its whole spend, turns, and time.
 - A subagent is in the report exactly when the chat that spawned it is.
 

@@ -20,6 +20,7 @@ use crate::taxonomy::Taxonomy;
 /// The hours a period covers, back from the time of the run; None covers everything.
 fn hours(period: Period) -> Option<i64> {
     match period {
+        Period::Day1 => Some(24),
         Period::Days7 => Some(168),
         Period::Days30 => Some(720),
         Period::All => None,
@@ -28,6 +29,7 @@ fn hours(period: Period) -> Option<i64> {
 
 fn name(period: Period) -> &'static str {
     match period {
+        Period::Day1 => "last day",
         Period::Days7 => "last 7 days",
         Period::Days30 => "last 30 days",
         Period::All => "all time",

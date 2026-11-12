@@ -26,23 +26,23 @@ fact changed. The prompt and the labels themselves are in [prompts/](prompts/). 
 
 | Module         | Responsibility                                                                |
 | -------------- | ----------------------------------------------------------------------------- |
-| `main.rs`      | The `atlas-nano` command: parse the arguments and run a command               |
-| `lib.rs`       | The library the command is built on: the modules below                        |
-| `cli.rs`       | The commands and flags                                                        |
-| `configure.rs` | `configure`: detection, questions, the test call, saving                      |
-| `config.rs`    | The saved settings and the config and cache folders                           |
-| `run.rs`       | `run`: load, select the period, label, print                                  |
-| `ingest/`      | Find and parse both clients' sessions; forks; each request once               |
-| `model.rs`     | What is kept of a session: its parts, turns, and model requests               |
 | `account.rs`   | The period, each session's cost, and totals                                   |
+| `cli.rs`       | The commands and flags                                                        |
+| `config.rs`    | The saved settings and the config and cache folders                           |
+| `configure.rs` | `configure`: detection, questions, the test call, saving                      |
+| `ingest/`      | Find and parse both clients' sessions; forks; each request once               |
+| `label.rs`     | The cache, the estimate, the parallel calls, and the chunk vote               |
+| `labeler.rs`   | One labeling call through Claude Code or Codex                                |
+| `lib.rs`       | The library the command is built on: the other modules                        |
+| `main.rs`      | The `atlas-nano` command: parse the arguments and run a command               |
+| `model.rs`     | What is kept of a session: its parts, turns, and model requests               |
 | `place.rs`     | A chat's project and repository, from the folder it started in                |
 | `prices.rs`    | The built-in price table, `prices.toml`                                       |
-| `text.rs`      | Render a session's parts and split them into chunks                           |
-| `taxonomy.rs`  | Read the label lists from `prompts/labels.md`, built into the binary          |
-| `labeler.rs`   | One labeling call through Claude Code or Codex                                |
 | `prompt.rs`    | Fill the labeling prompt from `prompts/label.md`, built into the binary       |
-| `label.rs`     | The cache, the estimate, the parallel calls, and the chunk vote               |
 | `report.rs`    | The printed report and the CSV                                                |
+| `run.rs`       | `run`: load, select the period, label, print                                  |
+| `taxonomy.rs`  | Read the label lists from `prompts/labels.md`, built into the binary          |
+| `text.rs`      | Render a session's parts and split them into chunks                           |
 | `tests/cli.rs` | The binary end to end, with a stand-in client                                 |
 
 Parsers and accounting are pure functions tested on synthetic records. Money is `Decimal`.

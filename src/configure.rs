@@ -212,7 +212,7 @@ pub fn configure() -> Result<(), String> {
     )?;
     let pull_requests = yes("Map conversations to pull requests (experimental)?", false)?;
     let jobs = loop {
-        match ask("How many labeling calls at once?", "a whole number", "16")?.parse::<usize>() {
+        match ask("How many labeling calls at once?", "a whole number", "32")?.parse::<usize>() {
             Ok(jobs) if jobs > 0 => break jobs,
             _ => println!("  please answer a whole number of at least 1"),
         }
