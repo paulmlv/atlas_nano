@@ -256,22 +256,26 @@ fn inherit_history(sessions: &mut [Session]) {
         .filter(|(_, session)| session.client == Client::Codex)
         .map(|(n, session)| (session.id.clone(), n))
         .collect();
-    fn complete(
-        n: usize,
-        sessions: &[Session],
-        index: &HashMap<String, usize>,
-        depth: u8,
-    ) -> Vec<Item> {
-        let session = &sessions[n];
-        let mut items = match &session.history_base {
-            Some(base) if depth < 32 => index.get(&base.rollout).map_or_else(Vec::new, |&parent| {
-                let mut inherited = complete(parent, sessions, index, depth + 1);
-                inherited.retain(|item| item.position < base.end);
-                inherited
-            }),
-            _ => Vec::new(),
-        };
-        items.extend(session.items.iter().cloned());
+    // Follow the bases up to the first one not loaded, stopping if one repeats, then add each
+    // level's own items on top of what it inherits before its cutoff.
+    fn complete(n: usize, sessions: &[Session], index: &HashMap<String, usize>) -> Vec<Item> {
+        let mut chain = vec![n];
+        let mut cutoffs = Vec::new();
+        while let Some(base) = &sessions[*chain.last().expect("starts with n")].history_base {
+            match index.get(&base.rollout) {
+                Some(&parent) if !chain.contains(&parent) => {
+                    chain.push(parent);
+                    cutoffs.push(base.end);
+                }
+                _ => break,
+            }
+        }
+        let top = chain.pop().expect("starts with n");
+        let mut items = sessions[top].items.clone();
+        for (level, end) in chain.into_iter().zip(cutoffs).rev() {
+            items.retain(|item| item.position < end);
+            items.extend(sessions[level].items.iter().cloned());
+        }
         items
     }
     let forks: Vec<usize> = (0..sessions.len())
@@ -279,7 +283,7 @@ fn inherit_history(sessions: &mut [Session]) {
         .collect();
     let completed: Vec<Vec<Item>> = forks
         .iter()
-        .map(|&n| complete(n, sessions, &index, 0))
+        .map(|&n| complete(n, sessions, &index))
         .collect();
     for (n, items) in forks.into_iter().zip(completed) {
         sessions[n].items = items;
@@ -706,6 +710,49 @@ mod tests {
             assert_eq!(roots[child], index(parent));
             assert_eq!(included[child], in_period);
         }
+    }
+
+    #[test]
+    fn history_is_inherited_at_any_depth_and_a_loop_ends() {
+        use crate::account::tests::session;
+        use crate::model::{HistoryBase, Role};
+        let rollout = |id: &str, base: Option<&str>| {
+            let mut fork = session(id, Kind::Primary, None, 1);
+            fork.client = Client::Codex;
+            fork.history_base = base.map(|base| HistoryBase {
+                rollout: base.to_string(),
+                end: 1,
+            });
+            // The item at position 5 is past every cutoff, so only the fork's own copy is kept.
+            fork.items = [(0, id.to_string()), (5, format!("late-{id}"))]
+                .map(|(position, text)| Item {
+                    position,
+                    role: Role::Assistant,
+                    text,
+                })
+                .to_vec();
+            fork
+        };
+        let mut sessions: Vec<Session> = (0..40)
+            .map(|n| {
+                let base = (n > 0).then(|| format!("s{}", n - 1));
+                rollout(&format!("s{n}"), base.as_deref())
+            })
+            .collect();
+        sessions.push(rollout("x", Some("y")));
+        sessions.push(rollout("y", Some("x")));
+        inherit_history(&mut sessions);
+        let texts = |n: usize| -> Vec<&str> {
+            sessions[n]
+                .items
+                .iter()
+                .map(|item| item.text.as_str())
+                .collect()
+        };
+        let mut deepest: Vec<String> = (0..40).map(|n| format!("s{n}")).collect();
+        deepest.push("late-s39".to_string());
+        assert_eq!(texts(39), deepest);
+        assert_eq!(texts(40), ["y", "x", "late-x"]);
     }
 
     #[test]

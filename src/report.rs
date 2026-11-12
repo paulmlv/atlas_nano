@@ -20,7 +20,6 @@ use crate::taxonomy::{Entry, Taxonomy};
 const UNLABELED: &str = "Unlabeled";
 const REVIEWS: &str = "Automatic reviews";
 const NO_REPO: &str = "(no repo)";
-/// The roles through which a conversation's cost goes to a pull request.
 /// One session in the report, with its cost, its label, and the chat it descends from.
 pub struct Row<'a> {
     pub session: &'a Session,

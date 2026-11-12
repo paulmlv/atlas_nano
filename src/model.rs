@@ -1,7 +1,5 @@
 //! What Atlas Nano keeps of one local session.
 
-use std::fmt;
-
 use chrono::{DateTime, Duration, Utc};
 
 /// The client that recorded a session.
@@ -113,13 +111,6 @@ pub struct SessionRef {
     pub id: String,
 }
 
-impl fmt::Display for SessionRef {
-    /// `client:id`, unique across both clients.
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}:{}", self.client.name(), self.id)
-    }
-}
-
 /// One local session.
 #[derive(Debug, Clone)]
 pub struct Session {
@@ -155,7 +146,7 @@ impl Session {
 
     /// `client:id`, unique across both clients.
     pub fn key(&self) -> String {
-        self.reference().to_string()
+        format!("{}:{}", self.client.name(), self.id)
     }
 
     /// The time between the session's recorded start and end, gaps included.
