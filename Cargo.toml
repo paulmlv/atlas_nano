@@ -1,0 +1,25 @@
+[package]
+name = "atlas-nano"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+description = "Atlas Nano labels and accounts for all local Claude Code and Codex conversations to give insight into AI spend."
+readme = "README.md"
+license = "MIT"
+repository = "https://github.com/paulmlv/atlas_nano"
+publish = false
+
+[dependencies]
+chrono = "0.4.45"
+rayon = "1.12.0"
+regex = "1.13.1"
+rust_decimal = "1.43.0"
+serde_json = "1.0.154"
+toml = "1.2.1"
+zstd = "0.14.3"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
