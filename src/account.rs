@@ -110,8 +110,8 @@ pub fn roots(sessions: &[Session]) -> Vec<usize> {
                 let session = &sessions[n];
                 let parent = session
                     .parent
-                    .as_deref()
-                    .and_then(|id| index.get(&(session.parent_client, id)));
+                    .as_ref()
+                    .and_then(|parent| index.get(&(parent.client, parent.id.as_str())));
                 match parent {
                     Some(&parent) if session.kind != Kind::Primary => n = parent,
                     _ => break,
@@ -143,7 +143,7 @@ pub mod tests {
     use chrono::TimeZone;
 
     use super::*;
-    use crate::model::{Client, Turn, Usage};
+    use crate::model::{Client, SessionRef, Turn, Usage};
 
     pub fn at(hour: u32) -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 1, 10, hour, 0, 0).unwrap()
@@ -153,12 +153,15 @@ pub mod tests {
         Session {
             client: Client::Claude,
             id: id.to_string(),
-            parent: parent.map(str::to_string),
+            parent: parent.map(|id| SessionRef {
+                client: Client::Claude,
+                id: id.to_string(),
+            }),
             kind,
             cwd: "/work/app".to_string(),
-            title: String::new(),
-            repository: String::new(),
-            branch: String::new(),
+            title: None,
+            repository: None,
+            branch: None,
             started: Some(at(started)),
             ended: Some(at(started + 2)),
             items: Vec::new(),
@@ -198,7 +201,6 @@ pub mod tests {
                 },
             ],
             history_base: None,
-            parent_client: Client::Claude,
         }
     }
 

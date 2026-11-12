@@ -8,8 +8,8 @@ use regex::Regex;
 use serde_json::Value;
 
 use super::timing::{self, Event, Signal};
-use super::{Span, stem, time};
-use crate::model::{Client, Item, Kind, Role, Session, Usage};
+use super::{Span, known, stem, time};
+use crate::model::{Client, Item, Kind, Role, Session, SessionRef, Usage};
 
 const INTERRUPTIONS: [&str; 2] = [
     "[Request interrupted by user]",
@@ -138,7 +138,10 @@ pub fn parse(path: &Path, records: &[Value]) -> Session {
         .ancestors()
         .find(|folder| folder.file_name().is_some_and(|name| name == "subagents"))
         .and_then(|folder| folder.parent()?.file_name()?.to_str())
-        .map(str::to_string);
+        .map(|id| SessionRef {
+            client: Client::Claude,
+            id: id.to_string(),
+        });
     let mut session = Session {
         client: Client::Claude,
         id: stem(path),
@@ -148,11 +151,10 @@ pub fn parse(path: &Path, records: &[Value]) -> Session {
             Kind::Primary
         },
         parent: owner,
-        parent_client: Client::Claude,
         cwd: String::new(),
-        title: String::new(),
-        repository: String::new(),
-        branch: String::new(),
+        title: None,
+        repository: None,
+        branch: None,
         started: None,
         ended: None,
         items: Vec::new(),
@@ -189,8 +191,8 @@ pub fn parse(path: &Path, records: &[Value]) -> Session {
         if session.cwd.is_empty() {
             session.cwd = record["cwd"].as_str().unwrap_or_default().to_string();
         }
-        if session.branch.is_empty() {
-            session.branch = record["gitBranch"].as_str().unwrap_or_default().to_string();
+        if session.branch.is_none() {
+            session.branch = known(&record["gitBranch"]);
         }
         let mut keep = |role: Role, text: String| {
             if !text.is_empty() {
@@ -299,8 +301,7 @@ pub fn parse(path: &Path, records: &[Value]) -> Session {
     session.title = [custom_title, ai_title]
         .into_iter()
         .find(|t| !t.is_empty())
-        .unwrap_or("")
-        .into();
+        .map(str::to_string);
     session
 }
 
@@ -402,7 +403,10 @@ mod tests {
             ]
         );
         assert_eq!(session.kind, Kind::Subagent);
-        assert_eq!(session.parent.as_deref(), Some("parent-id"));
+        assert_eq!(
+            session.parent.map(|parent| parent.id).as_deref(),
+            Some("parent-id")
+        );
     }
 
     #[test]

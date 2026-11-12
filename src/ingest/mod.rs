@@ -13,7 +13,7 @@ use chrono::{DateTime, Utc};
 use rayon::prelude::*;
 use serde_json::Value;
 
-use crate::model::{Client, Item, Kind, Session};
+use crate::model::{Client, Item, Kind, Session, SessionRef};
 
 /// The folders each client keeps its sessions in, relative to the user's home.
 pub const FOLDERS: [(Client, &str); 3] = [
@@ -46,6 +46,14 @@ fn time(text: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(text)
         .ok()
         .map(|at| at.with_timezone(&Utc))
+}
+
+/// A recorded string, or `None` when it is missing or empty.
+fn known(value: &Value) -> Option<String> {
+    value
+        .as_str()
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
 }
 
 /// Return a transcript's file name without `.jsonl` and an optional `.zst`.
@@ -196,8 +204,10 @@ fn link_scratchpads(sessions: &mut [Session]) {
         .collect();
     for (n, owner) in links {
         let chat = &mut sessions[n];
-        chat.parent = Some(owner);
-        chat.parent_client = Client::Claude;
+        chat.parent = Some(SessionRef {
+            client: Client::Claude,
+            id: owner,
+        });
         chat.kind = Kind::Subagent;
     }
 }
@@ -314,7 +324,7 @@ mod tests {
         use crate::account::tests::session;
         let in_folder = |id: &str, client: Client, cwd: &str| {
             let mut chat = session(id, Kind::Primary, None, 2);
-            (chat.client, chat.parent_client) = (client, client);
+            chat.client = client;
             chat.cwd = cwd.to_string();
             chat
         };
@@ -336,15 +346,16 @@ mod tests {
             let session = &sessions[n];
             (
                 session.kind,
-                session.parent.as_deref(),
-                session.parent_client,
+                session.parent.as_ref().map(|parent| parent.id.as_str()),
+                session.parent.as_ref().map(|parent| parent.client),
             )
         };
-        assert_eq!(link(0), (Kind::Primary, None, Client::Claude));
-        assert_eq!(link(1), (Kind::Subagent, Some("owner"), Client::Claude));
-        assert_eq!(link(2), (Kind::Subagent, Some("owner"), Client::Claude));
-        assert_eq!(link(3), (Kind::Primary, None, Client::Codex));
-        assert_eq!(link(4), (Kind::Primary, None, Client::Codex));
+        let owner = (Kind::Subagent, Some("owner"), Some(Client::Claude));
+        assert_eq!(link(0), (Kind::Primary, None, None));
+        assert_eq!(link(1), owner);
+        assert_eq!(link(2), owner);
+        assert_eq!(link(3), (Kind::Primary, None, None));
+        assert_eq!(link(4), (Kind::Primary, None, None));
     }
 
     fn home(name: &str) -> PathBuf {
@@ -431,7 +442,10 @@ mod tests {
             .find(|session| session.id == "agent-1")
             .unwrap();
         assert_eq!(
-            (agent.kind, agent.parent.as_deref()),
+            (
+                agent.kind,
+                agent.parent.as_ref().map(|parent| parent.id.as_str())
+            ),
             (Kind::Subagent, Some("first"))
         );
         assert!(loaded.unreadable.is_empty());

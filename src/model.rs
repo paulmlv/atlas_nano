@@ -102,20 +102,26 @@ pub struct HistoryBase {
     pub end: u64,
 }
 
+/// A session named by the client that recorded it and its id.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SessionRef {
+    pub client: Client,
+    pub id: String,
+}
+
 /// One local session.
 #[derive(Debug, Clone)]
 pub struct Session {
     pub client: Client,
     pub id: String,
-    /// The session that started this one, or that it was forked or edited from.
-    pub parent: Option<String>,
-    /// The client that recorded `parent`: Claude Code for a chat started in its scratchpad.
-    pub parent_client: Client,
+    /// The session that started this one, or that it was forked or edited from. A chat started in
+    /// a Claude Code scratchpad names a Claude Code parent whichever client recorded it.
+    pub parent: Option<SessionRef>,
     pub kind: Kind,
     pub cwd: String,
-    pub title: String,
-    pub repository: String,
-    pub branch: String,
+    pub title: Option<String>,
+    pub repository: Option<String>,
+    pub branch: Option<String>,
     pub started: Option<DateTime<Utc>>,
     pub ended: Option<DateTime<Utc>>,
     pub items: Vec<Item>,
@@ -140,21 +146,4 @@ impl Session {
     pub fn working(&self) -> Duration {
         self.turns.iter().filter_map(|turn| turn.working).sum()
     }
-}
-
-/// A pull request the labeling model found in a conversation, with the conversation's role in it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PullRequest {
-    pub url: String,
-    pub role: String,
-}
-
-/// The labels one session received.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Label {
-    pub work: String,
-    pub topic: String,
-    pub prs: Vec<PullRequest>,
-    pub model: String,
-    pub from_cache: bool,
 }

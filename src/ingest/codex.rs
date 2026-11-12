@@ -8,8 +8,8 @@ use regex::Regex;
 use serde_json::Value;
 
 use super::timing::{self, Event, Signal};
-use super::{Span, stem, time};
-use crate::model::{Client, HistoryBase, Item, Kind, Role, Session, Usage};
+use super::{Span, known, stem, time};
+use crate::model::{Client, HistoryBase, Item, Kind, Role, Session, SessionRef, Usage};
 
 const TOOL_CALLS: [&str; 6] = [
     "function_call",
@@ -147,24 +147,21 @@ pub fn parse(path: &Path, records: &[Value]) -> Session {
         .as_ref()
         .map(|base| base.rollout.clone())
         .or_else(|| (rollout != thread).then(|| thread.clone()))
-        .or_else(|| linked.iter().find_map(|id| id.as_str()).map(str::to_string));
+        .or_else(|| linked.iter().find_map(|id| id.as_str()).map(str::to_string))
+        .map(|id| SessionRef {
+            client: Client::Codex,
+            id,
+        });
     let kind = kind(meta["thread_source"].as_str());
     let mut session = Session {
         client: Client::Codex,
         id: rollout,
         parent,
-        parent_client: Client::Codex,
         kind,
         cwd: meta["cwd"].as_str().unwrap_or_default().to_string(),
-        title: String::new(),
-        repository: meta["git"]["repository_url"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string(),
-        branch: meta["git"]["branch"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string(),
+        title: None,
+        repository: known(&meta["git"]["repository_url"]),
+        branch: known(&meta["git"]["branch"]),
         started: None,
         ended: None,
         items: Vec::new(),
@@ -500,7 +497,10 @@ mod tests {
         ];
         let session = parse(&path(), &records);
         assert_eq!(session.kind, Kind::Review);
-        assert_eq!(session.parent.as_deref(), Some("base"));
+        assert_eq!(
+            session.parent.map(|parent| parent.id).as_deref(),
+            Some("base")
+        );
         assert_eq!(
             session.history_base,
             Some(HistoryBase {
