@@ -7,6 +7,7 @@ use crate::config::{self, Config, Labeler as Settings, labeling_model};
 use crate::ingest::FOLDERS;
 use crate::labeler::{self, Failure, Labeler};
 use crate::model::Client;
+use crate::prompt::Prompt;
 use crate::taxonomy::Taxonomy;
 
 /// A client's labeling model as `provider/model`, with the model's API name.
@@ -96,15 +97,16 @@ fn test_call(client: Client, model: &str) -> Result<(), String> {
     let folder = config::cache_folder()?.join(format!("configure-{}", std::process::id()));
     fs::create_dir_all(&folder).map_err(|error| format!("{}: {error}", folder.display()))?;
     let taxonomy = Taxonomy::built_in();
+    let prompt = Prompt::new(&taxonomy, false);
     let labeler = Labeler {
         client,
         model,
-        instructions: labeler::instructions(&taxonomy, false),
+        prompt: &prompt,
         schema: labeler::schema(&taxonomy, false),
         folder: &folder,
     };
-    let prompt = "<conversation>\n[user] What is the capital of France?\n\n[assistant] Paris.\n</conversation>\n";
-    let result = labeler.call(prompt);
+    let text = "[user] What is the capital of France?\n\n[assistant] Paris.";
+    let result = labeler.call(&prompt.conversation("unknown", "unknown", text));
     let _ = fs::remove_dir_all(&folder);
     match result.answer {
         Ok(answer) => {

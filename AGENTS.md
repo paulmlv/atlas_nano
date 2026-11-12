@@ -19,7 +19,8 @@ synthetic sessions only, never real conversations.
 
 Read the [command line](docs/CLI.md), [report](docs/REPORT.md), [labeling](docs/LABELING.md), and
 [taxonomy](docs/TAXONOMY.md) pages before changing behavior they define, and update the page whose
-fact changed. The [next steps](docs/NEXT_STEPS.md) list what is not built yet.
+fact changed. The prompt and the labels themselves are in [prompts/](prompts/). The
+[next steps](docs/NEXT_STEPS.md) list what is not built yet.
 
 ## Code
 
@@ -37,8 +38,9 @@ fact changed. The [next steps](docs/NEXT_STEPS.md) list what is not built yet.
 | `place.rs`     | A chat's project and repository, from the folder it started in                |
 | `prices.rs`    | The built-in price table, `prices.toml`                                       |
 | `text.rs`      | Render a session's parts and split them into chunks                           |
-| `taxonomy.rs`  | Read the label lists and rules from `docs/TAXONOMY.md`, built into the binary |
+| `taxonomy.rs`  | Read the label lists from `prompts/labels.md`, built into the binary          |
 | `labeler.rs`   | One labeling call through Claude Code or Codex                                |
+| `prompt.rs`    | Fill the labeling prompt from `prompts/label.md`, built into the binary       |
 | `label.rs`     | The cache, the estimate, the parallel calls, and the chunk vote               |
 | `report.rs`    | The printed report and the CSV                                                |
 | `tests/cli.rs` | The binary end to end, with a stand-in client                                 |

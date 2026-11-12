@@ -11,6 +11,7 @@ pub mod labeler;
 pub mod model;
 pub mod place;
 pub mod prices;
+pub mod prompt;
 pub mod report;
 pub mod run;
 pub mod taxonomy;
