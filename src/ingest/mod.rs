@@ -13,7 +13,7 @@ use chrono::{DateTime, Utc};
 use rayon::prelude::*;
 use serde_json::Value;
 
-use crate::model::{Client, Item, Kind, Session, SessionRef};
+use crate::model::{Client, Item, Kind, Session, SessionRef, Usage};
 
 /// The folders each client keeps its sessions in, relative to the user's home.
 pub const FOLDERS: [(Client, &str); 3] = [
@@ -121,9 +121,9 @@ pub struct Loaded {
 
 /// Read every session of the covered clients beneath `home`.
 ///
-/// A session found in several files is read from the copy with the most records. A fork's text
-/// starts with the history it inherited, and each model request stays only in the session that
-/// started first among those holding a copy of it.
+/// A session found in several files is read from the copy with the most valid records. A fork's
+/// text starts with the history it inherited, and each model request stays only in the session
+/// recorded with it, or else the one that started first, among those holding a copy of it.
 pub fn load(home: &Path, clients: &[Client]) -> Loaded {
     let mut files = Vec::new();
     let mut unreadable = Vec::new();
@@ -138,36 +138,39 @@ pub fn load(home: &Path, clients: &[Client]) -> Loaded {
         .par_iter()
         .map(|(client, path)| {
             read_jsonl(path).map(|records| {
-                let session = match client {
-                    Client::Claude => claude::parse(path, &records),
+                let parsed = match client {
+                    Client::Claude => (claude::parse(path, &records), None),
                     Client::Codex => codex::parse(path, &records),
                 };
-                (records.len(), session)
+                // Malformed lines keep their place for fork cutoffs but do not make a copy longer.
+                let valid = records.iter().filter(|record| !record.is_null()).count();
+                (valid, parsed)
             })
         })
         .collect();
-    let mut longest: HashMap<String, (usize, Session)> = HashMap::new();
+    let mut longest = HashMap::new();
     let mut order = Vec::new();
     for ((_, path), result) in files.iter().zip(parsed) {
         match result {
             Err(error) => unreadable.push((path.clone(), error.to_string())),
-            Ok((length, session)) => {
-                let key = session.key();
+            Ok((length, parsed)) => {
+                let key = parsed.0.key();
                 match longest.get(&key) {
                     Some((best, _)) if *best >= length => {}
-                    Some(_) => drop(longest.insert(key, (length, session))),
+                    Some(_) => drop(longest.insert(key, (length, parsed))),
                     None => {
                         order.push(key.clone());
-                        longest.insert(key, (length, session));
+                        longest.insert(key, (length, parsed));
                     }
                 }
             }
         }
     }
-    let mut sessions: Vec<Session> = order
+    let (mut sessions, versions): (Vec<_>, Vec<_>) = order
         .iter()
         .filter_map(|key| Some(longest.remove(key)?.1))
-        .collect();
+        .unzip();
+    codex::link_parents(&mut sessions, &versions);
     count_requests_once(&mut sessions);
     inherit_history(&mut sessions);
     link_scratchpads(&mut sessions);
@@ -212,13 +215,16 @@ fn link_scratchpads(sessions: &mut [Session]) {
     }
 }
 
-/// Keep each model request once, in the earliest-started session that holds a copy of it.
+/// Keep each model request once: in the session recorded with it, when that session holds a copy,
+/// or else in the earliest-started session that does.
 ///
 /// A fork's copied history can start at its parent's time; on a tie the session with no parent
 /// keeps the request. A request repeated within one session also counts once.
 fn count_requests_once(sessions: &mut [Session]) {
-    let rank = |session: &Session| {
+    // Every copy of a request records the same owner, so one usage ranks all its holders.
+    let rank = |session: &Session, usage: &Usage| {
         (
+            usage.owner.as_deref() != Some(session.id.as_str()),
             session.started.is_none(),
             session.started,
             session.parent.is_some(),
@@ -229,7 +235,7 @@ fn count_requests_once(sessions: &mut [Session]) {
     for (index, session) in sessions.iter().enumerate() {
         for usage in &session.usage {
             let held = owner.entry(usage.id.clone()).or_insert(index);
-            if rank(session) < rank(&sessions[*held]) {
+            if rank(session, usage) < rank(&sessions[*held], usage) {
                 *held = index;
             }
         }
@@ -503,6 +509,202 @@ mod tests {
             };
             assert_eq!(session.usage.len(), 1);
             assert_eq!(session.usage[0].id, own_request);
+        }
+    }
+
+    #[test]
+    fn a_copy_with_more_valid_records_wins_over_a_malformed_one() {
+        let home = home("malformed-copy");
+        let projects = home.join(".claude/projects");
+        write(
+            &projects.join("p/chat.jsonl"),
+            &[reply("m1", 1), reply("m2", 2)],
+            false,
+        );
+        let malformed = format!("{}\nnot json\nnot json\nnot json\n", reply("m1", 1));
+        fs::create_dir_all(projects.join("q")).unwrap();
+        fs::write(projects.join("q/chat.jsonl"), malformed).unwrap();
+
+        let sessions = load(&home, &[Client::Claude]).sessions;
+        fs::remove_dir_all(&home).unwrap();
+        let ids: Vec<_> = sessions[0].usage.iter().map(|u| u.id.as_str()).collect();
+        assert_eq!(ids, ["m1", "m2"]);
+    }
+
+    #[test]
+    fn a_claude_copy_belongs_to_the_session_recorded_with_it() {
+        let home = home("claude-recorded-owner");
+        let projects = home.join(".claude/projects/p");
+        let recorded = |id: &str, second, session: &str| {
+            let mut record = reply(id, second);
+            record["sessionId"] = json!(session);
+            record
+        };
+        // The fork starts at the same time as the original and sorts first by name.
+        write(
+            &projects.join("z-original.jsonl"),
+            &[recorded("old", 1, "z-original")],
+            false,
+        );
+        write(
+            &projects.join("a-fork.jsonl"),
+            &[
+                recorded("old", 1, "z-original"),
+                recorded("new", 1, "a-fork"),
+            ],
+            false,
+        );
+        // Another fork relabels its copy with its own ID and records where it came from.
+        let mut relabelled = recorded("old", 1, "zz-fork");
+        relabelled["forkedFrom"] = json!({"sessionId": "z-original"});
+        write(
+            &projects.join("zz-fork.jsonl"),
+            &[relabelled, recorded("newer", 1, "zz-fork")],
+            false,
+        );
+        // A subagent copied under the fork still belongs to the original.
+        write(
+            &projects.join("a-fork/subagents/agent-1.jsonl"),
+            &[recorded("sub", 2, "z-original")],
+            false,
+        );
+
+        let sessions = load(&home, &[Client::Claude]).sessions;
+        fs::remove_dir_all(&home).unwrap();
+        let find = |id: &str| sessions.iter().find(|session| session.id == id).unwrap();
+        let ids =
+            |id: &str| -> Vec<&str> { find(id).usage.iter().map(|u| u.id.as_str()).collect() };
+        assert_eq!(ids("z-original"), ["old"]);
+        assert_eq!(ids("a-fork"), ["new"]);
+        assert_eq!(ids("zz-fork"), ["newer"]);
+        let parent = find("agent-1").parent.as_ref().map(|p| p.id.as_str());
+        assert_eq!(parent, Some("z-original"));
+    }
+
+    #[test]
+    fn a_codex_fork_keeps_a_copied_request_with_its_parent() {
+        let home = home("codex-fork-copies");
+        let folder = home.join(".codex/sessions");
+        let at = |second: u32| format!("2026-01-01T00:00:{second:02}Z");
+        let started = |second| json!({"type": "event_msg", "timestamp": at(second), "payload": {"type": "task_started", "turn_id": "t1"}});
+        let total = |second, output: u64| {
+            json!({"type": "event_msg", "timestamp": at(second), "payload": {"type": "token_count",
+                "turn_id": "t1", "info": {"last_token_usage": {"input_tokens": 10, "output_tokens": 1},
+                "total_token_usage": {"input_tokens": 10, "output_tokens": output}}}})
+        };
+        let response = |second, id: &str| {
+            json!({"type": "token_usage_record", "timestamp": at(second), "payload": {
+                "turn_id": "t1", "response_id": id, "usage": {"input_tokens": 10, "output_tokens": 1}}})
+        };
+        let file = |id: &str| folder.join(format!("rollout-2026-01-01T00-00-00-{id}.jsonl"));
+        let [old, new, old_fork, new_fork] = ["a", "b", "c", "d"].map(|id| id.repeat(36));
+        // Each fork copies its parent's records with new timestamps, then adds its own.
+        write(&file(&old), &[started(1), total(2, 1)], false);
+        write(
+            &file(&format!("{old}_{old_fork}")),
+            &[started(30), total(30, 1), total(31, 2)],
+            false,
+        );
+        write(&file(&new), &[started(1), response(2, "resp_old")], false);
+        write(
+            &file(&format!("{new}_{new_fork}")),
+            &[
+                started(30),
+                response(30, "resp_old"),
+                response(31, "resp_new"),
+            ],
+            false,
+        );
+
+        let sessions = load(&home, &[Client::Codex]).sessions;
+        fs::remove_dir_all(&home).unwrap();
+        let mut usage: Vec<_> = sessions
+            .iter()
+            .map(|session| {
+                let ids: Vec<_> = session.usage.iter().map(|u| u.id.as_str()).collect();
+                (session.parent.is_some(), ids.join(" "))
+            })
+            .collect();
+        usage.sort();
+        assert_eq!(
+            usage,
+            [
+                (false, "resp_old".to_string()),
+                (false, "t1:10:1".to_string()),
+                (true, "resp_new".to_string()),
+                (true, "t1:10:2".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_codex_child_uses_the_parent_rollout_current_at_its_start() {
+        use crate::account::{in_period, roots};
+
+        let home = home("codex-parent-versions");
+        let folder = home.join(".codex/sessions");
+        let [thread, edit, future, before, after, review, exact] =
+            ["a", "b", "c", "d", "e", "f", "g"].map(|id| id.repeat(36));
+        let file = |day: u32, id: &str| {
+            folder.join(format!("rollout-2026-01-{day:02}T00-00-00-{id}.jsonl"))
+        };
+        let meta = |day: u32, payload: Value| {
+            json!({"type": "session_meta", "timestamp": format!("2026-01-{day:02}T00:00:00Z"),
+                "payload": payload})
+        };
+        let copied = json!({"type": "turn_context", "timestamp": "2026-01-05T00:01:00Z"});
+        write(&file(5, &thread), &[meta(5, json!({}))], false);
+        write(
+            &file(9, &format!("{thread}_{edit}")),
+            &[meta(9, json!({}))],
+            false,
+        );
+        write(
+            &file(11, &format!("{thread}_{future}")),
+            &[meta(11, json!({})), copied.clone()],
+            false,
+        );
+        let spawn = json!({"thread_source": "subagent", "source": {
+            "subagent": {"thread_spawn": {"parent_thread_id": thread}}
+        }});
+        let guardian = json!({"thread_source": "guardian_review", "parent_thread_id": thread});
+        let mut explicit = guardian.clone();
+        explicit["history_base"] = json!({"thread_id": thread, "end_ordinal_exclusive": 1});
+        for (day, id, payload) in [
+            (8, &before, spawn.clone()),
+            (10, &after, spawn),
+            (10, &review, guardian),
+            (10, &exact, explicit),
+        ] {
+            write(&file(day, id), &[meta(day, payload), copied.clone()], false);
+        }
+
+        let sessions = load(&home, &[Client::Codex]).sessions;
+        fs::remove_dir_all(&home).unwrap();
+        let index = |id: &str| {
+            sessions
+                .iter()
+                .position(|session| session.id == id)
+                .unwrap()
+        };
+        let roots = roots(&sessions);
+        let included = in_period(&sessions, &roots, time("2026-01-09T00:00:00Z"));
+        for (child, parent, in_period) in [
+            (&before, &thread, false),
+            (&after, &edit, true),
+            (&review, &edit, true),
+            (&exact, &thread, false),
+        ] {
+            let child = index(child);
+            assert_eq!(
+                sessions[child].parent,
+                Some(SessionRef {
+                    client: Client::Codex,
+                    id: parent.clone()
+                })
+            );
+            assert_eq!(roots[child], index(parent));
+            assert_eq!(included[child], in_period);
         }
     }
 

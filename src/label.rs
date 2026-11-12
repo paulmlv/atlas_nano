@@ -221,6 +221,7 @@ fn price(
     };
     let usage = Usage {
         id: String::new(),
+        owner: None,
         at: Utc::now(),
         model: model.to_string(),
         fast: false,

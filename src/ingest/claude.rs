@@ -112,7 +112,8 @@ fn is_turn(text: &str) -> bool {
     }
 }
 
-fn usage(reply: &Value, at: chrono::DateTime<chrono::Utc>) -> Option<Usage> {
+fn usage(record: &Value, at: chrono::DateTime<chrono::Utc>) -> Option<Usage> {
+    let reply = &record["message"];
     let reported = reply.get("usage")?;
     let count = |name: &str| reported[name].as_u64().unwrap_or(0);
     let hour = reported["cache_creation"]["ephemeral_1h_input_tokens"]
@@ -120,6 +121,11 @@ fn usage(reply: &Value, at: chrono::DateTime<chrono::Utc>) -> Option<Usage> {
         .unwrap_or(0);
     Some(Usage {
         id: reply["id"].as_str()?.to_string(),
+        // A fork can relabel a copied record with its own ID but keeps where it came from.
+        owner: record["forkedFrom"]["sessionId"]
+            .as_str()
+            .or_else(|| record["sessionId"].as_str())
+            .map(str::to_string),
         at,
         model: reply["model"].as_str().unwrap_or_default().to_string(),
         fast: reported["speed"].as_str() == Some("fast"),
@@ -131,16 +137,22 @@ fn usage(reply: &Value, at: chrono::DateTime<chrono::Utc>) -> Option<Usage> {
     })
 }
 
-/// Describe one transcript. A file under a `subagents` directory is a subagent of the session
-/// whose directory owns it. A fork is dated from its own records after the copied prefix.
+/// Describe one transcript. A file under a `subagents` directory is a subagent of the session its
+/// records name, or else of the session whose directory holds it: a fork or resume can copy the
+/// file under another session. A fork is dated from its own records after the copied prefix.
 pub fn parse(path: &Path, records: &[Value]) -> Session {
     let owner = path
         .ancestors()
         .find(|folder| folder.file_name().is_some_and(|name| name == "subagents"))
         .and_then(|folder| folder.parent()?.file_name()?.to_str())
-        .map(|id| SessionRef {
-            client: Client::Claude,
-            id: id.to_string(),
+        .map(|folder| {
+            let recorded = records
+                .iter()
+                .find_map(|record| record["sessionId"].as_str());
+            SessionRef {
+                client: Client::Claude,
+                id: recorded.unwrap_or(folder).to_string(),
+            }
         });
     let mut session = Session {
         client: Client::Claude,
@@ -266,7 +278,7 @@ pub fn parse(path: &Path, records: &[Value]) -> Session {
                     }
                 }
                 if let Some(at) = at
-                    && let Some(reported) = usage(reply, at)
+                    && let Some(reported) = usage(record, at)
                 {
                     // Streaming writes a record per content block, each with the usage so far.
                     match usage_at.get(&reported.id) {
