@@ -139,7 +139,10 @@ references its parent's history without copying it, the text is rebuilt from the
   add the pull request rules, the prompt states `Session repository: <URL or unknown>`, with any
   user name and password removed from the URL, and `Session branch: <name or unknown>` before the
   conversation, and the schema requires a `prs` array of `{"url", "role"}` objects whose role is
-  `Contributed to`, `Reviewed`, or `Mentioned only`.
+  `Contributed to`, `Reviewed`, or `Mentioned only`. Each URL is kept as
+  `https://github.com/<owner>/<repo>/pull/<number>`, the owner and repository lowercased and
+  anything after the number cut, and each pull request once. An entry that names no GitHub pull
+  request is dropped.
 - Claude Code returns the answer as `structured_output` in its JSON result, with `is_error`,
   `usage`, and `total_cost_usd`. Codex writes the answer to the answer file and reports usage in its
   `turn.completed` event, priced per call from the price table.

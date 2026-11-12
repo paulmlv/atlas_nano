@@ -153,6 +153,32 @@ pub fn schema(taxonomy: &Taxonomy, pull_requests: bool) -> Value {
     schema
 }
 
+/// A GitHub pull request URL in one form, `https://github.com/<owner>/<repo>/pull/<number>`, or
+/// `None` if `url` does not name a pull request. Anything after the number, such as `/files` or a
+/// `#discussion_...` anchor, is cut, and the owner and repository are lowercased as GitHub ignores
+/// their case.
+fn pull_request_url(url: &str) -> Option<String> {
+    let rest = url.trim();
+    let rest = rest
+        .strip_prefix("https://")
+        .or_else(|| rest.strip_prefix("http://"))?;
+    let mut parts = rest.split(['/', '?', '#']);
+    let host = parts.next()?.to_lowercase();
+    if host != "github.com" && host != "www.github.com" {
+        return None;
+    }
+    let (owner, repo, pull) = (parts.next()?, parts.next()?, parts.next()?);
+    let number: u64 = parts.next()?.parse().ok().filter(|number| *number > 0)?;
+    if owner.is_empty() || repo.is_empty() || pull != "pull" {
+        return None;
+    }
+    Some(format!(
+        "https://github.com/{}/{}/pull/{number}",
+        owner.to_lowercase(),
+        repo.to_lowercase()
+    ))
+}
+
 /// Check an answer against the schema's labels and read it.
 fn answer(value: &Value, schema: &Value) -> Result<(String, String, Vec<PullRequest>), Failure> {
     let label = |name: &str| -> Result<String, Failure> {
@@ -171,19 +197,29 @@ fn answer(value: &Value, schema: &Value) -> Result<(String, String, Vec<PullRequ
         let invalid =
             || Failure::Invalid("the answer's `prs` is not a list of pull requests".into());
         let listed = value["prs"].as_array().ok_or_else(invalid)?;
-        listed
+        let entries = listed
             .iter()
             .map(|pr| {
                 let role = pr["role"].as_str().filter(|role| ROLES.contains(role));
                 match (pr["url"].as_str(), role) {
-                    (Some(url), Some(role)) => Ok(PullRequest {
-                        url: url.to_string(),
-                        role: role.to_string(),
-                    }),
+                    (Some(url), Some(role)) => Ok((url, role)),
                     _ => Err(invalid()),
                 }
             })
-            .collect::<Result<Vec<_>, _>>()?
+            .collect::<Result<Vec<_>, _>>()?;
+        // An entry that names no pull request is dropped; the rest are kept once each.
+        let mut prs: Vec<PullRequest> = Vec::new();
+        for (url, role) in entries {
+            if let Some(url) = pull_request_url(url)
+                && !prs.iter().any(|seen| seen.url == url)
+            {
+                prs.push(PullRequest {
+                    url,
+                    role: role.to_string(),
+                });
+            }
+        }
+        prs
     } else {
         Vec::new()
     };
@@ -448,6 +484,47 @@ mod tests {
         assert_eq!(
             mapped["properties"]["prs"]["items"]["properties"]["role"]["enum"],
             json!(ROLES)
+        );
+    }
+
+    #[test]
+    fn pull_request_urls_take_one_form() {
+        let one = Some("https://github.com/o/r/pull/7".to_string());
+        for url in [
+            "https://github.com/o/r/pull/7",
+            "https://github.com/O/R/pull/7#discussion_r123",
+            "http://www.github.com/o/r/pull/7/files",
+            "https://github.com/o/r/pull/7?tab=commits",
+        ] {
+            assert_eq!(pull_request_url(url), one, "{url}");
+        }
+        for url in [
+            "7",
+            "#7",
+            "https://github.com/o/r/issues/7",
+            "https://github.com/o/r/pull/",
+            "https://github.com/o/r/pull/0",
+            "https://gitlab.com/o/r/pull/7",
+            "https://github.com//r/pull/7",
+        ] {
+            assert_eq!(pull_request_url(url), None, "{url}");
+        }
+    }
+
+    #[test]
+    fn an_answer_keeps_each_named_pull_request_once() {
+        let schema = schema(&Taxonomy::built_in(), true);
+        let value = json!({"work": "Debugging", "topic": "Security", "prs": [
+            {"url": "7", "role": "Reviewed"},
+            {"url": "https://github.com/o/r/pull/7", "role": "Reviewed"},
+            {"url": "https://github.com/o/r/pull/7#discussion_r1", "role": "Reviewed"}]});
+        let (_, _, prs) = answer(&value, &schema).unwrap();
+        assert_eq!(
+            prs,
+            [PullRequest {
+                url: "https://github.com/o/r/pull/7".into(),
+                role: "Reviewed".into()
+            }]
         );
     }
 
