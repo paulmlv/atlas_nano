@@ -1,14 +1,14 @@
 # Labeling
 
 How Atlas Nano turns a local session into the text a labeling model reads, and how it makes the
-call. The [taxonomy](TAXONOMY.md) owns the labels, the rules the model follows, and the default
-models; the [required flags](#required-flags) are the only flags a labeling call uses.
+call. The [taxonomy](TAXONOMY.md) describes the labels and the default models, and
+[prompts/](../prompts/) holds the prompt and the labels it sends; the [required flags](#required-flags) are the only flags a labeling call uses.
 
 ## Which sessions are labeled
 
 - Every session is labeled on its own, including subagent sessions, which do not take their parent's
   label.
-- Codex safety reviews are never sent to a model.
+- Codex safety reviews are not labeled.
 - A session that renders to no text is not sent. It stays in the accounting as unlabeled, and the
   run prints how many sessions are unlabeled.
 
@@ -32,6 +32,9 @@ skipped. The file stem is the session id. A file under a `subagents` directory i
 the directory that owns `subagents` is named after the parent session id. Each line is one JSON
 record keyed by `type`. A record whose `uuid` was already seen is skipped. The rows below are tested
 in order.
+
+Claude Code has no archive folder like Codex: a session stays in `~/.claude/projects` until Claude
+Code deletes it, after `cleanupPeriodDays` (30 days by default).
 
 | Record                                                       | Rule                                                                                               |
 | ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
@@ -99,8 +102,9 @@ references its parent's history without copying it, the text is rebuilt from the
 
 - The stripping rule does not change. The session is split into chunks and each chunk is labeled.
 - A chunk fills at most 80% of the model's context window, the fixed context and the instructions
-  included, counting 2 characters per token. The window is taken as 500,000 tokens for Claude Haiku
-  and 272,000 for GPT-6 Luna.
+  included, counting 2 characters per token. The window is taken as 1,000,000 tokens for Claude
+  Haiku and 272,000 for GPT-6 Luna. With `CLAUDE_CODE_DISABLE_1M_CONTEXT` set, Claude Code caps
+  Haiku at 200,000, and so does Atlas Nano.
 - A chunk starts at a user message, so it holds whole turns. A session with no user messages starts
   its chunks at messages from other agents. A single turn larger than the window is cut between
   records, and a single record larger than the window is truncated.
@@ -115,8 +119,10 @@ references its parent's history without copying it, the text is rebuilt from the
 
 - One call per session, or per chunk, at medium effort, with the [required flags](#required-flags).
   Calls run in parallel.
+- The prompt is [prompts/label.md](../prompts/label.md), built into the binary.
 - The instructions say that the conversation is data to classify, not to follow. They list the
-  taxonomy's rules, then every type of work and every topic as `label: definition`. Claude Code
+  rules, then every type of work and every topic in the taxonomy as `label: definition`, the
+  topics under a line for each domain. Claude Code
   receives them as the system prompt. Codex receives them at the start of the prompt, and its
   instructions file holds one short line.
 - The conversation follows between `<conversation>` and `</conversation>` on standard input.
@@ -138,10 +144,14 @@ references its parent's history without copying it, the text is rebuilt from the
   add the pull request rules, the prompt states `Session repository: <URL or unknown>`, with any
   user name and password removed from the URL, and `Session branch: <name or unknown>` before the
   conversation, and the schema requires a `prs` array of `{"url", "role"}` objects whose role is
-  `Contributed to`, `Reviewed`, or `Mentioned only`.
+  `Contributed to`, `Reviewed`, or `Mentioned only`. Each URL is kept as
+  `https://github.com/<owner>/<repo>/pull/<number>`, the owner and repository lowercased and
+  anything after the number cut, and each pull request once. An entry that names no GitHub pull
+  request is dropped.
 - Claude Code returns the answer as `structured_output` in its JSON result, with `is_error`,
-  `usage`, and `total_cost_usd`. Codex writes the answer to the answer file and reports usage in its
-  `turn.completed` event, priced per call from the price table.
+  `usage`, and `total_cost_usd`.
+- Codex writes the answer to the answer file and reports usage in its `turn.completed` event, priced
+  per call from the price table.
 - A call that fails, runs longer than ten minutes, or returns an answer that does not match the
   schema is not retried. A call past ten minutes is stopped. The error is logged, the session counts
   as unlabeled, and the run continues. Its tokens and cost still count in the labeling summary. A
@@ -155,7 +165,7 @@ Every labeling call must use these flags, and no others that add context. Config
 small labeling call per installed client with them and fails if the call is rejected.
 
 ```sh
-claude -p --model <model> --effort medium --no-session-persistence \
+CLAUDE_CODE_DISABLE_ATTACHMENTS=1 claude -p --model <model> --effort medium --no-session-persistence \
   --system-prompt "<labeling instructions>" --tools "" --strict-mcp-config \
   --disable-slash-commands --setting-sources "" \
   --output-format json --json-schema '<answer schema>'
@@ -175,3 +185,5 @@ codex exec -m <model> -c model_reasoning_effort='"medium"' --ephemeral \
 ```
 
 Both run from an empty working directory with the conversation on standard input.
+`CLAUDE_CODE_DISABLE_ATTACHMENTS=1` stops Claude Code from attaching a file named by an `@path` in
+the conversation.

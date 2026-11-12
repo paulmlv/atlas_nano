@@ -20,6 +20,7 @@ use crate::labeler::{self, Answer, Call, Failure, Labeler};
 use crate::model::{Client, Kind, Label, PrRole, PullRequest, Session, Usage};
 use crate::paint::{Paint, Tone};
 use crate::prices::PriceTable;
+use crate::prompt::Prompt;
 use crate::taxonomy::Taxonomy;
 use crate::text;
 
@@ -44,20 +45,20 @@ fn fixed_tokens(client: Client) -> u64 {
 
 /// The context window assumed for a labeling model, in tokens.
 ///
-/// Codex lists 272K for its GPT-6 models; Claude Haiku has accepted prompts above 500K tokens through
-/// Claude Code. Any other model gets a conservative 200K.
-fn window(client: Client, model: &str) -> usize {
+/// Codex lists 272K for its GPT-6 models; Claude Haiku 5.5 has a 1M window, unless `capped`: Claude
+/// Code's 1M context is turned off. Any other model gets a conservative 200K.
+fn window(client: Client, model: &str, capped: bool) -> usize {
     match client {
         Client::Codex if model.starts_with("gpt-6") => 272_000,
-        Client::Claude if model.starts_with("claude-haiku") => 500_000,
+        Client::Claude if model.starts_with("claude-haiku") && !capped => 1_000_000,
         _ => 200_000,
     }
 }
 
 /// The bytes of conversation one call may carry: 80% of the window, less the fixed context.
-fn budget(client: Client, model: &str, instructions: &str) -> usize {
+fn budget(client: Client, model: &str, instructions: &str, capped: bool) -> usize {
     let fixed = usize::try_from(fixed_tokens(client)).unwrap_or(usize::MAX);
-    let tokens = (window(client, model) * 4 / 5)
+    let tokens = (window(client, model, capped) * 4 / 5)
         .saturating_sub(fixed)
         .saturating_sub(instructions.len() / CHUNK_CHARS_PER_TOKEN);
     tokens * CHUNK_CHARS_PER_TOKEN
@@ -253,6 +254,24 @@ fn clock(time: Duration) -> String {
     }
 }
 
+/// Who pays for the calls. Claude Code bills an exported `ANTHROPIC_API_KEY` before a subscription.
+fn billing(client: Client, api_key: bool) -> &'static str {
+    match client {
+        Client::Claude if api_key => {
+            "ANTHROPIC_API_KEY is set, so Claude Code bills these calls to that API key: the dollar \
+             figure is a charge."
+        }
+        Client::Claude => {
+            "The calls go through your signed-in Claude Code client: on a subscription they use \
+             your plan's limits, and the dollar figure is what the API would cost, not a charge."
+        }
+        Client::Codex => {
+            "The calls go through your signed-in Codex client: on a subscription they use your \
+             plan's limits, and the dollar figure is what the API would cost, not a charge."
+        }
+    }
+}
+
 /// One line of progress: a bar, the calls done, the share, and the time spent and left.
 fn bar(paint: Paint, done: usize, total: usize, elapsed: Duration) -> String {
     const WIDTH: usize = 30;
@@ -307,9 +326,12 @@ pub fn label(
 ) -> Result<Outcome, String> {
     let settings = &config.labeler;
     let client = settings.client;
-    let instructions = labeler::instructions(taxonomy, settings.pull_requests);
+    let prompt = Prompt::new(taxonomy, settings.pull_requests);
     let schema = labeler::schema(taxonomy, settings.pull_requests);
-    let budget = budget(client, &settings.model, &instructions);
+    // Claude Code caps its window at 200K when this is set to anything but 0 or false.
+    let capped = std::env::var("CLAUDE_CODE_DISABLE_1M_CONTEXT")
+        .is_ok_and(|value| !["", "0", "false"].contains(&value.trim().to_lowercase().as_str()));
+    let budget = budget(client, &settings.model, &prompt.instructions, capped);
     let schema_text = schema.to_string();
 
     // A run with nothing to call costs nothing.
@@ -329,31 +351,26 @@ pub fn label(
             summary.unlabeled += 1;
             continue;
         }
-        let header = if settings.pull_requests {
-            let url = match session.client {
-                Client::Codex => session.repository.clone(),
-                Client::Claude => session
-                    .cwd
-                    .as_deref()
-                    .map(|cwd| repository(cwd, &mut remotes))
-                    .filter(|url| !url.is_empty()),
-            };
-            format!(
-                "Session repository: {}\nSession branch: {}\n\n",
-                url.map_or("unknown".to_string(), |url| without_credentials(&url)),
-                session.branch.as_deref().unwrap_or("unknown")
-            )
-        } else {
-            String::new()
+        let url = match session.client {
+            Client::Codex => session.repository.clone(),
+            Client::Claude if settings.pull_requests => session
+                .cwd
+                .as_deref()
+                .map(|cwd| repository(cwd, &mut remotes))
+                .filter(|url| !url.is_empty()),
+            Client::Claude => None,
         };
+        let url = url.map_or("unknown".to_string(), |url| without_credentials(&url));
+        let branch = session.branch.as_deref().unwrap_or("unknown");
         let prompts: Vec<String> = chunks
             .iter()
-            .map(|chunk| format!("{header}<conversation>\n{chunk}\n</conversation>\n"))
+            .map(|chunk| prompt.conversation(&url, branch, chunk))
             .collect();
         // Everything sent to the labeler, so a changed instruction or label list relabels.
         let mut parts = vec![
-            instructions.as_str(),
+            prompt.instructions.as_str(),
             schema_text.as_str(),
+            prompt.codex_system.as_str(),
             client.name(),
             settings.model.as_str(),
             config.unit.as_str(),
@@ -400,7 +417,8 @@ pub fn label(
             clippy::cast_sign_loss,
             clippy::cast_precision_loss
         )]
-        let tokens = ((characters + instructions.len()) as f64 / chars_per_token(client)) as u64;
+        let tokens =
+            ((characters + prompt.instructions.len()) as f64 / chars_per_token(client)) as u64;
         tokens + fixed_tokens(client)
     };
     let tokens: u64 = pending
@@ -446,18 +464,8 @@ pub fn label(
     });
     eprintln!("  {characters} characters to send, roughly {tokens} tokens, {cost}");
     if !pending.is_empty() {
-        eprintln!(
-            "  {}",
-            paint.dim(&format!(
-                "The calls go through your signed-in {} client: on a subscription they use your \
-             plan's limits, and the dollar figure is what the API would cost, not a charge.",
-                if client == Client::Claude {
-                    "Claude Code"
-                } else {
-                    "Codex"
-                }
-            ))
-        );
+        let api_key = std::env::var_os("ANTHROPIC_API_KEY").is_some_and(|key| !key.is_empty());
+        eprintln!("  {}", paint.dim(billing(client, api_key)));
     }
     if confirm && !pending.is_empty() {
         eprint!("{} {} ", paint.bold("Proceed?"), paint.dim("(y / n) [n]"));
@@ -477,7 +485,7 @@ pub fn label(
         let labeler = Labeler {
             client,
             model: &settings.model,
-            instructions,
+            prompt: &prompt,
             schema,
             folder: &folder,
         };
@@ -598,6 +606,14 @@ pub fn label(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn says_when_an_api_key_pays_for_claude_calls() {
+        assert!(billing(Client::Claude, true).contains("ANTHROPIC_API_KEY"));
+        assert!(billing(Client::Claude, false).contains("not a charge"));
+        // Codex does not read ANTHROPIC_API_KEY.
+        assert!(billing(Client::Codex, true).contains("not a charge"));
+    }
 
     #[test]
     fn sends_no_credentials_from_a_repository_url() {
@@ -764,13 +780,21 @@ mod tests {
     #[test]
     fn the_budget_leaves_a_fifth_of_the_window_and_the_fixed_context() {
         assert_eq!(
-            budget(Client::Codex, "gpt-6-luna", ""),
+            budget(Client::Codex, "gpt-6-luna", "", false),
             (217_600 - 5_430) * 2
         );
         assert_eq!(
-            budget(Client::Claude, "claude-haiku-5-5", &"x".repeat(2_000)),
-            (400_000 - 1_425 - 1_000) * 2
+            budget(
+                Client::Claude,
+                "claude-haiku-5-5",
+                &"x".repeat(2_000),
+                false
+            ),
+            (800_000 - 1_425 - 1_000) * 2
         );
-        assert_eq!(window(Client::Claude, "something-else"), 200_000);
+        assert_eq!(window(Client::Claude, "something-else", false), 200_000);
+        // With Claude Code's 1M context off, Haiku gets 200K.
+        assert_eq!(window(Client::Claude, "claude-haiku-5-5", true), 200_000);
+        assert_eq!(window(Client::Codex, "gpt-6-luna", true), 272_000);
     }
 }

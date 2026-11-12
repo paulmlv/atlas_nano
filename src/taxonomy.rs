@@ -1,6 +1,6 @@
-//! The label lists and rules, read from the taxonomy page built into the binary.
+//! The label lists, read from `prompts/labels.md`, built into the binary.
 
-const PAGE: &str = include_str!("../docs/TAXONOMY.md");
+const PAGE: &str = include_str!("../prompts/labels.md");
 
 /// One label with the group or domain it rolls up to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -10,13 +10,11 @@ pub struct Entry {
     pub definition: String,
 }
 
-/// The labeling rules, the two label lists, and the pull request rules.
+/// The two label lists.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Taxonomy {
-    pub rules: String,
     pub work: Vec<Entry>,
     pub topics: Vec<Entry>,
-    pub pull_request_rules: String,
 }
 
 /// Return the body of the section whose heading starts with `## <title>`.
@@ -61,10 +59,8 @@ impl Taxonomy {
 
     fn decode(page: &str) -> Result<Taxonomy, String> {
         Ok(Taxonomy {
-            rules: section(page, "Rules")?.to_string(),
             work: entries(section(page, "Type of work")?)?,
             topics: entries(section(page, "Topic")?)?,
-            pull_request_rules: section(page, "Pull request mapping")?.to_string(),
         })
     }
 
@@ -107,8 +103,6 @@ mod tests {
             assert_eq!(labels.len(), entries.len(), "labels are unique");
             assert!(entries.iter().all(|entry| !entry.definition.is_empty()));
         }
-        assert!(taxonomy.rules.starts_with("- "));
-        assert!(taxonomy.pull_request_rules.contains("Contributed to"));
         assert_eq!(
             Taxonomy::group(&taxonomy.work, "Debugging"),
             Some("Software")
