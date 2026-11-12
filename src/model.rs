@@ -37,6 +37,8 @@ pub enum Kind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Usage {
     pub id: String,
+    /// The session the client recorded the request in, when it says. A copy keeps it.
+    pub owner: Option<String>,
     pub at: DateTime<Utc>,
     pub model: String,
     pub fast: bool,

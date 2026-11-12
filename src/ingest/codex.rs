@@ -98,6 +98,7 @@ fn usage(id: String, counts: &Value, timestamp: &str, model: &str) -> Option<Usa
     );
     Some(Usage {
         id,
+        owner: None,
         at: time(timestamp)?,
         model: model.to_string(),
         fast: false,

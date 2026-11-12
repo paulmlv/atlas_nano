@@ -174,6 +174,7 @@ mod tests {
     fn usage(model: &str, input: u64) -> Usage {
         Usage {
             id: String::new(),
+            owner: None,
             at: Utc::now(),
             model: model.to_string(),
             fast: false,

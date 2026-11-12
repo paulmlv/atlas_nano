@@ -13,7 +13,7 @@ use chrono::{DateTime, Utc};
 use rayon::prelude::*;
 use serde_json::Value;
 
-use crate::model::{Client, Item, Kind, Session, SessionRef};
+use crate::model::{Client, Item, Kind, Session, SessionRef, Usage};
 
 /// The folders each client keeps its sessions in, relative to the user's home.
 pub const FOLDERS: [(Client, &str); 3] = [
@@ -213,13 +213,16 @@ fn link_scratchpads(sessions: &mut [Session]) {
     }
 }
 
-/// Keep each model request once, in the earliest-started session that holds a copy of it.
+/// Keep each model request once: in the session recorded with it, when that session holds a copy,
+/// or else in the earliest-started session that does.
 ///
 /// A fork's copied history can start at its parent's time; on a tie the session with no parent
 /// keeps the request. A request repeated within one session also counts once.
 fn count_requests_once(sessions: &mut [Session]) {
-    let rank = |session: &Session| {
+    // Every copy of a request records the same owner, so one usage ranks all its holders.
+    let rank = |session: &Session, usage: &Usage| {
         (
+            usage.owner.as_deref() != Some(session.id.as_str()),
             session.started.is_none(),
             session.started,
             session.parent.is_some(),
@@ -230,7 +233,7 @@ fn count_requests_once(sessions: &mut [Session]) {
     for (index, session) in sessions.iter().enumerate() {
         for usage in &session.usage {
             let held = owner.entry(usage.id.clone()).or_insert(index);
-            if rank(session) < rank(&sessions[*held]) {
+            if rank(session, usage) < rank(&sessions[*held], usage) {
                 *held = index;
             }
         }
@@ -505,6 +508,47 @@ mod tests {
             assert_eq!(session.usage.len(), 1);
             assert_eq!(session.usage[0].id, own_request);
         }
+    }
+
+    #[test]
+    fn a_claude_copy_belongs_to_the_session_recorded_with_it() {
+        let home = home("claude-recorded-owner");
+        let projects = home.join(".claude/projects/p");
+        let recorded = |id: &str, second, session: &str| {
+            let mut record = reply(id, second);
+            record["sessionId"] = json!(session);
+            record
+        };
+        // The fork starts at the same time as the original and sorts first by name.
+        write(
+            &projects.join("z-original.jsonl"),
+            &[recorded("old", 1, "z-original")],
+            false,
+        );
+        write(
+            &projects.join("a-fork.jsonl"),
+            &[
+                recorded("old", 1, "z-original"),
+                recorded("new", 1, "a-fork"),
+            ],
+            false,
+        );
+        // A subagent copied under the fork still belongs to the original.
+        write(
+            &projects.join("a-fork/subagents/agent-1.jsonl"),
+            &[recorded("sub", 2, "z-original")],
+            false,
+        );
+
+        let sessions = load(&home, &[Client::Claude]).sessions;
+        fs::remove_dir_all(&home).unwrap();
+        let find = |id: &str| sessions.iter().find(|session| session.id == id).unwrap();
+        let ids =
+            |id: &str| -> Vec<&str> { find(id).usage.iter().map(|u| u.id.as_str()).collect() };
+        assert_eq!(ids("z-original"), ["old"]);
+        assert_eq!(ids("a-fork"), ["new"]);
+        let parent = find("agent-1").parent.as_ref().map(|p| p.id.as_str());
+        assert_eq!(parent, Some("z-original"));
     }
 
     #[test]

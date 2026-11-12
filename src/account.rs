@@ -179,6 +179,7 @@ pub mod tests {
             usage: vec![
                 Usage {
                     id: format!("{id}-1"),
+                    owner: None,
                     at: at(started),
                     model: "claude-haiku-5-5".to_string(),
                     fast: false,
@@ -190,6 +191,7 @@ pub mod tests {
                 },
                 Usage {
                     id: format!("{id}-2"),
+                    owner: None,
                     at: at(started + 1),
                     model: "unpriced".to_string(),
                     fast: false,
