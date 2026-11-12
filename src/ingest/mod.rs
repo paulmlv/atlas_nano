@@ -440,6 +440,59 @@ mod tests {
     }
 
     #[test]
+    fn a_claude_fork_enters_the_period_at_its_fork_point() {
+        use crate::account::{in_period, roots};
+
+        let home = home("claude-fork");
+        let projects = home.join(".claude/projects/p");
+        let mut original = reply("old", 1);
+        original["sessionId"] = json!("original");
+        write(
+            &projects.join("original.jsonl"),
+            std::slice::from_ref(&original),
+            false,
+        );
+
+        let mut marked = original.clone();
+        marked["uuid"] = json!("copied-answer");
+        marked["sessionId"] = json!("fork-marked");
+        marked["forkedFrom"] = json!({"sessionId": "original", "messageUuid": original["uuid"]});
+        let fork_time = "2026-01-01T00:00:08Z";
+        for (id, copied) in [("fork-copy", original), ("fork-marked", marked)] {
+            let started = json!({
+                "type": "custom-title", "sessionId": id, "timestamp": fork_time,
+                "customTitle": "Fork"
+            });
+            write(
+                &projects.join(format!("{id}.jsonl")),
+                &[copied, started, reply(id, 9)],
+                false,
+            );
+        }
+
+        let sessions = load(&home, &[Client::Claude]).sessions;
+        fs::remove_dir_all(&home).unwrap();
+        let fork_time = time(fork_time).unwrap();
+        let covered = in_period(&sessions, &roots(&sessions), Some(fork_time));
+        let included: Vec<_> = sessions
+            .iter()
+            .zip(covered)
+            .filter_map(|(session, included)| included.then_some(session.id.as_str()))
+            .collect();
+        assert_eq!(included, ["fork-copy", "fork-marked"]);
+        for session in sessions {
+            let own_request = if session.id == "original" {
+                "old"
+            } else {
+                assert_eq!(session.started, Some(fork_time));
+                session.id.as_str()
+            };
+            assert_eq!(session.usage.len(), 1);
+            assert_eq!(session.usage[0].id, own_request);
+        }
+    }
+
+    #[test]
     fn a_fork_inherits_the_referenced_history_before_its_cutoff() {
         let home = home("fork");
         let folder = home.join(".codex/sessions");

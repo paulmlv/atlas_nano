@@ -132,7 +132,7 @@ fn usage(reply: &Value, at: chrono::DateTime<chrono::Utc>) -> Option<Usage> {
 }
 
 /// Describe one transcript. A file under a `subagents` directory is a subagent of the session
-/// whose directory owns it.
+/// whose directory owns it. A fork is dated from its own records after the copied prefix.
 pub fn parse(path: &Path, records: &[Value]) -> Session {
     let owner = path
         .ancestors()
@@ -175,7 +175,17 @@ pub fn parse(path: &Path, records: &[Value]) -> Session {
             continue;
         }
         let at = record["timestamp"].as_str().and_then(time);
-        span.add(at);
+        if session.kind == Kind::Primary
+            && (record["forkedFrom"]["sessionId"].is_string()
+                || record["sessionId"]
+                    .as_str()
+                    .is_some_and(|id| id != session.id))
+        {
+            // Discard timestamps from the copied prefix, including its unmarked records.
+            span = Span::default();
+        } else {
+            span.add(at);
+        }
         if session.cwd.is_empty() {
             session.cwd = record["cwd"].as_str().unwrap_or_default().to_string();
         }

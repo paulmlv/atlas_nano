@@ -131,7 +131,7 @@ impl Session {
         format!("{}:{}", self.client.name(), self.id)
     }
 
-    /// The time from the first record to the last, gaps included.
+    /// The time between the session's recorded start and end, gaps included.
     pub fn wall(&self) -> Option<Duration> {
         Some(self.ended? - self.started?)
     }
