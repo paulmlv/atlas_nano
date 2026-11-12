@@ -21,6 +21,7 @@ use crate::taxonomy::Taxonomy;
 /// The hours a period covers, back from the time of the run; None covers everything.
 fn hours(period: Period) -> Option<i64> {
     match period {
+        Period::Day1 => Some(24),
         Period::Days7 => Some(168),
         Period::Days30 => Some(720),
         Period::All => None,
@@ -29,6 +30,7 @@ fn hours(period: Period) -> Option<i64> {
 
 fn name(period: Period) -> &'static str {
     match period {
+        Period::Day1 => "last day",
         Period::Days7 => "last 7 days",
         Period::Days30 => "last 30 days",
         Period::All => "all time",
@@ -66,26 +68,15 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
     let sessions = loaded.sessions;
     let roots = account::roots(&sessions);
     let cutoff = hours(args.period).map(|hours| now - Duration::hours(hours));
-    let covered = account::in_period(&sessions, &roots, cutoff);
+    let in_period = account::in_period(&sessions, &roots, cutoff);
+    // The covered sessions' indexes, in order; a covered session's root is covered too.
+    let covered: Vec<usize> = (0..sessions.len()).filter(|&n| in_period[n]).collect();
     let prices = PriceTable::built_in();
-
-    // Rows hold only the covered sessions, so a root's position is its rank among them.
-    let position: Vec<usize> = covered
-        .iter()
-        .scan(0, |next, &kept| {
-            let at = *next;
-            *next += usize::from(kept);
-            Some(at)
-        })
-        .collect();
     let taxonomy = Taxonomy::built_in();
     let outcome = if args.no_label {
         None
     } else {
-        let selected: Vec<&Session> = (0..sessions.len())
-            .filter(|&n| covered[n])
-            .map(|n| &sessions[n])
-            .collect();
+        let selected: Vec<&Session> = covered.iter().map(|&n| &sessions[n]).collect();
         Some(label::label(
             &selected,
             &config,
@@ -101,20 +92,23 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
         .map(|n| sessions[roots[n]].cwd.as_deref().unwrap_or_default())
         .collect();
     let mut places: HashMap<&str, Place> = HashMap::new();
-    for n in (0..sessions.len()).filter(|&n| covered[n]) {
+    for &n in &covered {
         places
             .entry(starts[n])
             .or_insert_with(|| place::place(starts[n], &home));
     }
-    let rows: Vec<Row> = (0..sessions.len())
-        .filter(|&n| covered[n])
-        .map(|n| Row {
+    let rows: Vec<Row> = covered
+        .iter()
+        .map(|&n| Row {
             session: &sessions[n],
             cost: account::cost(&sessions[n], &prices),
             label: outcome
                 .as_ref()
                 .and_then(|outcome| outcome.labels.get(&sessions[n].key())),
-            root: position[roots[n]],
+            // Rows hold only the covered sessions, so a root's row is its rank among them.
+            root: covered
+                .binary_search(&roots[n])
+                .expect("a covered session's root is covered"),
             place: &places[starts[n]],
         })
         .collect();

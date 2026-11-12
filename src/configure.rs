@@ -5,6 +5,7 @@ use std::io::{self, BufRead as _, Write as _};
 
 use crate::config::{self, Config, Labeler as Settings, labeling_model};
 use crate::ingest::FOLDERS;
+use crate::label;
 use crate::labeler::{self, Failure, Labeler};
 use crate::model::Client;
 use crate::paint::{Paint, Theme, Tone};
@@ -157,11 +158,15 @@ pub fn configure() -> Result<(), String> {
                 paint.bold(&format!("{name}:")),
                 paint.dim("not installed, skipped")
             ),
-            Ok(false) => {
-                return Err(format!(
-                    "{name} is installed, but this version cannot run a call without saving it; update it"
-                ));
-            }
+            Ok(false) => println!(
+                "{} {}",
+                paint.bold(&format!("{name}:")),
+                paint.tone(
+                    Tone::Warning,
+                    "installed, but this version cannot run a call without saving it; skipped \
+                     until it is updated"
+                )
+            ),
             Ok(true) => {
                 println!(
                     "{} {}",
@@ -173,7 +178,9 @@ pub fn configure() -> Result<(), String> {
         }
     }
     if installed.is_empty() {
-        return Err("neither Claude Code nor Codex is installed".to_string());
+        return Err(
+            "neither Claude Code nor Codex is installed in a version that can label".to_string(),
+        );
     }
     let recorded: Vec<Client> = [Client::Claude, Client::Codex]
         .into_iter()
@@ -207,13 +214,10 @@ pub fn configure() -> Result<(), String> {
             _ => vec![Client::Codex],
         },
     };
-    println!(
-        "{}",
-        paint.dim(
-            "Labeling goes through the Claude Code or Codex client you are signed in to. On a \
-             subscription it counts against your plan's usage limits and is not billed as API calls."
-        )
-    );
+    // Said before the test calls, which an exported API key pays for like any other.
+    for &client in &installed {
+        println!("{}", label::payer(paint, client));
+    }
     // Each client labels with one model for now: Claude Code when it is installed, otherwise Codex.
     let offered: Vec<String> = installed
         .iter()
@@ -233,15 +237,21 @@ pub fn configure() -> Result<(), String> {
                 .expect("the choice was offered")]
         }
     };
-    let model = labeling_model(client).to_string();
+    // Warned before any call or save, so the user can stop here and choose again.
+    if let Some(warning) = provider_warning(&covered, client) {
+        println!("{}", paint.tone(Tone::Warning, &warning));
+    }
     let tools = !yes(
         "Leave tool calls out of what is sent (no-tools mode)?",
         false,
     )?;
     let pull_requests = yes("Map conversations to pull requests (experimental)?", false)?;
-    let jobs: usize = ask("How many labeling calls at once?", "a whole number", "16")?
-        .parse()
-        .map_err(|_| "the number of calls at once must be a whole number".to_string())?;
+    let jobs = loop {
+        match ask("How many labeling calls at once?", "a whole number", "32")?.parse::<usize>() {
+            Ok(jobs) if jobs > 0 => break jobs,
+            _ => println!("  please answer a whole number of at least 1"),
+        }
+    };
     // Without colors there is nothing to preview.
     if paint.is_on() {
         for theme in Theme::ALL {
@@ -256,23 +266,19 @@ pub fn configure() -> Result<(), String> {
         .expect("offered")];
     paint = paint.with(theme);
 
+    // Only the labeler's call must work; another client's failure is reported and not used.
     println!(
         "{}",
         paint.dim("testing a labeling call for each installed client")
     );
     for &tested in &installed {
-        test_call(
-            paint,
-            tested,
-            if tested == client {
-                &model
-            } else {
-                labeling_model(tested)
-            },
-        )?;
-    }
-    if let Some(warning) = provider_warning(&covered, client) {
-        println!("{}", paint.tone(Tone::Warning, &warning));
+        match test_call(paint, tested, labeling_model(tested)) {
+            Err(error) if tested != client => {
+                let note = format!("{error}; it does not label, so configuration goes on");
+                println!("  {} {note}", paint.tone(Tone::Warning, "warning:"));
+            }
+            result => result?,
+        }
     }
     let config = Config {
         unit: "conversation".to_string(),
@@ -280,7 +286,7 @@ pub fn configure() -> Result<(), String> {
         theme,
         labeler: Settings {
             client,
-            model,
+            model: labeling_model(client).to_string(),
             tools,
             pull_requests,
             jobs,
