@@ -11,11 +11,11 @@ on:
 permissions:
   contents: read
 
-# A new push to the same PR cancels the run it replaces. Runs on main are never cancelled, so
-# each merge gets its own result.
+# A new push to the same PR cancels the run it replaces. Every other run gets its own group, so
+# runs on main are never cancelled, even while waiting, and each merge gets its own result.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
   rust:
