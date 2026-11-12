@@ -77,6 +77,25 @@ fn list(entries: &[Entry]) -> String {
     lines.collect::<Vec<_>>().join("\n")
 }
 
+/// The entries under a `Group:` line for each group, in the order the groups first appear.
+fn grouped(entries: &[Entry]) -> String {
+    let mut groups: Vec<&str> = Vec::new();
+    for entry in entries {
+        if !groups.contains(&entry.group.as_str()) {
+            groups.push(&entry.group);
+        }
+    }
+    let blocks = groups.iter().map(|group| {
+        let members: Vec<Entry> = entries
+            .iter()
+            .filter(|entry| entry.group == *group)
+            .cloned()
+            .collect();
+        format!("{group}:\n{}", list(&members))
+    });
+    blocks.collect::<Vec<_>>().join("\n\n")
+}
+
 impl Prompt {
     /// The built-in prompt with the taxonomy filled in.
     pub fn new(taxonomy: &Taxonomy, pull_requests: bool) -> Prompt {
@@ -85,7 +104,7 @@ impl Prompt {
             &instructions,
             &[
                 ("work", &list(&taxonomy.work)),
-                ("topics", &list(&taxonomy.topics)),
+                ("topics", &grouped(&taxonomy.topics)),
             ],
         );
         Prompt {
@@ -154,6 +173,9 @@ mod tests {
             let line = format!("- {}: {}", entry.label, entry.definition);
             assert!(plain.instructions.contains(&line));
         }
+        let personal = Taxonomy::group(&taxonomy.topics, "General knowledge");
+        assert_eq!(personal, Some("Personal"));
+        assert!(plain.instructions.contains("\n\nPersonal:\n- "));
         assert!(!plain.instructions.contains("Pull request rules"));
         let with_prs = Prompt::new(&taxonomy, true);
         assert!(

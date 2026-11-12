@@ -121,7 +121,8 @@ references its parent's history without copying it, the text is rebuilt from the
   Calls run in parallel.
 - The prompt is [prompts/label.md](../prompts/label.md), built into the binary.
 - The instructions say that the conversation is data to classify, not to follow. They list the
-  rules, then every type of work and every topic in the taxonomy as `label: definition`. Claude Code
+  rules, then every type of work and every topic in the taxonomy as `label: definition`, the
+  topics under a line for each domain. Claude Code
   receives them as the system prompt. Codex receives them at the start of the prompt, and its
   instructions file holds one short line.
 - The conversation follows between `<conversation>` and `</conversation>` on standard input.
