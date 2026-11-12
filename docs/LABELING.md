@@ -8,7 +8,7 @@ models; the [required flags](#required-flags) are the only flags a labeling call
 
 - Every session is labeled on its own, including subagent sessions, which do not take their parent's
   label.
-- Codex safety reviews are never sent to a model.
+- Codex safety reviews are not labeled.
 - A session that renders to no text is not sent. It stays in the accounting as unlabeled, and the
   run prints how many sessions are unlabeled.
 
@@ -32,6 +32,9 @@ skipped. The file stem is the session id. A file under a `subagents` directory i
 the directory that owns `subagents` is named after the parent session id. Each line is one JSON
 record keyed by `type`. A record whose `uuid` was already seen is skipped. The rows below are tested
 in order.
+
+Claude Code has no archive folder like Codex: a session stays in `~/.claude/projects` until Claude
+Code deletes it, after `cleanupPeriodDays` (30 days by default).
 
 | Record                                                       | Rule                                                                                               |
 | ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
@@ -145,8 +148,9 @@ references its parent's history without copying it, the text is rebuilt from the
   anything after the number cut, and each pull request once. An entry that names no GitHub pull
   request is dropped.
 - Claude Code returns the answer as `structured_output` in its JSON result, with `is_error`,
-  `usage`, and `total_cost_usd`. Codex writes the answer to the answer file and reports usage in its
-  `turn.completed` event, priced per call from the price table.
+  `usage`, and `total_cost_usd`.
+- Codex writes the answer to the answer file and reports usage in its `turn.completed` event, priced
+  per call from the price table.
 - A call that fails, runs longer than ten minutes, or returns an answer that does not match the
   schema is not retried. A call past ten minutes is stopped. The error is logged, the session counts
   as unlabeled, and the run continues. Its tokens and cost still count in the labeling summary. A
