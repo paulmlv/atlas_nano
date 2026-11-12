@@ -127,8 +127,8 @@ pub struct Session {
     pub started: Option<DateTime<Utc>>,
     pub ended: Option<DateTime<Utc>>,
     pub items: Vec<Item>,
-    /// Each tool call once, by its id. `items` can repeat a call and, for a Codex fork, also holds
-    /// its parent's history.
+    /// The tool calls in this session's own transcript, a call with an id counted once. `items` can
+    /// repeat a call and, for a Codex fork, also holds the history inherited from its base.
     pub tool_calls: u64,
     pub turns: Vec<Turn>,
     pub usage: Vec<Usage>,
