@@ -1,37 +1,18 @@
 # Taxonomy
 
 Atlas Nano gives each conversation one type of work and one topic, chosen by a labeling model from
-the fixed lists below. This page is the contract for those labels, the rules the model follows, and
-the experimental pull request mapping. The labels have not been checked by hand.
+the fixed lists below. This page is the contract for those labels and the experimental pull request
+mapping; the rules the model follows are in the [labeling prompt](../prompts/label.md). The labels
+have not been checked by hand.
 
 ## Rules
 
 - The labeling model is Claude Haiku through Claude Code, or GPT-6 Luna through Codex. No other
   model labels.
 - Labels are fixed. The model picks exactly one type of work and exactly one topic per conversation.
-- A mixed conversation takes the label for most of the assistant's work, judged by what its tool
-  calls and replies do. The opening request and the number of user turns only break ties.
-- Groups and domains are for report roll-ups; the model picks a label, never a group or domain.
-- Work versus personal follows from the topic's domain: Personal is one domain, every other domain
-  is work. A conversation is work if it concerns a job, a business, or a codebase, and Personal if
-  it concerns the user's own life. With no sign either way it goes to Personal / General knowledge.
-- Research versus Planning and design: Research when the answer exists in the outside world and has
-  to be found; Planning and design when the answer is a choice about the user's own work. Reading
-  one given page, paper, or repository is Reading a document or Understanding code, not Research.
-- Version control applies when the Git work is the point: cleaning up branches, retargeting, merging
-  or rebasing with conflict resolution, releasing. When commits and pull requests deliver a change
-  the conversation itself makes, label the change, such as Writing documentation or Refactoring and
-  maintenance.
-- In a codebase, the topic is the part of the system the changed, reviewed, or explained code
-  belongs to (server and API, data and storage, interface, build and CI, infrastructure). It is not
-  what the product is about and not the quality the user asks for, such as correctness, simplicity,
-  or clarity. Software that serves, meters, records, or analyzes AI assistants still takes the topic
-  of its part, such as Backend and APIs or Data storage and pipelines.
-- Tests, linters, and type checks run only to verify other work do not set the topic. Version
-  control work that changes no code of its own (cleaning up branches, retargeting or merging pull
-  requests) takes Developer tooling and CI unless one code subject dominates.
-- A type of work is never repeated as a topic: a conversation that writes documentation takes the
-  topic of what is documented, and one that analyzes data takes the topic of what the data is about.
+- How the model decides between labels (mixed conversations, work versus personal, Research versus
+  Planning and design, Version control, topics in a codebase) is in the rules of the
+  [labeling prompt](../prompts/label.md).
 - Every session is labeled, including subagent sessions and sessions with no request typed by the
   user. The only sessions never labeled are automatic reviews, which Codex records as safety
   reviews. A session with no text to send stays unlabeled.
@@ -137,9 +118,8 @@ the experimental pull request mapping. The labels have not been checked by hand.
   never a bare number, in the model's answer and the report. The prompt gives the session's
   repository so the model can resolve a bare number; with no known repository it omits the pull
   request.
-- Roles, one per pull request: Contributed to (wrote, changed, merged, or maintained the pull
-  request), Reviewed (judged it or handled review comments), Mentioned only (no work on it). The
-  first two attribute the conversation's cost to the pull request; Mentioned only attributes
+- Roles, one per pull request, defined in the [labeling prompt](../prompts/label.md): Contributed
+  to and Reviewed attribute the conversation's cost to the pull request; Mentioned only attributes
   nothing.
 - A conversation that worked on several pull requests splits its cost evenly among them, and the
   report marks split amounts as estimates.

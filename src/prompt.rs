@@ -84,10 +84,8 @@ impl Prompt {
         let instructions = fill(
             &instructions,
             &[
-                ("rules", &taxonomy.rules),
                 ("work", &list(&taxonomy.work)),
                 ("topics", &list(&taxonomy.topics)),
-                ("pull_request_rules", &taxonomy.pull_request_rules),
             ],
         );
         Prompt {
@@ -134,7 +132,7 @@ mod tests {
         assert!(codex_system.contains("JSON"));
         assert_eq!(
             placeholders(&instructions),
-            BTreeSet::from(["pull_request_rules", "rules", "topics", "work"])
+            BTreeSet::from(["topics", "work"])
         );
         assert_eq!(
             placeholders(&conversation),
@@ -147,14 +145,22 @@ mod tests {
     fn instructions_list_the_rules_and_every_label() {
         let taxonomy = Taxonomy::built_in();
         let plain = Prompt::new(&taxonomy, false);
-        assert!(plain.instructions.contains(&taxonomy.rules));
+        assert!(
+            plain
+                .instructions
+                .contains("Rules:\n- A mixed conversation")
+        );
         for entry in taxonomy.work.iter().chain(&taxonomy.topics) {
             let line = format!("- {}: {}", entry.label, entry.definition);
             assert!(plain.instructions.contains(&line));
         }
         assert!(!plain.instructions.contains("Pull request rules"));
         let with_prs = Prompt::new(&taxonomy, true);
-        assert!(with_prs.instructions.contains(&taxonomy.pull_request_rules));
+        assert!(
+            with_prs
+                .instructions
+                .contains("Pull request rules:\n- Identify")
+        );
     }
 
     #[test]

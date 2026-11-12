@@ -1,4 +1,4 @@
-//! The label lists and rules, read from the taxonomy page built into the binary.
+//! The label lists, read from the taxonomy page built into the binary.
 
 use sha2::{Digest, Sha256};
 
@@ -12,13 +12,11 @@ pub struct Entry {
     pub definition: String,
 }
 
-/// The labeling rules, the two label lists, and the pull request rules.
+/// The two label lists.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Taxonomy {
-    pub rules: String,
     pub work: Vec<Entry>,
     pub topics: Vec<Entry>,
-    pub pull_request_rules: String,
 }
 
 /// Return the body of the section whose heading starts with `## <title>`.
@@ -63,19 +61,14 @@ impl Taxonomy {
 
     fn decode(page: &str) -> Result<Taxonomy, String> {
         Ok(Taxonomy {
-            rules: section(page, "Rules")?.to_string(),
             work: entries(section(page, "Type of work")?)?,
             topics: entries(section(page, "Topic")?)?,
-            pull_request_rules: section(page, "Pull request mapping")?.to_string(),
         })
     }
 
-    /// A digest of everything a label depends on, so a changed taxonomy invalidates stored labels.
+    /// A digest of the label lists, so a changed taxonomy invalidates stored labels.
     pub fn version(&self) -> String {
         let mut digest = Sha256::new();
-        for part in [&self.rules, &self.pull_request_rules] {
-            digest.update(part.as_bytes());
-        }
         for entry in self.work.iter().chain(&self.topics) {
             digest.update(format!(
                 "{}|{}|{}\n",
@@ -129,8 +122,6 @@ mod tests {
             assert_eq!(labels.len(), entries.len(), "labels are unique");
             assert!(entries.iter().all(|entry| !entry.definition.is_empty()));
         }
-        assert!(taxonomy.rules.starts_with("- "));
-        assert!(taxonomy.pull_request_rules.contains("Contributed to"));
         assert_eq!(
             Taxonomy::group(&taxonomy.work, "Debugging"),
             Some("Software")
