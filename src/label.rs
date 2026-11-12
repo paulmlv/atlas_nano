@@ -221,6 +221,7 @@ fn price(
     };
     let usage = Usage {
         id: String::new(),
+        owner: None,
         at: Utc::now(),
         model: model.to_string(),
         fast: false,
@@ -322,19 +323,14 @@ pub fn label(
         let header = if settings.pull_requests {
             let url = match session.client {
                 Client::Codex => session.repository.clone(),
-                Client::Claude => repository(&session.cwd, &mut remotes),
-            };
-            let or_unknown = |text: &str| {
-                if text.is_empty() {
-                    "unknown".to_string()
-                } else {
-                    text.to_string()
+                Client::Claude => {
+                    Some(repository(&session.cwd, &mut remotes)).filter(|url| !url.is_empty())
                 }
             };
             format!(
                 "Session repository: {}\nSession branch: {}\n\n",
-                or_unknown(&without_credentials(&url)),
-                or_unknown(&session.branch)
+                url.map_or("unknown".to_string(), |url| without_credentials(&url)),
+                session.branch.as_deref().unwrap_or("unknown")
             )
         } else {
             String::new()

@@ -259,10 +259,9 @@ fn category(row: &Row, entries: &[Entry], pick: impl Fn(&Label) -> &str) -> (Str
 /// A session's title, else the first line of its first user message, as one short line.
 pub fn title(session: &Session) -> String {
     let first = session.items.iter().find(|item| item.role == Role::User);
-    let text = if session.title.is_empty() {
-        first.map_or("", |item| item.text.lines().next().unwrap_or_default())
-    } else {
-        &session.title
+    let text = match &session.title {
+        Some(title) => title.as_str(),
+        None => first.map_or("", |item| item.text.lines().next().unwrap_or_default()),
     };
     let line: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if line.is_empty() {
@@ -615,9 +614,12 @@ impl Report<'_> {
                 session
                     .parent
                     .as_ref()
-                    .map_or("", |_| session.parent_client.name())
+                    .map_or("", |parent| parent.client.name())
                     .to_string(),
-                session.parent.clone().unwrap_or_default(),
+                session
+                    .parent
+                    .as_ref()
+                    .map_or(String::new(), |parent| parent.id.clone()),
                 kind.to_string(),
                 row.place.project.clone(),
                 row.place.repo.clone(),
