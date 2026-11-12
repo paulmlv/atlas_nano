@@ -1,9 +1,10 @@
 //! Parse one Codex rollout, following the record rules in `docs/LABELING.md`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::LazyLock;
 
+use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde_json::Value;
 
@@ -122,15 +123,64 @@ fn kind(thread_source: Option<&str>) -> Kind {
     }
 }
 
+/// The rollout's own creation time, independent of the dates in its history.
+pub(super) struct Version {
+    thread: String,
+    created: DateTime<Utc>,
+    parent_is_thread: bool,
+}
+
+/// Apply the parent rollout assumption in `docs/ASSUMPTIONS.md` after loading all versions.
+pub(super) fn link_parents(sessions: &mut [Session], versions: &[Option<Version>]) {
+    let mut by_thread: HashMap<&str, Vec<_>> = HashMap::new();
+    for (session, version) in sessions.iter().zip(versions) {
+        if let Some(version) = version {
+            by_thread
+                .entry(&version.thread)
+                .or_default()
+                .push((version.created, session.id.as_str()));
+        }
+    }
+    let links: Vec<_> = sessions
+        .iter()
+        .zip(versions)
+        .enumerate()
+        .filter_map(|(n, (session, version))| {
+            let version = version
+                .as_ref()
+                .filter(|version| version.parent_is_thread)?;
+            let parent = session.parent.as_ref()?.id.as_str();
+            if parent == version.thread {
+                return None;
+            }
+            let candidates = by_thread.get(parent)?;
+            let &(created, rollout) = candidates
+                .iter()
+                .filter(|(created, _)| *created <= version.created)
+                .max()?;
+            let tied = candidates
+                .iter()
+                .any(|&(at, id)| at == created && id != rollout);
+            (rollout != parent && !tied).then(|| (n, rollout.to_string()))
+        })
+        .collect();
+    for (n, id) in links {
+        sessions[n].parent = Some(SessionRef {
+            client: Client::Codex,
+            id,
+        });
+    }
+}
+
 /// Describe one rollout from its own records. Each rollout is its own session, so an edit of a
 /// thread is a separate conversation whose parent is the thread's first rollout.
-pub fn parse(path: &Path, records: &[Value]) -> Session {
+pub(super) fn parse(path: &Path, records: &[Value]) -> (Session, Option<Version>) {
     let (thread, rollout) = ids(path);
     let null = Value::Null;
-    let meta = records
+    let header = records
         .iter()
-        .find(|record| record["type"] == "session_meta")
-        .map_or(&null, |record| &record["payload"]);
+        .find(|record| record["type"] == "session_meta");
+    let meta = header.map_or(&null, |record| &record["payload"]);
     let history_base = meta["history_base"]["thread_id"].as_str().and_then(|base| {
         let end = meta["history_base"]["end_ordinal_exclusive"].as_u64()?;
         (end > 0).then(|| HistoryBase {
@@ -143,16 +193,18 @@ pub fn parse(path: &Path, records: &[Value]) -> Session {
         &meta["forked_from_id"],
         &meta["source"]["subagent"]["thread_spawn"]["parent_thread_id"],
     ];
-    let parent = history_base
+    let exact_parent = history_base
         .as_ref()
         .map(|base| base.rollout.clone())
-        .or_else(|| (rollout != thread).then(|| thread.clone()))
+        .or_else(|| (rollout != thread).then(|| thread.clone()));
+    let kind = kind(meta["thread_source"].as_str());
+    let parent_is_thread = kind != Kind::Primary && exact_parent.is_none();
+    let parent = exact_parent
         .or_else(|| linked.iter().find_map(|id| id.as_str()).map(str::to_string))
         .map(|id| SessionRef {
             client: Client::Codex,
             id,
         });
-    let kind = kind(meta["thread_source"].as_str());
     let mut session = Session {
         client: Client::Codex,
         id: rollout,
@@ -361,7 +413,14 @@ pub fn parse(path: &Path, records: &[Value]) -> Session {
     }
     (session.started, session.ended) = span.bounds();
     session.turns = timing::turns(&events);
-    session
+    let version = header
+        .and_then(|record| time(record["timestamp"].as_str()?))
+        .map(|created| Version {
+            thread,
+            created,
+            parent_is_thread,
+        });
+    (session, version)
 }
 
 #[cfg(test)]
@@ -451,7 +510,7 @@ mod tests {
                 "content": [{"type": "output_text", "text": "Fixed."}]}}),
             event("task_complete", 8, json!({})),
         ];
-        let session = parse(&path(), &records);
+        let (session, _) = parse(&path(), &records);
         let rendered: Vec<String> = session
             .items
             .iter()
@@ -495,7 +554,7 @@ mod tests {
             json!({"type": "response_item", "payload": {"type": "agent_message",
                 "content": [{"type": "text", "text": "reviewed text"}]}}),
         ];
-        let session = parse(&path(), &records);
+        let (session, _) = parse(&path(), &records);
         assert_eq!(session.kind, Kind::Review);
         assert_eq!(
             session.parent.map(|parent| parent.id).as_deref(),

@@ -138,36 +138,37 @@ pub fn load(home: &Path, clients: &[Client]) -> Loaded {
         .par_iter()
         .map(|(client, path)| {
             read_jsonl(path).map(|records| {
-                let session = match client {
-                    Client::Claude => claude::parse(path, &records),
+                let parsed = match client {
+                    Client::Claude => (claude::parse(path, &records), None),
                     Client::Codex => codex::parse(path, &records),
                 };
-                (records.len(), session)
+                (records.len(), parsed)
             })
         })
         .collect();
-    let mut longest: HashMap<String, (usize, Session)> = HashMap::new();
+    let mut longest = HashMap::new();
     let mut order = Vec::new();
     for ((_, path), result) in files.iter().zip(parsed) {
         match result {
             Err(error) => unreadable.push((path.clone(), error.to_string())),
-            Ok((length, session)) => {
-                let key = session.key();
+            Ok((length, parsed)) => {
+                let key = parsed.0.key();
                 match longest.get(&key) {
                     Some((best, _)) if *best >= length => {}
-                    Some(_) => drop(longest.insert(key, (length, session))),
+                    Some(_) => drop(longest.insert(key, (length, parsed))),
                     None => {
                         order.push(key.clone());
-                        longest.insert(key, (length, session));
+                        longest.insert(key, (length, parsed));
                     }
                 }
             }
         }
     }
-    let mut sessions: Vec<Session> = order
+    let (mut sessions, versions): (Vec<_>, Vec<_>) = order
         .iter()
         .filter_map(|key| Some(longest.remove(key)?.1))
-        .collect();
+        .unzip();
+    codex::link_parents(&mut sessions, &versions);
     count_requests_once(&mut sessions);
     inherit_history(&mut sessions);
     link_scratchpads(&mut sessions);
@@ -503,6 +504,77 @@ mod tests {
             };
             assert_eq!(session.usage.len(), 1);
             assert_eq!(session.usage[0].id, own_request);
+        }
+    }
+
+    #[test]
+    fn a_codex_child_uses_the_parent_rollout_current_at_its_start() {
+        use crate::account::{in_period, roots};
+
+        let home = home("codex-parent-versions");
+        let folder = home.join(".codex/sessions");
+        let [thread, edit, future, before, after, review, exact] =
+            ["a", "b", "c", "d", "e", "f", "g"].map(|id| id.repeat(36));
+        let file = |day: u32, id: &str| {
+            folder.join(format!("rollout-2026-01-{day:02}T00-00-00-{id}.jsonl"))
+        };
+        let meta = |day: u32, payload: Value| {
+            json!({"type": "session_meta", "timestamp": format!("2026-01-{day:02}T00:00:00Z"),
+                "payload": payload})
+        };
+        let copied = json!({"type": "turn_context", "timestamp": "2026-01-05T00:01:00Z"});
+        write(&file(5, &thread), &[meta(5, json!({}))], false);
+        write(
+            &file(9, &format!("{thread}_{edit}")),
+            &[meta(9, json!({}))],
+            false,
+        );
+        write(
+            &file(11, &format!("{thread}_{future}")),
+            &[meta(11, json!({})), copied.clone()],
+            false,
+        );
+        let spawn = json!({"thread_source": "subagent", "source": {
+            "subagent": {"thread_spawn": {"parent_thread_id": thread}}
+        }});
+        let guardian = json!({"thread_source": "guardian_review", "parent_thread_id": thread});
+        let mut explicit = guardian.clone();
+        explicit["history_base"] = json!({"thread_id": thread, "end_ordinal_exclusive": 1});
+        for (day, id, payload) in [
+            (8, &before, spawn.clone()),
+            (10, &after, spawn),
+            (10, &review, guardian),
+            (10, &exact, explicit),
+        ] {
+            write(&file(day, id), &[meta(day, payload), copied.clone()], false);
+        }
+
+        let sessions = load(&home, &[Client::Codex]).sessions;
+        fs::remove_dir_all(&home).unwrap();
+        let index = |id: &str| {
+            sessions
+                .iter()
+                .position(|session| session.id == id)
+                .unwrap()
+        };
+        let roots = roots(&sessions);
+        let included = in_period(&sessions, &roots, time("2026-01-09T00:00:00Z"));
+        for (child, parent, in_period) in [
+            (&before, &thread, false),
+            (&after, &edit, true),
+            (&review, &edit, true),
+            (&exact, &thread, false),
+        ] {
+            let child = index(child);
+            assert_eq!(
+                sessions[child].parent,
+                Some(SessionRef {
+                    client: Client::Codex,
+                    id: parent.clone()
+                })
+            );
+            assert_eq!(roots[child], index(parent));
+            assert_eq!(included[child], in_period);
         }
     }
 

@@ -24,3 +24,25 @@ sessions did.
 
 **If it stops holding:** a shorter copy with records the longest lacks would lose those records,
 silently.
+
+## Parent rollouts for Codex subagents and Guardian reviews
+
+A Codex chat keeps its thread ID across edits. Each saved version of the chat has its own rollout
+ID. The first rollout uses the thread ID as its rollout ID. A subagent or Guardian review may
+record only the parent thread ID, which all versions of that chat share.
+
+**Assumption.** When the child names only the parent thread, Atlas Nano assumes the most recent
+loaded rollout created at or before the child's start was the one that spawned it. It compares
+the creation timestamps from the rollouts' own metadata so that copied history cannot affect the
+choice. A recorded link to a specific rollout takes precedence. If the child's creation time is
+unavailable, or the available times yield no single latest rollout, Atlas Nano uses the recorded
+parent link.
+
+For example, a chat starts on Monday with thread ID `T` and rollout ID `T`. On Friday, an edit
+creates rollout `R` for the same thread `T`. A Saturday subagent records `parent_thread_id = T`.
+Atlas Nano assigns it to `R`, so a report starting Friday includes the subagent and its spend with
+the Friday edit. A Thursday subagent with the same parent thread ID belongs to `T` under this rule.
+
+The parent thread ID and start times leave the actual parent rollout unknown. If the Monday
+rollout `T` was still active and spawned the Saturday subagent, this rule would put the child and
+its spend in Friday's report incorrectly.
