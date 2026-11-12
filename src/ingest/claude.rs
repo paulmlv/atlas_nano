@@ -8,8 +8,8 @@ use regex::Regex;
 use serde_json::Value;
 
 use super::timing::{self, Event, Signal};
-use super::{Span, stem, time};
-use crate::model::{Client, Item, Kind, Role, Session, Usage};
+use super::{Span, known, stem, time};
+use crate::model::{Client, Item, Kind, Role, Session, SessionRef, Usage};
 
 const INTERRUPTIONS: [&str; 2] = [
     "[Request interrupted by user]",
@@ -213,7 +213,8 @@ fn is_turn(text: &str) -> bool {
     }
 }
 
-fn usage(reply: &Value, at: chrono::DateTime<chrono::Utc>) -> Option<Usage> {
+fn usage(record: &Value, at: chrono::DateTime<chrono::Utc>) -> Option<Usage> {
+    let reply = &record["message"];
     let reported = reply.get("usage")?;
     let count = |name: &str| reported[name].as_u64().unwrap_or(0);
     let hour = reported["cache_creation"]["ephemeral_1h_input_tokens"]
@@ -221,6 +222,11 @@ fn usage(reply: &Value, at: chrono::DateTime<chrono::Utc>) -> Option<Usage> {
         .unwrap_or(0);
     Some(Usage {
         id: reply["id"].as_str()?.to_string(),
+        // A fork can relabel a copied record with its own ID but keeps where it came from.
+        owner: record["forkedFrom"]["sessionId"]
+            .as_str()
+            .or_else(|| record["sessionId"].as_str())
+            .map(str::to_string),
         at,
         model: reply["model"].as_str().unwrap_or_default().to_string(),
         fast: reported["speed"].as_str() == Some("fast"),
@@ -232,14 +238,23 @@ fn usage(reply: &Value, at: chrono::DateTime<chrono::Utc>) -> Option<Usage> {
     })
 }
 
-/// Describe one transcript. A file under a `subagents` directory is a subagent of the session
-/// whose directory owns it.
+/// Describe one transcript. A file under a `subagents` directory is a subagent of the session its
+/// records name, or else of the session whose directory holds it: a fork or resume can copy the
+/// file under another session. A fork is dated from its own records after the copied prefix.
 pub fn parse(path: &Path, records: &[Value]) -> Session {
     let owner = path
         .ancestors()
         .find(|folder| folder.file_name().is_some_and(|name| name == "subagents"))
         .and_then(|folder| folder.parent()?.file_name()?.to_str())
-        .map(str::to_string);
+        .map(|folder| {
+            let recorded = records
+                .iter()
+                .find_map(|record| record["sessionId"].as_str());
+            SessionRef {
+                client: Client::Claude,
+                id: recorded.unwrap_or(folder).to_string(),
+            }
+        });
     let mut session = Session {
         client: Client::Claude,
         id: stem(path),
@@ -249,11 +264,10 @@ pub fn parse(path: &Path, records: &[Value]) -> Session {
             Kind::Primary
         },
         parent: owner,
-        parent_client: Client::Claude,
         cwd: String::new(),
-        title: String::new(),
-        repository: String::new(),
-        branch: String::new(),
+        title: None,
+        repository: None,
+        branch: None,
         started: None,
         ended: None,
         items: Vec::new(),
@@ -276,12 +290,22 @@ pub fn parse(path: &Path, records: &[Value]) -> Session {
             continue;
         }
         let at = record["timestamp"].as_str().and_then(time);
-        span.add(at);
+        if session.kind == Kind::Primary
+            && (record["forkedFrom"]["sessionId"].is_string()
+                || record["sessionId"]
+                    .as_str()
+                    .is_some_and(|id| id != session.id))
+        {
+            // Discard timestamps from the copied prefix, including its unmarked records.
+            span = Span::default();
+        } else {
+            span.add(at);
+        }
         if session.cwd.is_empty() {
             session.cwd = record["cwd"].as_str().unwrap_or_default().to_string();
         }
-        if session.branch.is_empty() {
-            session.branch = record["gitBranch"].as_str().unwrap_or_default().to_string();
+        if session.branch.is_none() {
+            session.branch = known(&record["gitBranch"]);
         }
         let mut keep = |role: Role, text: String| {
             if !text.is_empty() {
@@ -355,7 +379,7 @@ pub fn parse(path: &Path, records: &[Value]) -> Session {
                     }
                 }
                 if let Some(at) = at
-                    && let Some(reported) = usage(reply, at)
+                    && let Some(reported) = usage(record, at)
                 {
                     // Streaming writes a record per content block, each with the usage so far.
                     match usage_at.get(&reported.id) {
@@ -390,8 +414,7 @@ pub fn parse(path: &Path, records: &[Value]) -> Session {
     session.title = [custom_title, ai_title]
         .into_iter()
         .find(|t| !t.is_empty())
-        .unwrap_or("")
-        .into();
+        .map(str::to_string);
     session
 }
 
@@ -518,7 +541,10 @@ mod tests {
             ]
         );
         assert_eq!(session.kind, Kind::Subagent);
-        assert_eq!(session.parent.as_deref(), Some("parent-id"));
+        assert_eq!(
+            session.parent.map(|parent| parent.id).as_deref(),
+            Some("parent-id")
+        );
     }
 
     #[test]
