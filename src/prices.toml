@@ -6,8 +6,8 @@
 # writes), and `output`; both cache-write rates are optional. [priced_as] prices a reported model at
 # another model's rates.
 #
-# Models are listed newest version first and, within a version, by family from largest to smallest,
-# with specialized models last.
+# Models are listed by class from largest to smallest, then newest version first. Specialized models
+# and models without a class come last.
 
 checked = 2026-11-03
 
@@ -26,41 +26,30 @@ checked = 2026-11-03
 # 30-minute rate. Checked 2026-11-11 for GPT-6 Sol and Cyber, GPT-6.1 Terra, GPT-5.6 Terra, and
 # GPT-5.4, 2026-11-03 for GPT-6 Astra and GPT-6.1 Sol, and 2026-10-13 for the others.
 
-[models."codex/gpt-6.1-sol"]
-long_context_above = 272_000
-short = { input = 2.00, cached = 0.10, cache_write = 2.50, output = 10.00 }
-long = { input = 4.00, cached = 0.20, cache_write = 5.00, output = 15.00 }
-
-[models."codex/gpt-6.1-terra"]
-long_context_above = 272_000
-short = { input = 1.00, cached = 0.05, cache_write = 1.25, output = 5.00 }
-long = { input = 2.00, cached = 0.10, cache_write = 2.50, output = 7.50 }
-
 [models."codex/gpt-6-astra"]
 long_context_above = 272_000
 short = { input = 10.00, cached = 1.00, cache_write = 12.50, output = 50.00 }
 long = { input = 20.00, cached = 2.00, cache_write = 25.00, output = 75.00 }
+
+[models."codex/gpt-6.1-sol"]
+long_context_above = 272_000
+short = { input = 2.00, cached = 0.10, cache_write = 2.50, output = 10.00 }
+long = { input = 4.00, cached = 0.20, cache_write = 5.00, output = 15.00 }
 
 [models."codex/gpt-6-sol"]
 long_context_above = 272_000
 short = { input = 2.00, cached = 0.20, cache_write = 2.50, output = 10.00 }
 long = { input = 4.00, cached = 0.40, cache_write = 5.00, output = 15.00 }
 
-[models."codex/gpt-6-luna"]
-long_context_above = 272_000
-short = { input = 0.10, cached = 0.01, cache_write = 0.125, output = 0.50 }
-long = { input = 0.20, cached = 0.02, cache_write = 0.25, output = 0.75 }
-
-[models."codex/gpt-6-cyber"]
-# No long-context cache-write rate is published, so it is doubled as for the other models.
-long_context_above = 272_000
-short = { input = 20.00, cached = 2.00, cache_write = 25.00, output = 100.00 }
-long = { input = 40.00, cached = 4.00, cache_write = 50.00, output = 150.00 }
-
 [models."codex/gpt-5.6-sol"]
 long_context_above = 272_000
 short = { input = 4.00, cached = 0.40, cache_write = 5.00, output = 20.00 }
 long = { input = 8.00, cached = 0.80, cache_write = 10.00, output = 30.00 }
+
+[models."codex/gpt-6.1-terra"]
+long_context_above = 272_000
+short = { input = 1.00, cached = 0.05, cache_write = 1.25, output = 5.00 }
+long = { input = 2.00, cached = 0.10, cache_write = 2.50, output = 7.50 }
 
 [models."codex/gpt-5.6-terra"]
 # https://developers.openai.com/api/docs/models/gpt-5.6-terra lists input, cached, and output; cache
@@ -70,10 +59,21 @@ long_context_above = 272_000
 short = { input = 2.00, cached = 0.20, cache_write = 2.50, output = 12.00 }
 long = { input = 4.00, cached = 0.40, cache_write = 5.00, output = 18.00 }
 
+[models."codex/gpt-6-luna"]
+long_context_above = 272_000
+short = { input = 0.10, cached = 0.01, cache_write = 0.125, output = 0.50 }
+long = { input = 0.20, cached = 0.02, cache_write = 0.25, output = 0.75 }
+
 [models."codex/gpt-5.6-luna"]
 long_context_above = 272_000
 short = { input = 0.20, cached = 0.02, cache_write = 0.25, output = 1.20 }
 long = { input = 0.40, cached = 0.04, cache_write = 0.50, output = 1.80 }
+
+[models."codex/gpt-6-cyber"]
+# No long-context cache-write rate is published, so it is doubled as for the other models.
+long_context_above = 272_000
+short = { input = 20.00, cached = 2.00, cache_write = 25.00, output = 100.00 }
+long = { input = 40.00, cached = 4.00, cache_write = 50.00, output = 150.00 }
 
 [models."codex/gpt-5.4"]
 long_context_above = 272_000
@@ -84,19 +84,6 @@ long = { input = 5.00, cached = 0.50, output = 22.50 }
 # checked 2026-11-03, 2026-11-10 for Claude Fable 5.2 and Sonnet 5.5, and 2026-11-11 for Claude
 # Fable 5, Mythos 5, 5.1, and 5.2, Opus 5 and 4.8, and Sonnet 5. Every model here except Haiku 5.5
 # bills its whole 1M-token window at one rate.
-
-[models."claude/claude-opus-5-5"]
-long_context_above = 1_000_000
-short = { input = 4.00, cached = 0.20, cache_write = 5.00, cache_write_1h = 8.00, output = 20.00 }
-
-[models."claude/claude-sonnet-5-5"]
-long_context_above = 1_000_000
-short = { input = 2.00, cached = 0.10, cache_write = 2.50, cache_write_1h = 4.00, output = 10.00 }
-
-[models."claude/claude-haiku-5-5"]
-long_context_above = 100_000
-short = { input = 0.10, cached = 0.01, cache_write = 0.125, cache_write_1h = 0.20, output = 0.50 }
-long = { input = 0.50, cached = 0.05, cache_write = 0.625, cache_write_1h = 1.00, output = 2.50 }
 
 [models."claude/claude-fable-5-2"]
 long_context_above = 1_000_000
@@ -110,10 +97,23 @@ short = { input = 10.00, cached = 0.25, cache_write = 12.50, cache_write_1h = 20
 long_context_above = 1_000_000
 short = { input = 10.00, cached = 1.00, cache_write = 12.50, cache_write_1h = 20.00, output = 50.00 }
 
+[models."claude/claude-opus-5-5"]
+long_context_above = 1_000_000
+short = { input = 4.00, cached = 0.20, cache_write = 5.00, cache_write_1h = 8.00, output = 20.00 }
+
 [models."claude/claude-opus-5"]
 long_context_above = 1_000_000
 short = { input = 5.00, cached = 0.50, cache_write = 6.25, cache_write_1h = 10.00, output = 25.00 }
 
+[models."claude/claude-sonnet-5-5"]
+long_context_above = 1_000_000
+short = { input = 2.00, cached = 0.10, cache_write = 2.50, cache_write_1h = 4.00, output = 10.00 }
+
 [models."claude/claude-sonnet-5"]
 long_context_above = 1_000_000
 short = { input = 2.00, cached = 0.20, cache_write = 2.50, cache_write_1h = 4.00, output = 10.00 }
+
+[models."claude/claude-haiku-5-5"]
+long_context_above = 100_000
+short = { input = 0.10, cached = 0.01, cache_write = 0.125, cache_write_1h = 0.20, output = 0.50 }
+long = { input = 0.50, cached = 0.05, cache_write = 0.625, cache_write_1h = 1.00, output = 2.50 }
