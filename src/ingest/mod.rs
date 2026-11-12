@@ -4,7 +4,7 @@ mod claude;
 mod codex;
 mod timing;
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -13,7 +13,7 @@ use chrono::{DateTime, Utc};
 use rayon::prelude::*;
 use serde_json::Value;
 
-use crate::model::{Client, Item, Kind, Session, SessionRef, Usage};
+use crate::model::{Client, Item, Kind, Role, Session, SessionRef, Usage};
 
 /// The folders each client keeps its sessions in, relative to the user's home.
 pub const FOLDERS: [(Client, &str); 3] = [
@@ -67,48 +67,17 @@ fn stem(path: &Path) -> String {
         .to_string()
 }
 
-/// Decode a JSON Lines file, which may be zstd-compressed, and count its lines that are not JSON.
-/// Such a line, like a blank one, becomes `null`, so every record keeps its line's position, which
-/// fork cutoffs count by.
-fn read_jsonl(path: &Path) -> io::Result<(Vec<Value>, u64)> {
+/// Decode a JSON Lines file, which may be zstd-compressed. A line that is not JSON becomes `null`,
+/// so every record keeps its line's position, which fork cutoffs count by.
+fn read_jsonl(path: &Path) -> io::Result<Vec<Value>> {
     let mut data = fs::read(path)?;
     if path.extension().is_some_and(|extension| extension == "zst") {
         data = zstd::decode_all(data.as_slice())?;
     }
-    let mut not_json = 0;
-    let records = data
+    Ok(data
         .split(|byte| *byte == b'\n')
-        .map(|line| {
-            serde_json::from_slice(line).unwrap_or_else(|_| {
-                not_json += u64::from(!line.trim_ascii().is_empty());
-                Value::Null
-            })
-        })
-        .collect();
-    Ok((records, not_json))
-}
-
-/// The label `Loaded::unknown` counts lines that are not JSON under.
-pub const NOT_JSON: &str = "(not JSON)";
-
-/// Count a file's records of types its parser neither reads nor leaves out on purpose.
-fn count_unknown(
-    records: &[Value],
-    not_json: u64,
-    unknown: fn(&Value) -> Option<String>,
-) -> BTreeMap<String, u64> {
-    let mut counts = BTreeMap::new();
-    for label in records
-        .iter()
-        .filter(|record| !record.is_null())
-        .filter_map(unknown)
-    {
-        *counts.entry(label).or_default() += 1;
-    }
-    if not_json > 0 {
-        counts.insert(NOT_JSON.to_string(), not_json);
-    }
-    counts
+        .map(|line| serde_json::from_slice(line).unwrap_or(Value::Null))
+        .collect())
 }
 
 /// List every transcript under `folder`, in path order.
@@ -148,10 +117,6 @@ pub struct Loaded {
     pub sessions: Vec<Session>,
     /// Files and folders that could not be read, with the reason.
     pub unreadable: Vec<(PathBuf, String)>,
-    /// Records of types Atlas Nano neither reads nor leaves out on purpose, by client and type,
-    /// counted in the copy each session is read from, with lines that are not JSON as `NOT_JSON`.
-    /// A count here can mean that a client changed its format and data is being missed.
-    pub unknown: BTreeMap<(Client, String), u64>,
 }
 
 /// Read every session of the covered clients beneath `home`.
@@ -172,20 +137,14 @@ pub fn load(home: &Path, clients: &[Client]) -> Loaded {
     let parsed: Vec<_> = files
         .par_iter()
         .map(|(client, path)| {
-            read_jsonl(path).map(|(records, not_json)| {
-                let read = match client {
-                    Client::Claude => (
-                        (claude::parse(path, &records), None),
-                        count_unknown(&records, not_json, claude::unknown),
-                    ),
-                    Client::Codex => (
-                        codex::parse(path, &records),
-                        count_unknown(&records, not_json, codex::unknown),
-                    ),
+            read_jsonl(path).map(|records| {
+                let parsed = match client {
+                    Client::Claude => (claude::parse(path, &records), None),
+                    Client::Codex => codex::parse(path, &records),
                 };
                 // Malformed lines keep their place for fork cutoffs but do not make a copy longer.
                 let valid = records.iter().filter(|record| !record.is_null()).count();
-                (valid, read)
+                (valid, parsed)
             })
         })
         .collect();
@@ -194,37 +153,39 @@ pub fn load(home: &Path, clients: &[Client]) -> Loaded {
     for ((_, path), result) in files.iter().zip(parsed) {
         match result {
             Err(error) => unreadable.push((path.clone(), error.to_string())),
-            Ok((length, read)) => {
-                let key = read.0.0.key();
+            Ok((length, parsed)) => {
+                let key = parsed.0.key();
                 match longest.get(&key) {
                     Some((best, _)) if *best >= length => {}
-                    Some(_) => drop(longest.insert(key, (length, read))),
+                    Some(_) => drop(longest.insert(key, (length, parsed))),
                     None => {
                         order.push(key.clone());
-                        longest.insert(key, (length, read));
+                        longest.insert(key, (length, parsed));
                     }
                 }
             }
         }
     }
-    let (mut sessions, mut versions) = (Vec::new(), Vec::new());
-    let mut unknown = BTreeMap::new();
-    for ((session, version), counts) in order.iter().filter_map(|key| Some(longest.remove(key)?.1))
-    {
-        for (label, count) in counts {
-            *unknown.entry((session.client, label)).or_default() += count;
-        }
-        sessions.push(session);
-        versions.push(version);
-    }
+    let (mut sessions, versions): (Vec<_>, Vec<_>) = order
+        .iter()
+        .filter_map(|key| Some(longest.remove(key)?.1))
+        .unzip();
     codex::link_parents(&mut sessions, &versions);
+    // Before each request is kept once and forks inherit history, so only a session's own copy
+    // of its records counts: a fork's copied requests are still its own here.
+    for session in &mut sessions {
+        session.usage_missing = session.usage.is_empty()
+            && session
+                .items
+                .iter()
+                .any(|item| matches!(item.role, Role::Assistant | Role::Tool));
+    }
     count_requests_once(&mut sessions);
     inherit_history(&mut sessions);
     link_scratchpads(&mut sessions);
     Loaded {
         sessions,
         unreadable,
-        unknown,
     }
 }
 
@@ -503,7 +464,6 @@ mod tests {
             (Kind::Subagent, Some("first"))
         );
         assert!(loaded.unreadable.is_empty());
-        assert!(loaded.unknown.is_empty());
         assert_eq!(load(&home, &[Client::Codex]).sessions.len(), 1);
         fs::remove_dir_all(&home).unwrap();
     }
@@ -758,36 +718,51 @@ mod tests {
     }
 
     #[test]
-    fn counts_unknown_records_and_lines_that_are_not_json_in_the_copy_read() {
-        let home = home("unknown");
+    fn flags_the_sessions_with_replies_but_no_usage() {
+        let home = home("usage-missing");
         let projects = home.join(".claude/projects/p");
-        let new = json!({"type": "new-record"});
-        let chat = projects.join("chat.jsonl");
-        write(&chat, &[reply("m1", 1), new.clone(), new.clone()], false);
-        let mut file = fs::OpenOptions::new().append(true).open(&chat).unwrap();
-        file.write_all(b"{\"type\": \"cut off\n\n").unwrap();
-        // A shorter copy of the same session is not read, so its records do not count.
-        write(&projects.join("copy/chat.jsonl"), &[new], false);
-        let rollout = "rollout-2026-01-01T00-00-00-00000037-0205-7016-8024-000000000001.jsonl";
+        let said = |text: &str| {
+            json!({"type": "assistant", "uuid": text,
+            "timestamp": "2026-01-01T00:00:01Z",
+            "message": {"id": text, "content": [{"type": "text", "text": text}]}})
+        };
+        let mut priced = reply("m1", 1);
+        priced["message"]["content"] = json!([{"type": "text", "text": "hi"}]);
+        write(&projects.join("priced.jsonl"), &[priced], false);
+        write(&projects.join("unpriced.jsonl"), &[said("hi")], false);
         write(
-            &home.join(".codex/sessions").join(rollout),
-            &[
-                json!({"type": "session_meta", "payload": {}}),
-                json!({"type": "event_msg", "payload": {"type": "new_event"}}),
-            ],
+            &projects.join("asked.jsonl"),
+            &[json!({"type": "user", "message": {"content": "hi"}})],
             false,
         );
+        let rollout = |thread: u8| {
+            home.join(format!(
+                ".codex/sessions/rollout-2026-01-01T00-00-00-00000037-0205-7016-8024-00000000000{thread}.jsonl"
+            ))
+        };
+        let message = json!({"type": "response_item", "timestamp": "2026-01-01T00:00:01Z",
+            "payload": {"type": "message", "role": "assistant",
+                "content": [{"type": "output_text", "text": "hi"}]}});
+        let record = json!({"type": "token_usage_record", "timestamp": "2026-01-01T00:00:01Z",
+            "payload": {"response_id": "r1", "usage": {"input_tokens": 1, "output_tokens": 1}}});
+        write(&rollout(1), &[message.clone(), record], false);
+        write(&rollout(2), &[message], false);
 
         let loaded = load(&home, &[Client::Claude, Client::Codex]);
         fs::remove_dir_all(&home).unwrap();
-        let unknown = |client, label: &str, count| ((client, label.to_string()), count);
+        let mut flagged: Vec<String> = loaded
+            .sessions
+            .iter()
+            .filter(|session| session.usage_missing)
+            .map(Session::key)
+            .collect();
+        flagged.sort();
         assert_eq!(
-            loaded.unknown,
-            BTreeMap::from([
-                unknown(Client::Claude, NOT_JSON, 1),
-                unknown(Client::Claude, "new-record", 2),
-                unknown(Client::Codex, "event_msg/new_event", 1),
-            ])
+            flagged,
+            [
+                "claude:unpriced",
+                "codex:00000037-0205-7016-8024-000000000002"
+            ]
         );
     }
 

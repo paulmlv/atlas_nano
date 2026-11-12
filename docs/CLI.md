@@ -61,6 +61,12 @@ Requires a saved configuration; without one it stops and says to run `configure`
 - A conversation that is in counts with its whole spend, turns, and time.
 - A subagent is in the report exactly when the chat that spawned it is.
 
+### Missing usage
+
+A conversation in the period that has replies but no usage Atlas Nano could read counts as $0, so
+the run prints a warning on standard error with the number of such conversations for each client.
+This happens when a client changes how it records usage, or does not record it.
+
 ### Labeling cost
 
 - After reading all sessions and before labeling, the run prints an estimate on standard error: the

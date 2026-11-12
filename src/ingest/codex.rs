@@ -25,55 +25,6 @@ const WORK: [&str; 3] = [
     "function_call_output",
     "custom_tool_call_output",
 ];
-/// The record types `parse` reads besides the tool calls and work above, named as `label` names
-/// them.
-const READ: &[&str] = &[
-    "session_meta",
-    "turn_context",
-    "event_msg/task_started",
-    "event_msg/task_complete",
-    "event_msg/turn_aborted",
-    "event_msg/token_count",
-    "token_usage_record",
-    "event_msg/thread_goal_updated",
-    "response_item/message",
-    "response_item/agent_message",
-];
-/// The record types left out on purpose: none holds the conversation, its spend, or its timing.
-const DROPPED: &[&str] = &[
-    // A summary of items already read as response items.
-    "event_msg/item_completed",
-    // Settings and tool lists.
-    "event_msg/thread_settings_applied",
-    "response_item/additional_tools",
-    "response_item/configuration_update",
-    // Compacted history.
-    "compacted",
-    "response_item/compaction",
-    // Internal state.
-    "world_state",
-    "inter_agent_communication_metadata",
-];
-
-/// A record's type, with an event's or a response item's own type.
-fn label(record: &Value) -> String {
-    let kind = record["type"].as_str().unwrap_or("(no type)");
-    match (kind, record["payload"]["type"].as_str()) {
-        ("event_msg" | "response_item", Some(detail)) => format!("{kind}/{detail}"),
-        _ => kind.to_string(),
-    }
-}
-
-/// The type of a record `parse` neither reads nor leaves out on purpose.
-pub fn unknown(record: &Value) -> Option<String> {
-    let label = label(record);
-    let read = READ.contains(&label.as_str())
-        || label
-            .strip_prefix("response_item/")
-            .is_some_and(|item| TOOL_CALLS.contains(&item) || WORK.contains(&item));
-    (!read && !DROPPED.contains(&label.as_str())).then_some(label)
-}
-
 const QUESTION_REPLY: &str = "<send_user_message_question_reply>";
 const INTERNAL_CONTEXT: &str = "<codex_internal_context";
 const GOAL_CONTEXT: &str = "<codex_internal_context source=\"goal\"";
@@ -265,6 +216,7 @@ pub(super) fn parse(path: &Path, records: &[Value]) -> (Session, Option<Version>
         turns: Vec::new(),
         usage: Vec::new(),
         history_base,
+        usage_missing: false,
     };
     let mut span = Span::default();
     let mut events: Vec<Event> = Vec::new();
@@ -526,31 +478,6 @@ mod tests {
     use super::*;
 
     const THREAD: &str = "00000037-0205-7016-8024-000000000001";
-
-    #[test]
-    fn flags_only_the_records_it_neither_reads_nor_drops() {
-        let record = |kind: &str, detail: &str| json!({"type": kind, "payload": {"type": detail}});
-        let records = [
-            json!({"type": "session_meta", "payload": {}}),
-            record("event_msg", "token_count"),
-            record("response_item", "function_call"),
-            record("response_item", "reasoning"),
-            record("event_msg", "item_completed"),
-            json!({"type": "token_usage_record", "payload": {}}),
-            record("event_msg", "new_event"),
-            record("response_item", "new_item"),
-            json!({"type": "new_record", "payload": {"type": "x"}}),
-        ];
-        let unknown: Vec<String> = records.iter().filter_map(unknown).collect();
-        assert_eq!(
-            unknown,
-            [
-                "event_msg/new_event",
-                "response_item/new_item",
-                "new_record"
-            ]
-        );
-    }
 
     fn path() -> std::path::PathBuf {
         format!("/home/.codex/sessions/2026/01/01/rollout-2026-01-01T00-00-00-{THREAD}.jsonl")

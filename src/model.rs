@@ -131,6 +131,9 @@ pub struct Session {
     pub turns: Vec<Turn>,
     pub usage: Vec<Usage>,
     pub history_base: Option<HistoryBase>,
+    /// The session holds replies but no usage could be read from it, so its spend is missing:
+    /// its client changed how it records usage, or did not record it. Set when loading.
+    pub usage_missing: bool,
 }
 
 impl Session {
