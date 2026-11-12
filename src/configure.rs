@@ -116,12 +116,8 @@ fn test_call(paint: Paint, client: Client, model: &str) -> Result<(), String> {
         schema: labeler::schema(&taxonomy, false),
         folder: &folder,
     };
-    let conversation = prompt.conversation(
-        "unknown",
-        "unknown",
-        "[user] What is the capital of France?\n\n[assistant] Paris.",
-    );
-    let result = labeler.call(&conversation);
+    let text = "[user] What is the capital of France?\n\n[assistant] Paris.";
+    let result = labeler.call(&prompt.conversation("unknown", "unknown", text));
     let _ = fs::remove_dir_all(&folder);
     match result.answer {
         Ok(answer) => {

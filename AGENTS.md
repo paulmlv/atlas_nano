@@ -19,7 +19,8 @@ synthetic sessions only, never real conversations.
 
 Read the [command line](docs/CLI.md), [report](docs/REPORT.md), [labeling](docs/LABELING.md), and
 [taxonomy](docs/TAXONOMY.md) pages before changing behavior they define, and update the page whose
-fact changed. The prompt and the labels themselves are in [prompts/](prompts/). The [next steps](docs/NEXT_STEPS.md) list what is not built yet.
+fact changed. The prompt and the labels themselves are in [prompts/](prompts/). The
+[next steps](docs/NEXT_STEPS.md) list what is not built yet.
 
 ## Code
 
