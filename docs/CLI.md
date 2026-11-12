@@ -61,9 +61,12 @@ Requires a saved configuration; without one it stops and says to run `configure`
 - A conversation that is in counts with its whole spend, turns, and time.
 - A subagent is in the report exactly when the chat that spawned it is.
 
-- A file or folder that cannot be read, and any record of a type Atlas Nano does not know, is
-  reported on standard error as a warning. Unknown records are counted by client and type in the
-  copy of each session that is read; a count there can mean a client changed its format.
+### Missing usage
+
+A session in the period (a conversation, subagent, or review) that has replies but no usage Atlas
+Nano could read counts as $0, so the run prints a warning on standard error with the number of such
+sessions for each client. This happens, for example, when a client changes how it records usage or
+does not record it. Usage counts as read only when it has both input and output token counts.
 
 ### Labeling cost
 

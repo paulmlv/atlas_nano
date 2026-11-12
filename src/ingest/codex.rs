@@ -25,56 +25,6 @@ const WORK: [&str; 3] = [
     "function_call_output",
     "custom_tool_call_output",
 ];
-/// The record types `parse` reads besides the tool calls and work above, named as `label` names
-/// them.
-const READ: &[&str] = &[
-    "session_meta",
-    "turn_context",
-    "event_msg/task_started",
-    "event_msg/task_complete",
-    "event_msg/turn_aborted",
-    "event_msg/token_count",
-    "token_usage_record",
-    "event_msg/thread_goal_updated",
-    "token_usage_record",
-    "response_item/message",
-    "response_item/agent_message",
-];
-/// The record types left out on purpose: none holds the conversation, its spend, or its timing.
-const DROPPED: &[&str] = &[
-    // A summary of items already read as response items.
-    "event_msg/item_completed",
-    // Settings and tool lists.
-    "event_msg/thread_settings_applied",
-    "response_item/additional_tools",
-    "response_item/configuration_update",
-    // Compacted history.
-    "compacted",
-    "response_item/compaction",
-    // Internal state.
-    "world_state",
-    "inter_agent_communication_metadata",
-];
-
-/// A record's type, with an event's or a response item's own type.
-fn label(record: &Value) -> String {
-    let kind = record["type"].as_str().unwrap_or("(no type)");
-    match (kind, record["payload"]["type"].as_str()) {
-        ("event_msg" | "response_item", Some(detail)) => format!("{kind}/{detail}"),
-        _ => kind.to_string(),
-    }
-}
-
-/// The type of a record `parse` neither reads nor leaves out on purpose.
-pub fn unknown(record: &Value) -> Option<String> {
-    let label = label(record);
-    let read = READ.contains(&label.as_str())
-        || label
-            .strip_prefix("response_item/")
-            .is_some_and(|item| TOOL_CALLS.contains(&item) || WORK.contains(&item));
-    (!read && !DROPPED.contains(&label.as_str())).then_some(label)
-}
-
 const QUESTION_REPLY: &str = "<send_user_message_question_reply>";
 const INTERNAL_CONTEXT: &str = "<codex_internal_context";
 const GOAL_CONTEXT: &str = "<codex_internal_context source=\"goal\"";
@@ -141,6 +91,11 @@ fn request(text: &str) -> String {
 
 /// One model response's usage, from Codex's token counts and an ID that a fork's copy keeps.
 fn usage(id: String, counts: &Value, timestamp: &str, model: &str) -> Option<Usage> {
+    // Without its input and output counts the usage was not read, so the session is flagged.
+    let (input, output) = (
+        counts["input_tokens"].as_u64()?,
+        counts["output_tokens"].as_u64()?,
+    );
     let count = |name: &str| counts[name].as_u64().unwrap_or(0);
     let (cached, cache_write) = (
         count("cached_input_tokens"),
@@ -152,11 +107,11 @@ fn usage(id: String, counts: &Value, timestamp: &str, model: &str) -> Option<Usa
         at: time(timestamp)?,
         model: model.to_string(),
         fast: false,
-        input: count("input_tokens").saturating_sub(cached + cache_write),
+        input: input.saturating_sub(cached + cache_write),
         cached,
         cache_write,
         cache_write_1h: 0,
-        output: count("output_tokens"),
+        output,
     })
 }
 
@@ -266,6 +221,7 @@ pub(super) fn parse(path: &Path, records: &[Value]) -> (Session, Option<Version>
         turns: Vec::new(),
         usage: Vec::new(),
         history_base,
+        usage_missing: false,
     };
     let mut span = Span::default();
     let mut events: Vec<Event> = Vec::new();
@@ -528,31 +484,6 @@ mod tests {
 
     const THREAD: &str = "00000037-0205-7016-8024-000000000001";
 
-    #[test]
-    fn flags_only_the_records_it_neither_reads_nor_drops() {
-        let record = |kind: &str, detail: &str| json!({"type": kind, "payload": {"type": detail}});
-        let records = [
-            json!({"type": "session_meta", "payload": {}}),
-            record("event_msg", "token_count"),
-            record("response_item", "function_call"),
-            record("response_item", "reasoning"),
-            record("event_msg", "item_completed"),
-            json!({"type": "token_usage_record", "payload": {}}),
-            record("event_msg", "new_event"),
-            record("response_item", "new_item"),
-            json!({"type": "new_record", "payload": {"type": "x"}}),
-        ];
-        let unknown: Vec<String> = records.iter().filter_map(unknown).collect();
-        assert_eq!(
-            unknown,
-            [
-                "event_msg/new_event",
-                "response_item/new_item",
-                "new_record"
-            ]
-        );
-    }
-
     fn path() -> std::path::PathBuf {
         format!("/home/.codex/sessions/2026/01/01/rollout-2026-01-01T00-00-00-{THREAD}.jsonl")
             .into()
@@ -694,7 +625,7 @@ mod tests {
             json!({"type": "turn_context", "payload": {"turn_id": "t0", "model": "gpt-6-luna"}}),
             event("task_started", 1, json!({})),
             json!({"type": "token_usage_record", "timestamp": "2026-01-01T00:00:02Z",
-                "payload": {"turn_id": "t1", "response_id": "resp_a", "usage": {}}}),
+                "payload": {"turn_id": "t1", "response_id": "resp_a", "usage": {"input_tokens": 0, "output_tokens": 0}}}),
             json!({"type": "turn_context", "payload": {"turn_id": "t1", "model": "gpt-6.1-sol"}}),
         ];
         let (session, _) = parse(&path(), &records);
@@ -713,12 +644,12 @@ mod tests {
             event("task_started", 5, json!({"turn_id": "t2"})),
             user("u2", 6, "New turn", true),
             json!({"type": "token_usage_record", "timestamp": "2026-01-01T00:00:07Z",
-                "payload": {"turn_id": "t2", "response_id": "resp_b", "usage": {}}}),
+                "payload": {"turn_id": "t2", "response_id": "resp_b", "usage": {"input_tokens": 0, "output_tokens": 0}}}),
             event(
                 "token_count",
                 7,
                 json!({"turn_id": "t2", "info": {
-                "last_token_usage": {"input_tokens": 1}, "total_token_usage": {"input_tokens": 101}}}),
+                "last_token_usage": {"input_tokens": 1, "output_tokens": 0}, "total_token_usage": {"input_tokens": 101}}}),
             ),
         ];
         let (session, _) = parse(&path(), &records);
@@ -730,7 +661,7 @@ mod tests {
     fn a_turn_without_a_model_keeps_the_current_one_only_once_finished() {
         let response = |turn: &str, id: &str| {
             json!({"type": "token_usage_record", "timestamp": "2026-01-01T00:00:02Z",
-                "payload": {"turn_id": turn, "response_id": id, "usage": {}}})
+                "payload": {"turn_id": turn, "response_id": id, "usage": {"input_tokens": 0, "output_tokens": 0}}})
         };
         // A compaction turn finishes without a turn_context; the last turn has not finished.
         let records = [

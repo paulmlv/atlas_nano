@@ -18,107 +18,6 @@ const INTERRUPTIONS: [&str; 2] = [
 /// The typed commands Claude Code sends to the model for a reply, which are turns.
 const TURN_COMMANDS: [&str; 2] = ["/goal", "!"];
 
-/// The record types `parse` reads, named as `label` names them.
-const READ: &[&str] = &[
-    "user",
-    "assistant",
-    "custom-title",
-    "ai-title",
-    "system/api_error",
-    "attachment/queued_command",
-];
-/// The record types left out on purpose: none holds the conversation, its spend, or its timing.
-const DROPPED: &[&str] = &[
-    // Backups of edited files, for undo.
-    "file-history-snapshot",
-    "file-history-delta",
-    // Copies of what was sent to the API; usage comes from the replies.
-    "api-request",
-    "api-request-blob",
-    "api-request-shape",
-    // The app's settings and state.
-    "agent-name",
-    "artifact-autoreact-ledger",
-    "artifact-comment-monitor",
-    "atis-latch",
-    "bridge-session",
-    "frame-link",
-    "last-prompt",
-    "mode",
-    "permission-mode",
-    "queue-operation",
-    "relocated",
-    "session-owner",
-    "tools-used",
-    "worktree-state",
-    // Workflow progress.
-    "started",
-    "launched",
-    "result",
-    "failed",
-    // The app's notes.
-    "system/compact_boundary",
-    "system/informational",
-    "system/local_command",
-    "system/stop_hook_summary",
-    // Context the app adds for the model.
-    "attachment/agent_listing_delta",
-    "attachment/auto_mode",
-    "attachment/batching_reminder_sent",
-    "attachment/budget_usd",
-    "attachment/command_permissions",
-    "attachment/compact_file_reference",
-    "attachment/credential_org",
-    "attachment/date",
-    "attachment/deferred_tools_delta",
-    "attachment/deferred_tools_record",
-    "attachment/edited_text_file",
-    "attachment/environment",
-    "attachment/file",
-    "attachment/goal_status",
-    "attachment/hook_additional_context",
-    "attachment/instructions",
-    "attachment/invoked_skills",
-    "attachment/mcp_instructions_delta",
-    "attachment/model",
-    "attachment/prompt_snapshot",
-    "attachment/read_truncation_notice",
-    "attachment/remote_session_change",
-    "attachment/session_context",
-    "attachment/silent_turn_reminder",
-    "attachment/skill_listing",
-    "attachment/structured_output",
-    "attachment/task_status",
-    "attachment/thinking_drop",
-    "attachment/total_tokens_reminder",
-    "attachment/ultra_effort_enter",
-    "attachment/unknown_command_fallback",
-    // Left out for now, though each may be worth reading: the app's own cost total and turn time,
-    // which could check ours; the pull requests it recorded; and a subagent's link to the chat it
-    // was forked from.
-    "cost-state",
-    "system/turn_duration",
-    "pr-link",
-    "fork-context-ref",
-];
-
-/// A record's type, with a `system` record's subtype or an `attachment` record's attachment type.
-fn label(record: &Value) -> String {
-    let kind = record["type"].as_str().unwrap_or("(no type)");
-    let detail = match kind {
-        "system" => record["subtype"].as_str(),
-        "attachment" => record["attachment"]["type"].as_str(),
-        _ => None,
-    };
-    detail.map_or_else(|| kind.to_string(), |detail| format!("{kind}/{detail}"))
-}
-
-/// The type of a record `parse` neither reads nor leaves out on purpose.
-pub fn unknown(record: &Value) -> Option<String> {
-    let label = label(record);
-    (!READ.contains(&label.as_str()) && !DROPPED.contains(&label.as_str())).then_some(label)
-}
-
 static COMMAND_MESSAGE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)<command-message>.*?</command-message>").unwrap());
 static COMMAND_NAME: LazyLock<Regex> = LazyLock::new(|| {
@@ -216,6 +115,11 @@ fn is_turn(text: &str) -> bool {
 fn usage(record: &Value, at: chrono::DateTime<chrono::Utc>) -> Option<Usage> {
     let reply = &record["message"];
     let reported = reply.get("usage")?;
+    // Without its input and output counts the usage was not read, so the session is flagged.
+    let (input, output) = (
+        reported["input_tokens"].as_u64()?,
+        reported["output_tokens"].as_u64()?,
+    );
     let count = |name: &str| reported[name].as_u64().unwrap_or(0);
     let hour = reported["cache_creation"]["ephemeral_1h_input_tokens"]
         .as_u64()
@@ -230,11 +134,11 @@ fn usage(record: &Value, at: chrono::DateTime<chrono::Utc>) -> Option<Usage> {
         at,
         model: reply["model"].as_str().unwrap_or_default().to_string(),
         fast: reported["speed"].as_str() == Some("fast"),
-        input: count("input_tokens"),
+        input,
         cached: count("cache_read_input_tokens"),
         cache_write: count("cache_creation_input_tokens").saturating_sub(hour),
         cache_write_1h: hour,
-        output: count("output_tokens"),
+        output,
     })
 }
 
@@ -275,6 +179,7 @@ pub fn parse(path: &Path, records: &[Value]) -> Session {
         turns: Vec::new(),
         usage: Vec::new(),
         history_base: None,
+        usage_missing: false,
     };
     let mut span = Span::default();
     let mut seen: HashSet<&str> = HashSet::new();
@@ -423,31 +328,6 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-
-    #[test]
-    fn flags_only_the_records_it_neither_reads_nor_drops() {
-        let records = [
-            json!({"type": "user"}),
-            json!({"type": "system", "subtype": "api_error"}),
-            json!({"type": "attachment", "attachment": {"type": "queued_command"}}),
-            json!({"type": "file-history-snapshot"}),
-            json!({"type": "attachment", "attachment": {"type": "date"}}),
-            json!({"type": "new-record"}),
-            json!({"type": "system", "subtype": "new_note"}),
-            json!({"type": "attachment", "attachment": {"type": "new_context"}}),
-            json!({"uuid": "1"}),
-        ];
-        let unknown: Vec<String> = records.iter().filter_map(unknown).collect();
-        assert_eq!(
-            unknown,
-            [
-                "new-record",
-                "system/new_note",
-                "attachment/new_context",
-                "(no type)"
-            ]
-        );
-    }
 
     fn parse_main(records: &[Value]) -> Session {
         parse(Path::new("/home/.claude/projects/p/abc.jsonl"), records)
