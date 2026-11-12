@@ -1,8 +1,8 @@
 # Labeling
 
 How Atlas Nano turns a local session into the text a labeling model reads, and how it makes the
-call. The [taxonomy](TAXONOMY.md) owns the labels, the rules the model follows, and the default
-models; the [required flags](#required-flags) are the only flags a labeling call uses.
+call. The [taxonomy](TAXONOMY.md) describes the labels and the default models, and
+[prompts/](../prompts/) holds the prompt and the labels it sends; the [required flags](#required-flags) are the only flags a labeling call uses.
 
 ## Which sessions are labeled
 

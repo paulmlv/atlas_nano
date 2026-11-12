@@ -1,8 +1,8 @@
-//! The label lists, read from the taxonomy page built into the binary.
+//! The label lists, read from `prompts/labels.md`, built into the binary.
 
 use sha2::{Digest, Sha256};
 
-const PAGE: &str = include_str!("../docs/TAXONOMY.md");
+const PAGE: &str = include_str!("../prompts/labels.md");
 
 /// One label with the group or domain it rolls up to.
 #[derive(Debug, Clone, PartialEq, Eq)]

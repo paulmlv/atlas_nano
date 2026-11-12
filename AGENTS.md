@@ -18,7 +18,8 @@ Add dependencies with `cargo add` and commit `Cargo.toml` and `Cargo.lock` toget
 synthetic sessions only, never real conversations.
 
 Read the [labeling](docs/LABELING.md) and [taxonomy](docs/TAXONOMY.md) pages before changing
-behavior they define, and update the page whose fact changed.
+labeling, and update the page that describes what changed. The prompt and the labels themselves
+are in [prompts/](prompts/).
 
 ## Code
 
@@ -32,7 +33,7 @@ behavior they define, and update the page whose fact changed.
 | `place.rs`    | A chat's project and repository, from the folder it started in                |
 | `prices.rs`   | The built-in price table, `prices.toml`                                       |
 | `text.rs`     | Render a session's parts and split them into chunks                           |
-| `taxonomy.rs` | Read the label lists and rules from `docs/TAXONOMY.md`, built into the binary |
+| `taxonomy.rs` | Read the label lists from `prompts/labels.md`, built into the binary          |
 | `labeler.rs`  | One labeling call through Claude Code or Codex                                |
 | `prompt.rs`   | Fill the labeling prompt from `prompts/label.md`, built into the binary       |
 | `label.rs`    | The cache, the estimate, the parallel calls, and the chunk vote               |

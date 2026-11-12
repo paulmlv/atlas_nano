@@ -8,7 +8,7 @@ The labeling prompt, built into the binary. Edit the wording here; the code only
 - Lines between the pull requests and end pull requests markers are sent only with pull request
   mapping on.
 - `{name}` is filled in: `{work}` and `{topics}` (under a line for each domain) from the label
-  tables in docs/TAXONOMY.md; `{repository}`, `{branch}`, and `{conversation}` from the session.
+  tables in prompts/labels.md; `{repository}`, `{branch}`, and `{conversation}` from the session.
 - Text above the first part, like this note, is never sent. A changed prompt relabels every session.
 -->
 
