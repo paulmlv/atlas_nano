@@ -260,10 +260,11 @@ fn inherit_history(sessions: &mut [Session]) {
     // level's own items on top of what it inherits before its cutoff.
     fn complete(n: usize, sessions: &[Session], index: &HashMap<String, usize>) -> Vec<Item> {
         let mut chain = vec![n];
+        let mut seen = HashSet::from([n]);
         let mut cutoffs = Vec::new();
         while let Some(base) = &sessions[*chain.last().expect("starts with n")].history_base {
             match index.get(&base.rollout) {
-                Some(&parent) if !chain.contains(&parent) => {
+                Some(&parent) if seen.insert(parent) => {
                     chain.push(parent);
                     cutoffs.push(base.end);
                 }
