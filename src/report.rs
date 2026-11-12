@@ -430,7 +430,7 @@ impl Report<'_> {
                     let mark = if *split { "~" } else { "" };
                     vec![
                         p.tone(Tone::Plain, &format!("  {url}")),
-                        sessions.to_string(),
+                        p.tone(Tone::Plain, &sessions.to_string()),
                         p.tone(Tone::Money, &format!("{mark}{}", money(*spend))),
                     ]
                 })
@@ -495,8 +495,8 @@ impl Report<'_> {
                 };
                 vec![
                     p.tone(Tone::Plain, &name),
-                    requests.to_string(),
-                    count(tokens),
+                    p.tone(Tone::Plain, &requests.to_string()),
+                    p.tone(Tone::Plain, &count(tokens)),
                     shown,
                     p.dim(&share(spend, all.spend)),
                 ]

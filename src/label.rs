@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 use crate::config::{self, Config};
 use crate::labeler::{self, Answer, Call, Failure, Labeler};
 use crate::model::{Client, Kind, Label, PullRequest, Session, Usage};
-use crate::paint::{Paint, Tone};
+use crate::paint::{self, Paint, Tone};
 use crate::prices::PriceTable;
 use crate::prompt::Prompt;
 use crate::taxonomy::Taxonomy;
@@ -526,8 +526,18 @@ pub fn label(
         let (next, done) = (AtomicUsize::new(0), AtomicUsize::new(0));
         let progress = io::stderr().is_terminal();
         let started = Instant::now();
+        // Each line is redrawn over the last with a carriage return and padded to the widest so far,
+        // so no escape code is needed to clear what a longer line left.
+        let widest = AtomicUsize::new(0);
+        let redraw = |line: String| {
+            let width = paint::width(&line);
+            let pad = widest
+                .fetch_max(width, Ordering::Relaxed)
+                .saturating_sub(width);
+            eprint!("\r{line}{}", " ".repeat(pad));
+        };
         if progress {
-            eprint!("{}", bar(paint, 0, tasks.len(), started.elapsed()));
+            redraw(bar(paint, 0, tasks.len(), started.elapsed()));
         }
         std::thread::scope(|scope| {
             for _ in 0..settings.jobs.min(tasks.len()) {
@@ -548,8 +558,7 @@ pub fn label(
                         *results[n].lock().expect("the result lock is not poisoned") = Some(result);
                         let finished = done.fetch_add(1, Ordering::Relaxed) + 1;
                         if progress {
-                            let line = bar(paint, finished, tasks.len(), started.elapsed());
-                            eprint!("\r\x1b[2K{line}");
+                            redraw(bar(paint, finished, tasks.len(), started.elapsed()));
                         }
                     }
                 });
@@ -597,8 +606,8 @@ pub fn label(
                 eprintln!(
                     "{} {} is unlabeled: {}",
                     paint.tone(Tone::Warning, "warning:"),
-                    plan.session.key(),
-                    failure.message()
+                    paint.tone(Tone::Plain, &plan.session.key()),
+                    paint.tone(Tone::Plain, failure.message())
                 );
                 summary.unlabeled += 1;
                 continue;

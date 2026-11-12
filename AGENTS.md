@@ -36,11 +36,11 @@ fact changed. The prompt and the labels themselves are in [prompts/](prompts/). 
 | `lib.rs`       | The library the command is built on: the other modules                        |
 | `main.rs`      | The `atlas-nano` command: parse the arguments and run a command               |
 | `model.rs`     | What is kept of a session: its parts, turns, and model requests               |
+| `paint.rs`     | Terminal colors, and when they are on                                         |
 | `place.rs`     | A chat's project and repository, from the folder it started in                |
 | `prices.rs`    | The built-in price table, `prices.toml`                                       |
 | `prompt.rs`    | Fill the labeling prompt from `prompts/label.md`, built into the binary       |
 | `report.rs`    | The printed report and the CSV                                                |
-| `paint.rs`     | Terminal colors, and when they are on                                         |
 | `run.rs`       | `run`: load, select the period, label, print                                  |
 | `taxonomy.rs`  | Read the label lists from `prompts/labels.md`, built into the binary          |
 | `text.rs`      | Render a session's parts and split them into chunks                           |
