@@ -465,7 +465,13 @@ pub fn label(
     eprintln!("  {characters} characters to send, roughly {tokens} tokens, {cost}");
     if !pending.is_empty() {
         let api_key = std::env::var_os("ANTHROPIC_API_KEY").is_some_and(|key| !key.is_empty());
-        eprintln!("  {}", paint.dim(billing(client, api_key)));
+        let note = billing(client, api_key);
+        // A real charge is a warning; the subscription note is a quiet aside.
+        if api_key && client == Client::Claude {
+            eprintln!("  {} {note}", paint.tone(Tone::Warning, "warning:"));
+        } else {
+            eprintln!("  {}", paint.dim(note));
+        }
     }
     if confirm && !pending.is_empty() {
         eprint!("{} {} ", paint.bold("Proceed?"), paint.dim("(y / n) [n]"));

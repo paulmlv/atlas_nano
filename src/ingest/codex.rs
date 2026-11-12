@@ -34,6 +34,7 @@ const READ: &[&str] = &[
     "event_msg/task_complete",
     "event_msg/turn_aborted",
     "event_msg/token_count",
+    "token_usage_record",
     "event_msg/thread_goal_updated",
     "token_usage_record",
     "response_item/message",

@@ -14,8 +14,6 @@ built.
 
 - How many labeling calls run at once by default. It is 16, which has not been measured against each
   client's rate limits.
-- The context window to assume for each labeling model. Claude Haiku has accepted prompts above 500K
-  tokens through Claude Code, so 500,000 is assumed; a published figure would be better.
 - Whether a `run` flag may override a configured value for one run.
 - Whether users can supply their own taxonomy.
 - How updates are installed, and whether macOS binaries need signing.

@@ -173,21 +173,19 @@ pub fn load(home: &Path, clients: &[Client]) -> Loaded {
         .par_iter()
         .map(|(client, path)| {
             read_jsonl(path).map(|(records, not_json)| {
-                let (session, versions, unknown) = match client {
+                let read = match client {
                     Client::Claude => (
-                        claude::parse(path, &records),
-                        None,
+                        (claude::parse(path, &records), None),
                         count_unknown(&records, not_json, claude::unknown),
                     ),
-                    Client::Codex => {
-                        let (session, versions) = codex::parse(path, &records);
-                        let unknown = count_unknown(&records, not_json, codex::unknown);
-                        (session, versions, unknown)
-                    }
+                    Client::Codex => (
+                        codex::parse(path, &records),
+                        count_unknown(&records, not_json, codex::unknown),
+                    ),
                 };
                 // Malformed lines keep their place for fork cutoffs but do not make a copy longer.
                 let valid = records.iter().filter(|record| !record.is_null()).count();
-                (valid, (session, versions, unknown))
+                (valid, read)
             })
         })
         .collect();
@@ -197,7 +195,7 @@ pub fn load(home: &Path, clients: &[Client]) -> Loaded {
         match result {
             Err(error) => unreadable.push((path.clone(), error.to_string())),
             Ok((length, read)) => {
-                let key = read.0.key();
+                let key = read.0.0.key();
                 match longest.get(&key) {
                     Some((best, _)) if *best >= length => {}
                     Some(_) => drop(longest.insert(key, (length, read))),
@@ -209,10 +207,10 @@ pub fn load(home: &Path, clients: &[Client]) -> Loaded {
             }
         }
     }
-    let mut sessions = Vec::new();
-    let mut versions = Vec::new();
+    let (mut sessions, mut versions) = (Vec::new(), Vec::new());
     let mut unknown = BTreeMap::new();
-    for (session, version, counts) in order.iter().filter_map(|key| Some(longest.remove(key)?.1)) {
+    for ((session, version), counts) in order.iter().filter_map(|key| Some(longest.remove(key)?.1))
+    {
         for (label, count) in counts {
             *unknown.entry((session.client, label)).or_default() += count;
         }
