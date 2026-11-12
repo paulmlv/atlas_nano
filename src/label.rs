@@ -301,7 +301,7 @@ pub fn label(
     let instructions = labeler::instructions(taxonomy, settings.pull_requests);
     let schema = labeler::schema(taxonomy, settings.pull_requests);
     let budget = budget(client, &settings.model, &instructions);
-    let version = taxonomy.version();
+    let schema_text = schema.to_string();
 
     // A run with nothing to call costs nothing.
     let mut summary = Labeling {
@@ -341,17 +341,14 @@ pub fn label(
             .iter()
             .map(|chunk| format!("{header}<conversation>\n{chunk}\n</conversation>\n"))
             .collect();
+        // Everything sent to the labeler, so a changed instruction or label list relabels.
         let mut parts = vec![
-            version.as_str(),
+            instructions.as_str(),
+            schema_text.as_str(),
             settings.client.as_str(),
             settings.model.as_str(),
             config.unit.as_str(),
         ];
-        parts.push(if settings.pull_requests {
-            "prs"
-        } else {
-            "no-prs"
-        });
         parts.extend(prompts.iter().map(String::as_str));
         plans.push(Plan {
             session,
@@ -726,22 +723,35 @@ mod tests {
 
     #[test]
     fn the_key_changes_with_anything_a_label_depends_on() {
-        let key = digest(&["v1", "claude", "haiku", "conversation", "no-prs", "text"]);
-        assert_ne!(
-            key,
-            digest(&["v2", "claude", "haiku", "conversation", "no-prs", "text"])
-        );
-        assert_ne!(
-            key,
-            digest(&[
-                "v1",
+        let key = digest(&["rules", "schema", "claude", "haiku", "conversation", "text"]);
+        for changed in [
+            [
+                "other rules",
+                "schema",
                 "claude",
                 "haiku",
                 "conversation",
-                "no-prs",
-                "text more"
-            ])
-        );
+                "text",
+            ],
+            [
+                "rules",
+                "other schema",
+                "claude",
+                "haiku",
+                "conversation",
+                "text",
+            ],
+            [
+                "rules",
+                "schema",
+                "claude",
+                "haiku",
+                "conversation",
+                "text more",
+            ],
+        ] {
+            assert_ne!(key, digest(&changed));
+        }
         assert_ne!(digest(&["ab", "c"]), digest(&["a", "bc"]));
     }
 
