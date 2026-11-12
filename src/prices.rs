@@ -298,5 +298,7 @@ mod tests {
         };
         assert_eq!(cost("claude-fable-5-2"), Decimal::from_str("7.42").ok());
         assert_eq!(cost("claude-sonnet-5-5"), Decimal::from_str("1.86").ok());
+        assert_eq!(cost("claude-fable-5"), Decimal::from_str("9.35").ok());
+        assert_eq!(cost("claude-opus-5"), Decimal::from_str("4.675").ok());
     }
 }
