@@ -44,7 +44,7 @@ atlas-nano run --confirm    # print the labeling estimate and ask first
 - [Labeling](docs/LABELING.md): what is sent to the labeling model and how the call is made.
 - [Taxonomy](docs/TAXONOMY.md): how conversations are labeled, and the pull request mapping.
 - [Prompt](prompts/label.md) and [labels](prompts/labels.md): what the labeling model is sent.
-- [Next steps](docs/NEXT_STEPS.md): what is left to build, test, and decide.
+- [Next steps](docs/NEXT_STEPS.md): what is left to test and decide.
 - [Working on Atlas Nano](AGENTS.md): the contributor guide.
 
 ## License
