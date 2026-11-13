@@ -642,7 +642,7 @@ impl<'r, 'a> Dashboard<'r, 'a> {
             Tabs::new(names)
                 .select(self.tab)
                 .style(p.style(Tone::Dim, false))
-                .highlight_style(p.style(Tone::Heading, true).reversed()),
+                .highlight_style(p.open_tab()),
             tabs,
         );
         let mut trail: Vec<&str> = vec![self.tabs[self.tab].0];
@@ -743,13 +743,10 @@ fn render(table: &mut Table, frame: &mut Frame, area: Rect, p: Paint) {
             Alignment::Right
         }))
     };
-    let header = TableRow::new(
-        table
-            .header
-            .iter()
-            .enumerate()
-            .map(|(n, text)| cell(n, text, p.style(Tone::Dim, false))),
-    );
+    let header = TableRow::new(table.header.iter().enumerate().map(|(n, text)| {
+        let tone = if n == 0 { Tone::Heading } else { Tone::Dim };
+        cell(n, text, p.style(tone, false))
+    }));
     let rows = table.items.iter().map(|item| {
         TableRow::new(item.cells.iter().enumerate().map(|(n, text)| {
             let style = p.style(tone(&table.header[n], text), item.strong);
@@ -757,10 +754,14 @@ fn render(table: &mut Table, frame: &mut Frame, area: Rect, p: Paint) {
         }))
     });
     let widths = widths.iter().map(|&width| Constraint::Length(width as u16));
+    // Reversed text would hide the selected day's bar, so its cell is never reversed.
+    let bar = table.header.iter().position(|cell| cell.is_empty());
+    table.state.select_column(bar);
     let widget = TableWidget::new(rows, widths)
         .header(header)
         .column_spacing(SPACING as u16)
-        .row_highlight_style(Style::new().reversed())
+        .row_highlight_style(p.selected())
+        .cell_highlight_style(Style::new().not_reversed())
         .highlight_symbol(SYMBOL);
     frame.render_stateful_widget(widget, area, &mut table.state);
 }
@@ -789,7 +790,7 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
-    use ratatui::style::Color;
+    use ratatui::style::{Color, Modifier};
 
     use super::*;
     use crate::account::{self, tests::session};
@@ -972,5 +973,48 @@ mod tests {
         // The header's spend comes first: money, in sage.
         assert_eq!(at(&soft), Color::Indexed(108));
         assert_eq!(at(&plain), Color::Reset);
+    }
+
+    #[test]
+    fn the_open_tab_is_not_dim() {
+        let buffer = draw(&sessions(), &[], Paint::colored(Theme::Minimal), 120);
+        let tab = buffer
+            .content()
+            .iter()
+            .skip(2 * 120)
+            .find(|c| c.symbol() == "W")
+            .unwrap();
+        assert!(tab.modifier.contains(Modifier::REVERSED | Modifier::BOLD));
+        assert!(!tab.modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn the_selected_day_keeps_its_bar() {
+        let days = [KeyCode::Char('6')];
+        let bar = |buffer: &Buffer| {
+            buffer
+                .content()
+                .iter()
+                .find(|c| c.symbol() == "█")
+                .cloned()
+                .unwrap()
+        };
+        // Soft marks the row with a background, so the bar keeps its color.
+        let soft = bar(&draw(&sessions(), &days, Paint::colored(Theme::Soft), 120));
+        assert_eq!(
+            (soft.fg, soft.bg),
+            (Color::Indexed(67), Color::Indexed(237))
+        );
+        // Minimal uses the same gray. With colors off the row is reversed, but not the bar.
+        let minimal = bar(&draw(
+            &sessions(),
+            &days,
+            Paint::colored(Theme::Minimal),
+            120,
+        ));
+        assert_eq!(minimal.bg, Color::Indexed(237));
+        let off = bar(&draw(&sessions(), &days, Paint::OFF, 120));
+        assert!(!off.modifier.contains(Modifier::REVERSED));
+        assert!(minimal.modifier.contains(Modifier::DIM));
     }
 }

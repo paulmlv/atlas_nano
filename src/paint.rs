@@ -157,6 +157,24 @@ impl Paint {
         read_code(&self.code(tone, strong)).expect("every theme code is one the view reads")
     }
 
+    /// The interactive view's style for the row under the cursor: a dark gray background, so each
+    /// cell keeps its color, or reversed text with colors off.
+    pub fn selected(self) -> Style {
+        if self.on {
+            Style::new().bg(Color::Indexed(237))
+        } else {
+            Style::new().add_modifier(Modifier::REVERSED)
+        }
+    }
+
+    /// The interactive view's style for the open tab: reversed in the heading color. The tab bar
+    /// is dim, so the open tab turns dim off, or Minimal would show gray text on white.
+    pub fn open_tab(self) -> Style {
+        self.style(Tone::Heading, true)
+            .add_modifier(Modifier::REVERSED)
+            .remove_modifier(Modifier::DIM)
+    }
+
     pub fn tone(self, tone: Tone, text: &str) -> String {
         self.styled(tone, false, text)
     }

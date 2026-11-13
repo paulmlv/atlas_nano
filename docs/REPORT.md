@@ -99,7 +99,8 @@ file or a pipe the run stops before labeling. A `--csv` file is still written fi
   by spend, with labels, models, and pull requests. `Esc` goes back.
 - **Columns:** a column whose cells all hold one value moves above the table, so titles get the
   room.
-- **Colors:** the configured theme, off as for the printed report.
+- **Colors:** the configured theme, off as for the printed report. The selected line has a dark gray
+  background, or reversed text with colors off.
 
 ## CSV
 
