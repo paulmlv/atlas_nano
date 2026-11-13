@@ -35,8 +35,8 @@ are in the [labeling prompt](../prompts/label.md). The labels have not been chec
   never a bare number, in the model's answer and the report. The prompt gives the session's
   repository so the model can resolve a bare number; with no known repository it omits the pull
   request.
-- Roles, one per pull request, defined in the [labeling prompt](../prompts/label.md): Contributed
-  to and Reviewed attribute the conversation's cost to the pull request; Mentioned only attributes
+- Roles, one per pull request, defined in the [labeling prompt](../prompts/label.md): Contributed to
+  and Reviewed attribute the conversation's cost to the pull request; Mentioned only attributes
   nothing.
 - A conversation that worked on several pull requests splits its cost evenly among them, and the
   report marks split amounts as estimates.

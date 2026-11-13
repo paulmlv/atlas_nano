@@ -28,9 +28,9 @@ not asked. `codex` covers Codex and ChatGPT desktop sessions, and `claude` Claud
   model, the no-tools mode, the pull request mapping (on by default), how many labeling calls run at
   once (32 by default; asked again until it is a whole number of at least 1), how many rows the
   [ranked tables](REPORT.md#printed-report) show (10, 20, 50, or `all`; 10 by default, and for a
-  file saved without it), and the color theme.
-  It also saves `retries = 1` without asking: how many more times a failed labeling call is tried.
-  Edit the file to change it; `0` turns retries off. A file saved without it gets 1.
+  file saved without it), and the color theme. It also saves `retries = 1` without asking: how many
+  more times a failed labeling call is tried. Edit the file to change it; `0` turns retries off. A
+  file saved without it gets 1.
 - **Theme:** `minimal` (the default) uses bold, dim, and the terminal's own colors, so it suits any
   background. `soft` has muted blue headings and sage money; `warm` has amber headings and bars.
   Both use fixed 256-color shades. On a terminal, each theme is previewed before the question.
@@ -38,11 +38,11 @@ not asked. `codex` covers Codex and ChatGPT desktop sessions, and `claude` Claud
   through Codex. With one client installed, its model labels and the question is not asked. No other
   model is accepted, in `configure` or in the saved file.
 - **Test call:** configuration runs one small labeling call with the chosen labeling model and the
-  [required flags](LABELING.md#required-flags). Configuration fails if the call is rejected, as
-  when its client is not signed in. A missing or invalid answer does not fail configuration.
+  [required flags](LABELING.md#required-flags). Configuration fails if the call is rejected, as when
+  its client is not signed in. A missing or invalid answer does not fail configuration.
 - **Provider confirmation:** when the chosen labeler would send one client's conversations to the
-  other provider, configuration says so right after the labeler is chosen and asks to continue,
-  yes by default, before any call or save. A no stops it with nothing saved. This arises when both
+  other provider, configuration says so right after the labeler is chosen and asks to continue, yes
+  by default, before any call or save. A no stops it with nothing saved. This arises when both
   clients are covered, since one labeler reads everything.
 
 ## `atlas-nano run`
@@ -78,8 +78,8 @@ does not record it. Usage counts as read only when it has both input and output 
 - After reading all sessions and before labeling, the run prints an estimate on standard error: the
   sessions to label, the calls, and the estimated tokens and API-equivalent cost. Each call's tokens
   count the labeling instructions and the conversation, at 2.3 characters per token for a Claude
-  labeler and 3.6 for a Codex labeler, plus the client's fixed context. The cost assumes Claude
-  Code writes each prompt to its one-hour cache, as it does. The tokens and cost are shown to one
+  labeler and 3.6 for a Codex labeler, plus the client's fixed context. The cost assumes Claude Code
+  writes each prompt to its one-hour cache, as it does. The tokens and cost are shown to one
   significant figure, such as `40M` and `$20`, since the estimate is only good to its order of
   magnitude.
 - By default the run then proceeds. With `--confirm` it asks first.
@@ -94,6 +94,5 @@ Labels are stored in `~/.cache/atlas-nano/labels.jsonl`, or under `$XDG_CACHE_HO
 set. A stored label is reused only when everything sent to the labeler (the instructions, the label
 lists, the answer schema, and the conversation's text), the labeler, its effort, the unit and the
 Atlas Nano version are unchanged, so a conversation that grew, any change to the prompt, or a new
-release labels it again. A
-session whose call failed is not stored, so the next run tries it again. When the file cannot be
-written, the run warns once and its new labels are not stored.
+release labels it again. A session whose call failed is not stored, so the next run tries it again.
+When the file cannot be written, the run warns once and its new labels are not stored.
