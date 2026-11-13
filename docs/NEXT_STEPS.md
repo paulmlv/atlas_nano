@@ -30,14 +30,15 @@ built.
   repositories.
 - The no-tools mode on subagents. Many Claude Code subagent files hold no model text, so they would
   be labeled from the task prompt alone.
-- Run-to-run variation of one model on the same conversation.
+- Run-to-run variation of Astra and Luna, and of Opus and Haiku on more than the one
+  [measurement](LABELING_EXPERIMENTS.md#model-comparison) so far.
 - Moving the labeling instructions into the Codex instructions file.
 
 ## Manual review
 
-No label has been checked by a person; every measurement so far is agreement between models. Before
-the label lists are frozen, a person reviews a labeled sample of their own conversations. That
-review also settles:
+No label has been checked by a person; every [measurement](LABELING_EXPERIMENTS.md) so far is
+agreement between models. Before the label lists are frozen, a person reviews a labeled sample of
+their own conversations. That review also settles:
 
 - whether to keep the reworded type-of-work definitions, which did not raise agreement;
 - the split between Backend and APIs and Data storage and pipelines;
