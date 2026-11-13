@@ -174,14 +174,15 @@ mod tests {
 
     #[test]
     fn rejects_unknown_fields_and_dangling_aliases() {
-        assert!(PriceTable::decode("checked = 2026-01-01\n[extra]").is_err());
-        let alias = "checked = 2026-01-01\n[priced_as]\n\"a/b\" = \"a/missing\"";
-        assert!(PriceTable::decode(alias).is_err());
+        let error = |text: &str| PriceTable::decode(text).unwrap_err();
+        assert!(error(&format!("{TABLE}\n[extra]")).contains("unknown field `extra`"));
+        let alias = TABLE.replace("= \"codex/plain\"", "= \"codex/missing\"");
+        assert!(error(&alias).contains("`codex/missing`, which has no rates"));
         let rate = TABLE.replace(
             "cached = 0.10, output = 10.00",
             "cached = 0.10, bonus = 1.0, output = 10.00",
         );
-        assert!(PriceTable::decode(&rate).is_err());
+        assert!(error(&rate).contains("unknown field `bonus`"));
     }
 
     #[test]
