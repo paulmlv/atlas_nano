@@ -2,6 +2,8 @@
 
 use std::env;
 use std::fs;
+use std::io;
+use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -135,7 +137,7 @@ impl Config {
             Ok(text) => Config::decode(&text)
                 .map(Some)
                 .map_err(|error| format!("{}: {error}", path.display())),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(format!("{}: {error}", path.display())),
         }
     }
@@ -175,6 +177,34 @@ pub fn cache_folder() -> Result<PathBuf, String> {
     Ok(base("XDG_CACHE_HOME", ".cache")?.join("atlas-nano"))
 }
 
+/// `folder` as an absolute path. An empty one, which an empty `TMPDIR` gives, is `/tmp`, as when
+/// `TMPDIR` is not set.
+fn absolute(folder: &Path) -> io::Result<PathBuf> {
+    if folder.as_os_str().is_empty() {
+        return Ok(PathBuf::from("/tmp"));
+    }
+    std::path::absolute(folder)
+}
+
+/// A new, empty folder for labeling calls to run in, private to the user.
+///
+/// It is under the system's temporary folder, so the system removes one that an interrupted run
+/// left behind. A name already taken is skipped, never reused, so the folder is always this run's.
+/// The path is absolute, so the files in it are found from any working folder, the call's included.
+pub fn call_folder() -> Result<PathBuf, String> {
+    let base = env::temp_dir();
+    let base = absolute(&base).map_err(|error| format!("{}: {error}", base.display()))?;
+    let mut attempt = 0u32;
+    loop {
+        let folder = base.join(format!("atlas-nano-{}-{attempt}", std::process::id()));
+        match fs::DirBuilder::new().mode(0o700).create(&folder) {
+            Ok(()) => return Ok(folder),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => attempt += 1,
+            Err(error) => return Err(format!("{}: {error}", folder.display())),
+        }
+    }
+}
+
 #[cfg(test)]
 pub mod tests {
     use super::*;
@@ -194,6 +224,35 @@ pub mod tests {
                 retries: 1,
             },
         }
+    }
+
+    #[test]
+    fn each_call_folder_is_new_empty_and_private() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let (first, second) = (call_folder().unwrap(), call_folder().unwrap());
+        assert_ne!(first, second);
+        for folder in [first, second] {
+            assert!(folder.is_absolute());
+            let mode = fs::metadata(&folder).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o700);
+            assert_eq!(fs::read_dir(&folder).unwrap().count(), 0);
+            fs::remove_dir(&folder).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_relative_or_empty_temporary_folder_becomes_absolute() {
+        let current = env::current_dir().unwrap();
+        assert_eq!(
+            absolute(Path::new("scratch")).unwrap(),
+            current.join("scratch")
+        );
+        assert_eq!(absolute(Path::new("")).unwrap(), Path::new("/tmp"));
+        assert_eq!(
+            absolute(Path::new("/var/tmp")).unwrap(),
+            Path::new("/var/tmp")
+        );
     }
 
     #[test]

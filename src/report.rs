@@ -69,17 +69,20 @@ fn share(part: Decimal, whole: Decimal) -> String {
     format!("{}%", percent.round_dp_with_strategy(0, HALF_UP))
 }
 
+/// A token count in a short form. Each range ends where its form would round up into the next
+/// one, so 999,999 is `1.0M`, not `1000k`.
 fn count(tokens: u64) -> String {
     let value = tokens as f64;
     match tokens {
         0..1_000 => tokens.to_string(),
-        1_000..1_000_000 => format!("{:.0}k", value / 1e3),
-        1_000_000..10_000_000 => format!("{:.1}M", value / 1e6),
-        10_000_000..1_000_000_000 => format!("{:.0}M", value / 1e6),
+        1_000..999_500 => format!("{:.0}k", value / 1e3),
+        999_500..9_950_000 => format!("{:.1}M", value / 1e6),
+        9_950_000..999_500_000 => format!("{:.0}M", value / 1e6),
         _ => format!("{:.1}B", value / 1e9),
     }
 }
 
+/// A length of time in a short form. One decimal of hours ends at 9.95 hours, which is `10h`.
 fn span(duration: Duration) -> String {
     let seconds = duration.num_seconds();
     let hours = seconds as f64 / 3600.0;
@@ -87,7 +90,7 @@ fn span(duration: Duration) -> String {
         0 => "-".to_string(),
         1..60 => format!("{seconds}s"),
         60..3600 => format!("{}m", seconds / 60),
-        3600..36_000 => format!("{hours:.1}h"),
+        3600..35_820 => format!("{hours:.1}h"),
         _ => format!("{hours:.0}h"),
     }
 }
@@ -790,6 +793,31 @@ mod tests {
             let colored = render(Paint::colored(theme));
             assert_ne!(colored, render(Paint::OFF));
             assert_eq!(paint::strip(&colored), render(Paint::OFF));
+        }
+    }
+
+    #[test]
+    fn a_short_form_never_rounds_past_its_unit() {
+        let counts = [
+            (999, "999"),
+            (999_499, "999k"),
+            (999_999, "1.0M"),
+            (9_949_999, "9.9M"),
+            (9_999_999, "10M"),
+            (999_499_999, "999M"),
+            (999_999_999, "1.0B"),
+        ];
+        for (tokens, shown) in counts {
+            assert_eq!(count(tokens), shown);
+        }
+        let spans = [
+            (59, "59s"),
+            (3599, "59m"),
+            (35_819, "9.9h"),
+            (35_999, "10h"),
+        ];
+        for (seconds, shown) in spans {
+            assert_eq!(span(Duration::seconds(seconds)), shown);
         }
     }
 

@@ -12,14 +12,21 @@ use crate::paint::{Paint, Theme, Tone};
 use crate::prompt::Prompt;
 use crate::taxonomy::Taxonomy;
 
+/// The company whose model a client labels with.
+fn provider(client: Client) -> &'static str {
+    match client {
+        Client::Claude => "Anthropic",
+        Client::Codex => "OpenAI",
+    }
+}
+
 /// A client's labeling model as `provider/model`, with the model's API name.
 fn provider_model(client: Client) -> String {
-    let provider = if client == Client::Claude {
-        "anthropic"
-    } else {
-        "openai"
-    };
-    format!("{provider}/{}", labeling_model(client))
+    format!(
+        "{}/{}",
+        provider(client).to_lowercase(),
+        labeling_model(client)
+    )
 }
 
 /// What a client's name covers, for messages.
@@ -95,22 +102,17 @@ fn yes(question: &str, default: bool) -> Result<bool, String> {
 /// The notice when the labeler would read another provider's conversations, if it would.
 pub fn provider_notice(coverage: &[Client], labeler: Client) -> Option<String> {
     let other = coverage.iter().find(|client| **client != labeler)?;
-    let provider = if labeler == Client::Claude {
-        "Anthropic"
-    } else {
-        "OpenAI"
-    };
     Some(format!(
-        "{} conversations will be sent to {provider}, because {} labels every session",
+        "{} conversations will be sent to {}, because {} labels every session",
         label(*other),
+        provider(labeler),
         label(labeler)
     ))
 }
 
 /// Run one small labeling call with the required flags; only a rejected call is an error.
 fn test_call(paint: Paint, client: Client, model: &str) -> Result<(), String> {
-    let folder = config::cache_folder()?.join(format!("configure-{}", std::process::id()));
-    fs::create_dir_all(&folder).map_err(|error| format!("{}: {error}", folder.display()))?;
+    let folder = config::call_folder()?;
     let taxonomy = Taxonomy::built_in();
     let prompt = Prompt::new(&taxonomy, false);
     let labeler = Labeler {
