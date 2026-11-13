@@ -176,7 +176,7 @@ fn grouped(
         .map(|(group, members)| {
             let mut sum = Totals::default();
             for (_, totals) in members {
-                merge(&mut sum, totals);
+                sum += totals;
             }
             (group, sum, members)
         })
@@ -199,19 +199,6 @@ fn grouped(
     }
     table(out, paint, &header, &rows);
     out.push('\n');
-}
-
-fn merge(sum: &mut Totals, other: &Totals) {
-    sum.conversations += other.conversations;
-    sum.subagents += other.subagents;
-    sum.reviews += other.reviews;
-    sum.turns += other.turns;
-    sum.unknown_turns += other.unknown_turns;
-    sum.working += other.working;
-    sum.wall += other.wall;
-    sum.tokens += other.tokens;
-    sum.spend += other.spend;
-    sum.unpriced_requests += other.unpriced_requests;
 }
 
 /// Sum the rows into `(group, name)` buckets, in first-seen order.
@@ -469,12 +456,12 @@ impl Report<'_> {
         let p = self.paint;
         let mut models: BTreeMap<String, (u64, u64, Decimal, u64)> = BTreeMap::new();
         for row in &self.rows {
-            for usage in &row.session.usage {
+            for (usage, price) in row.session.usage.iter().zip(&row.cost.requests) {
                 let name = format!("  {} / {}", row.session.client.name(), usage.model);
                 let entry = models.entry(name).or_default();
                 entry.0 += 1;
                 entry.1 += usage.tokens();
-                match self.prices.cost(row.session.client, usage) {
+                match price {
                     Some(cost) => entry.2 += cost,
                     None => entry.3 += 1,
                 }
@@ -512,12 +499,8 @@ impl Report<'_> {
     fn days(&self, out: &mut String) {
         let mut days: BTreeMap<String, Decimal> = BTreeMap::new();
         for row in &self.rows {
-            for usage in &row.session.usage {
-                let day = local_day(usage.at);
-                *days.entry(day).or_default() += self
-                    .prices
-                    .cost(row.session.client, usage)
-                    .unwrap_or_default();
+            for (usage, price) in row.session.usage.iter().zip(&row.cost.requests) {
+                *days.entry(local_day(usage.at)).or_default() += price.unwrap_or_default();
             }
         }
         let p = self.paint;
@@ -670,7 +653,6 @@ fn local_day(at: DateTime<Utc>) -> String {
     at.with_timezone(&Local).format("%Y-%m-%d").to_string()
 }
 
-/// Quote a CSV field that holds a comma, a quote, or a line break.
 /// Quote a CSV field when it needs it. A field a spreadsheet would read as a formula, starting with
 /// `=`, `+`, `-`, `@`, a tab, or a carriage return, gets a leading `'` so it stays text.
 fn quote(field: &str) -> String {

@@ -205,7 +205,8 @@ pub fn configure() -> Result<(), String> {
         .as_str()
         {
             "both" => recorded.clone(),
-            one => vec![config::client(one)?],
+            "claude" => vec![Client::Claude],
+            _ => vec![Client::Codex],
         },
     };
     // Said before the test calls, which an exported API key pays for like any other.
@@ -279,13 +280,10 @@ pub fn configure() -> Result<(), String> {
     }
     let config = Config {
         unit: "conversation".to_string(),
-        coverage: covered
-            .iter()
-            .map(|client| client.name().to_string())
-            .collect(),
+        coverage: covered,
         theme,
         labeler: Settings {
-            client: client.name().to_string(),
+            client,
             model: labeling_model(client).to_string(),
             tools,
             pull_requests,

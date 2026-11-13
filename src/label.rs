@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
-use std::io::{self, IsTerminal as _, Write as _};
+use std::io::{self, IsTerminal as _, Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::Path;
 use std::process::Command;
 use std::sync::Mutex;
@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
+use rayon::prelude::*;
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -131,6 +132,14 @@ fn read_cache(path: &Path) -> HashMap<String, Value> {
         .filter_map(|line| serde_json::from_slice::<Value>(line).ok())
         .filter_map(|entry| Some((entry["key"].as_str()?.to_string(), entry)))
         .collect()
+}
+
+/// Whether a file's last byte is not a line break, read without reading the whole file.
+fn ends_mid_line(path: &Path) -> bool {
+    let mut last = [0];
+    fs::File::open(path).is_ok_and(|mut file| {
+        file.seek(SeekFrom::End(-1)).is_ok() && file.read_exact(&mut last).is_ok()
+    }) && last[0] != b'\n'
 }
 
 fn stored(entry: &Value) -> Option<Label> {
@@ -333,14 +342,13 @@ pub fn label(
     confirm: bool,
 ) -> Result<Outcome, String> {
     let settings = &config.labeler;
-    let client = config::client(&settings.client)?;
+    let client = settings.client;
     let prompt = Prompt::new(taxonomy, settings.pull_requests);
     let schema = labeler::schema(taxonomy, settings.pull_requests);
     // Claude Code caps its window at 200K when this is set to anything but 0 or false.
     let capped = std::env::var("CLAUDE_CODE_DISABLE_1M_CONTEXT")
         .is_ok_and(|value| !["", "0", "false"].contains(&value.trim().to_lowercase().as_str()));
     let budget = budget(client, &settings.model, &prompt.instructions, capped);
-    let version = taxonomy.version();
     let schema_text = schema.to_string();
 
     // A run with nothing to call costs nothing.
@@ -375,21 +383,17 @@ pub fn label(
             .iter()
             .map(|chunk| prompt.conversation(&url, branch, chunk))
             .collect();
-        // Everything sent besides the conversation is in the key, so changing it relabels.
+        // Everything sent to the labeler, and how, so a changed instruction, label list or effort
+        // relabels.
         let mut parts = vec![
-            version.as_str(),
-            settings.client.as_str(),
-            settings.model.as_str(),
-            config.unit.as_str(),
             prompt.instructions.as_str(),
             schema_text.as_str(),
             prompt.codex_system.as_str(),
+            client.name(),
+            settings.model.as_str(),
+            labeler::EFFORT,
+            config.unit.as_str(),
         ];
-        parts.push(if settings.pull_requests {
-            "prs"
-        } else {
-            "no-prs"
-        });
         parts.extend(prompts.iter().map(String::as_str));
         plans.push(Plan {
             session,
@@ -508,7 +512,6 @@ pub fn label(
             .enumerate()
             .flat_map(|(n, plan)| plan.prompts.iter().map(move |prompt| (n, prompt.as_str())))
             .collect();
-        let results: Vec<Mutex<Option<Call>>> = tasks.iter().map(|_| Mutex::new(None)).collect();
         let cache_file = Mutex::new(
             OpenOptions::new()
                 .create(true)
@@ -517,8 +520,7 @@ pub fn label(
                 .ok(),
         );
         // A line cut short by an interrupted run is ended, so the next record starts its own line.
-        let cut = fs::read(&cache_path).is_ok_and(|data| data.last().is_some_and(|b| *b != b'\n'));
-        if cut
+        if ends_mid_line(&cache_path)
             && let Some(file) = cache_file
                 .lock()
                 .expect("the cache lock is not poisoned")
@@ -526,7 +528,7 @@ pub fn label(
         {
             let _ = file.write_all(b"\n");
         }
-        let (next, done) = (AtomicUsize::new(0), AtomicUsize::new(0));
+        let done = AtomicUsize::new(0);
         let progress = io::stderr().is_terminal();
         let started = Instant::now();
         // Each line is redrawn over the last with a carriage return and padded to the widest so far,
@@ -542,30 +544,31 @@ pub fn label(
         if progress {
             redraw(bar(paint, 0, tasks.len(), started.elapsed()));
         }
-        std::thread::scope(|scope| {
-            for _ in 0..settings.jobs.min(tasks.len()) {
-                scope.spawn(|| {
-                    loop {
-                        let n = next.fetch_add(1, Ordering::Relaxed);
-                        let Some(&(plan, prompt)) = tasks.get(n) else {
-                            break;
-                        };
-                        let result = labeler.call(prompt);
-                        // A session with one call is stored at once, so an interrupted run keeps it.
-                        if let Ok(answer) = &result.answer
-                            && pending[plan].prompts.len() == 1
-                        {
-                            let label = combine(std::slice::from_ref(answer), &settings.model);
-                            store(&cache_file, &pending[plan].key, &label);
-                        }
-                        *results[n].lock().expect("the result lock is not poisoned") = Some(result);
-                        let finished = done.fetch_add(1, Ordering::Relaxed) + 1;
-                        if progress {
-                            redraw(bar(paint, finished, tasks.len(), started.elapsed()));
-                        }
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(settings.jobs.min(tasks.len()))
+            .build()
+            .map_err(|error| error.to_string())?;
+        // One call per task, so an idle thread can always take the next one.
+        let results: Vec<Call> = pool.install(|| {
+            tasks
+                .par_iter()
+                .with_max_len(1)
+                .map(|&(plan, prompt)| {
+                    let result = labeler.call(prompt);
+                    // A session with one call is stored at once, so an interrupted run keeps it.
+                    if let Ok(answer) = &result.answer
+                        && pending[plan].prompts.len() == 1
+                    {
+                        let label = combine(std::slice::from_ref(answer), &settings.model);
+                        store(&cache_file, &pending[plan].key, &label);
                     }
-                });
-            }
+                    let finished = done.fetch_add(1, Ordering::Relaxed) + 1;
+                    if progress {
+                        redraw(bar(paint, finished, tasks.len(), started.elapsed()));
+                    }
+                    result
+                })
+                .collect()
         });
         if progress {
             eprintln!();
@@ -577,13 +580,7 @@ pub fn label(
         // Every call counts, failed or not. Claude Code reports each call's cost; Codex reports
         // tokens, priced call by call so one call's size sets its own rate.
         let mut cost = Some(Decimal::ZERO);
-        for ((plan, _), result) in tasks.iter().zip(results) {
-            let Some(Call { answer, spent }) = result
-                .into_inner()
-                .expect("the result lock is not poisoned")
-            else {
-                continue;
-            };
+        for ((plan, _), Call { answer, spent }) in tasks.iter().zip(results) {
             summary.input_tokens += spent.input_tokens;
             summary.output_tokens += spent.output_tokens;
             let priced = match client {
@@ -667,7 +664,11 @@ mod tests {
         data.extend_from_slice(b"\xff\xfe not json\n{\"key\": \"b\"}\n{\"key\": \"c");
         fs::write(&path, data).unwrap();
         let cache = read_cache(&path);
+        assert!(ends_mid_line(&path));
+        fs::write(&path, b"{\"key\": \"a\"}\n").unwrap();
+        assert!(!ends_mid_line(&path));
         fs::remove_file(&path).unwrap();
+        assert!(!ends_mid_line(&path));
         let mut keys: Vec<&str> = cache.keys().map(String::as_str).collect();
         keys.sort_unstable();
         assert_eq!(keys, ["a", "b"]);
@@ -771,22 +772,35 @@ mod tests {
 
     #[test]
     fn the_key_changes_with_anything_a_label_depends_on() {
-        let key = digest(&["v1", "claude", "haiku", "conversation", "no-prs", "text"]);
-        assert_ne!(
-            key,
-            digest(&["v2", "claude", "haiku", "conversation", "no-prs", "text"])
-        );
-        assert_ne!(
-            key,
-            digest(&[
-                "v1",
+        let key = digest(&["rules", "schema", "claude", "haiku", "conversation", "text"]);
+        for changed in [
+            [
+                "other rules",
+                "schema",
                 "claude",
                 "haiku",
                 "conversation",
-                "no-prs",
-                "text more"
-            ])
-        );
+                "text",
+            ],
+            [
+                "rules",
+                "other schema",
+                "claude",
+                "haiku",
+                "conversation",
+                "text",
+            ],
+            [
+                "rules",
+                "schema",
+                "claude",
+                "haiku",
+                "conversation",
+                "text more",
+            ],
+        ] {
+            assert_ne!(key, digest(&changed));
+        }
         assert_ne!(digest(&["ab", "c"]), digest(&["a", "bc"]));
     }
 

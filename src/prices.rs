@@ -1,68 +1,41 @@
 //! API-equivalent prices of recorded model requests, from the built-in `prices.toml`.
 
 use std::collections::HashMap;
-use std::str::FromStr;
 
 use rust_decimal::Decimal;
-use toml::{Table, Value};
+use serde::Deserialize;
 
 use crate::model::{Client, Usage};
 
 const PRICES: &str = include_str!("prices.toml");
 
-/// USD per million tokens of each billed category.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// USD per million tokens of each billed category. A missing cache-write rate falls back to the
+/// input rate, and a missing one-hour rate to the five-minute one.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Rates {
     input: Decimal,
     cached: Decimal,
-    cache_write: Decimal,
-    cache_write_1h: Decimal,
+    cache_write: Option<Decimal>,
+    cache_write_1h: Option<Decimal>,
     output: Decimal,
 }
 
 impl Rates {
-    /// Decode one rate table. A missing cache-write rate falls back to the input rate, and a
-    /// missing one-hour rate to the five-minute one.
-    fn decode(table: &Table) -> Result<Rates, String> {
-        const NAMES: [&str; 5] = ["input", "cached", "cache_write", "cache_write_1h", "output"];
-        if let Some(unknown) = table.keys().find(|key| !NAMES.contains(&key.as_str())) {
-            return Err(format!("unknown rate `{unknown}`"));
-        }
-        let rate = |name: &str| -> Result<Option<Decimal>, String> {
-            let text = match table.get(name) {
-                None => return Ok(None),
-                Some(Value::Float(rate)) => rate.to_string(),
-                Some(Value::Integer(rate)) => rate.to_string(),
-                Some(_) => return Err(format!("rate `{name}` is not a number")),
-            };
-            Decimal::from_str(&text)
-                .map(Some)
-                .map_err(|error| format!("rate `{name}`: {error}"))
-        };
-        let required = |name: &str| rate(name)?.ok_or(format!("missing rate `{name}`"));
-        let input = required("input")?;
-        let cache_write = rate("cache_write")?.unwrap_or(input);
-        Ok(Rates {
-            input,
-            cached: required("cached")?,
-            cache_write,
-            cache_write_1h: rate("cache_write_1h")?.unwrap_or(cache_write),
-            output: required("output")?,
-        })
-    }
-
     fn cost(&self, usage: &Usage) -> Decimal {
+        let cache_write = self.cache_write.unwrap_or(self.input);
         let tokens = Decimal::from(usage.input) * self.input
             + Decimal::from(usage.cached) * self.cached
-            + Decimal::from(usage.cache_write) * self.cache_write
-            + Decimal::from(usage.cache_write_1h) * self.cache_write_1h
+            + Decimal::from(usage.cache_write) * cache_write
+            + Decimal::from(usage.cache_write_1h) * self.cache_write_1h.unwrap_or(cache_write)
             + Decimal::from(usage.output) * self.output;
         tokens / Decimal::from(1_000_000)
     }
 }
 
 /// A model's rates up to and above its long-context boundary on total input tokens.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ModelPrice {
     long_context_above: u64,
     short: Rates,
@@ -70,11 +43,13 @@ struct ModelPrice {
 }
 
 /// Rates by `client/model`, and the date they were checked.
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PriceTable {
     models: HashMap<String, ModelPrice>,
+    #[serde(default)]
     priced_as: HashMap<String, String>,
-    pub checked: String,
+    pub checked: toml::value::Datetime,
 }
 
 impl PriceTable {
@@ -84,61 +59,15 @@ impl PriceTable {
     }
 
     fn decode(text: &str) -> Result<PriceTable, String> {
-        let data: Table = text
-            .parse()
-            .map_err(|error: toml::de::Error| error.to_string())?;
-        if let Some(unknown) = data
-            .keys()
-            .find(|key| !["checked", "priced_as", "models"].contains(&key.as_str()))
+        let table: PriceTable = toml::from_str(text).map_err(|error| error.to_string())?;
+        if let Some(target) = table
+            .priced_as
+            .values()
+            .find(|t| !table.models.contains_key(*t))
         {
-            return Err(format!("unknown section `{unknown}`"));
+            return Err(format!("priced_as names `{target}`, which has no rates"));
         }
-        let table =
-            |value: Option<&Value>| value.and_then(Value::as_table).cloned().unwrap_or_default();
-        let mut models = HashMap::new();
-        for (name, price) in table(data.get("models")) {
-            let price = price
-                .as_table()
-                .ok_or(format!("model `{name}` is not a table"))?;
-            if let Some(unknown) = price
-                .keys()
-                .find(|key| !["long_context_above", "short", "long"].contains(&key.as_str()))
-            {
-                return Err(format!("model `{name}`: unknown field `{unknown}`"));
-            }
-            let rates = |field: &str| {
-                price
-                    .get(field)
-                    .and_then(Value::as_table)
-                    .map(Rates::decode)
-            };
-            let boundary = price.get("long_context_above").and_then(Value::as_integer);
-            let decoded = ModelPrice {
-                long_context_above: boundary
-                    .and_then(|boundary| u64::try_from(boundary).ok())
-                    .ok_or(format!("model `{name}`: missing long_context_above"))?,
-                short: rates("short").ok_or(format!("model `{name}`: missing short rates"))??,
-                long: rates("long").transpose()?,
-            };
-            models.insert(name, decoded);
-        }
-        let mut priced_as = HashMap::new();
-        for (name, target) in table(data.get("priced_as")) {
-            let target = target.as_str().unwrap_or_default().to_string();
-            if !models.contains_key(&target) {
-                return Err(format!("priced_as names `{target}`, which has no rates"));
-            }
-            priced_as.insert(name, target);
-        }
-        let checked = data
-            .get("checked")
-            .map(ToString::to_string)
-            .ok_or("missing checked date")?;
-        Ok(PriceTable {
-            models,
-            priced_as,
-            checked,
-        })
+        Ok(table)
     }
 
     /// Return one request's cost, or None when the table cannot price it.
@@ -167,6 +96,8 @@ impl PriceTable {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr as _;
+
     use chrono::Utc;
 
     use super::*;
@@ -218,7 +149,7 @@ mod tests {
             cost(Client::Codex, "alias", 1_000_000),
             Decimal::from_str("16.10").ok()
         );
-        assert_eq!(table.checked, "2026-01-01");
+        assert_eq!(table.checked.to_string(), "2026-01-01");
     }
 
     #[test]
@@ -243,14 +174,15 @@ mod tests {
 
     #[test]
     fn rejects_unknown_fields_and_dangling_aliases() {
-        assert!(PriceTable::decode("checked = 2026-01-01\n[extra]").is_err());
-        let alias = "checked = 2026-01-01\n[priced_as]\n\"a/b\" = \"a/missing\"";
-        assert!(PriceTable::decode(alias).is_err());
+        let error = |text: &str| PriceTable::decode(text).unwrap_err();
+        assert!(error(&format!("{TABLE}\n[extra]")).contains("unknown field `extra`"));
+        let alias = TABLE.replace("= \"codex/plain\"", "= \"codex/missing\"");
+        assert!(error(&alias).contains("`codex/missing`, which has no rates"));
         let rate = TABLE.replace(
             "cached = 0.10, output = 10.00",
             "cached = 0.10, bonus = 1.0, output = 10.00",
         );
-        assert!(PriceTable::decode(&rate).is_err());
+        assert!(error(&rate).contains("unknown field `bonus`"));
     }
 
     #[test]

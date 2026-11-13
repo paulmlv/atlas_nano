@@ -1,16 +1,20 @@
 //! What Atlas Nano keeps of one local session.
 
-use chrono::{DateTime, Duration, Utc};
+use std::fmt;
 
-/// The client that recorded a session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+use chrono::{DateTime, Duration, Utc};
+use serde::{Deserialize, Serialize};
+
+/// The client that recorded a session, named in the settings as `claude` or `codex`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Client {
     Claude,
     Codex,
 }
 
 impl Client {
-    /// The client's name in keys, the price table, and the CSV.
+    /// The client's name in keys, the settings, the price table, and the CSV.
     pub fn name(self) -> &'static str {
         match self {
             Client::Claude => "claude",
@@ -111,6 +115,13 @@ pub struct SessionRef {
     pub id: String,
 }
 
+impl fmt::Display for SessionRef {
+    /// `client:id`, unique across both clients.
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}:{}", self.client.name(), self.id)
+    }
+}
+
 /// One local session.
 #[derive(Debug, Clone)]
 pub struct Session {
@@ -149,7 +160,7 @@ impl Session {
 
     /// `client:id`, unique across both clients.
     pub fn key(&self) -> String {
-        format!("{}:{}", self.client.name(), self.id)
+        self.reference().to_string()
     }
 
     /// The time between the session's recorded start and end, gaps included.

@@ -1,7 +1,5 @@
 //! The label lists, read from `prompts/labels.md`, built into the binary.
 
-use sha2::{Digest, Sha256};
-
 const PAGE: &str = include_str!("../prompts/labels.md");
 
 /// One label with the group or domain it rolls up to.
@@ -66,23 +64,6 @@ impl Taxonomy {
         })
     }
 
-    /// A digest of the label lists, so a changed taxonomy invalidates stored labels.
-    pub fn version(&self) -> String {
-        let mut digest = Sha256::new();
-        for entry in self.work.iter().chain(&self.topics) {
-            digest.update(format!(
-                "{}|{}|{}\n",
-                entry.group, entry.label, entry.definition
-            ));
-        }
-        digest
-            .finalize()
-            .iter()
-            .take(8)
-            .map(|byte| format!("{byte:02x}"))
-            .collect()
-    }
-
     /// The group of a type of work, or the domain of a topic.
     pub fn group<'a>(entries: &'a [Entry], label: &str) -> Option<&'a str> {
         entries
@@ -126,19 +107,17 @@ mod tests {
             Taxonomy::group(&taxonomy.work, "Debugging"),
             Some("Software")
         );
-        assert_eq!(taxonomy.version().len(), 16);
     }
 
     #[test]
-    fn a_changed_definition_changes_the_version() {
+    fn decodes_a_page_and_rejects_one_missing_a_section() {
         let page = "\n## Rules\n\n- One rule.\n\n## Type of work (1 labels)\n\n\
             | Group | Label | Definition |\n| --- | --- | --- |\n| G | L | First |\n\n\
             ## Topic (1 topics)\n\n| Domain | Topic | Definition |\n| --- | --- | --- |\n| D | T | X |\n\n\
             ## Pull request mapping (experimental)\n\n- Rule.\n";
-        let first = Taxonomy::decode(page).unwrap();
-        let second = Taxonomy::decode(&page.replace("First", "Second")).unwrap();
-        assert_eq!(first.work[0].label, "L");
-        assert_ne!(first.version(), second.version());
+        let taxonomy = Taxonomy::decode(page).unwrap();
+        assert_eq!(taxonomy.work[0].label, "L");
+        assert_eq!(taxonomy.work[0].definition, "First");
         assert!(Taxonomy::decode("\n## Rules\n\n- One rule.\n").is_err());
     }
 }
