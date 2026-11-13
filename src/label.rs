@@ -422,8 +422,10 @@ pub fn label(
             .map(|chunk| prompt.conversation(&url, branch, chunk))
             .collect();
         // Everything sent to the labeler, and how, so a changed instruction, label list or effort
-        // relabels.
+        // relabels; and this build's version, so a new release that reads answers differently does
+        // too.
         let mut parts = vec![
+            env!("CARGO_PKG_VERSION"),
             prompt.instructions.as_str(),
             schema_text.as_str(),
             prompt.codex_system.as_str(),
