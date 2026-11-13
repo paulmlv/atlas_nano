@@ -124,10 +124,18 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
         prices: &prices,
         paint: Paint::stdout(config.theme),
     };
-    // The CSV is written first, so a reader that closes the report early, like `head`, loses none of it.
-    if let Some(path) = &args.csv {
-        fs::write(path, report.csv()).map_err(|error| format!("{}: {error}", path.display()))?;
+    // The files are written first, so a reader that closes the report early, like `head`, loses none
+    // of them.
+    let write = |path: &std::path::Path, text: String| {
+        fs::write(path, text).map_err(|error| format!("{}: {error}", path.display()))?;
         eprintln!("{} {}", errors.tone(Tone::Done, "wrote"), path.display());
+        Ok::<(), String>(())
+    };
+    if let Some(path) = &args.csv {
+        write(path, report.csv())?;
+    }
+    if let Some(path) = &args.json {
+        write(path, report.json())?;
     }
     match io::stdout().lock().write_all(report.render().as_bytes()) {
         Err(error) if error.kind() != io::ErrorKind::BrokenPipe => Err(error.to_string()),

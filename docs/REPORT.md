@@ -1,6 +1,6 @@
 # Report
 
-What `atlas-nano run` prints, what its CSV holds, and how each number is defined.
+What `atlas-nano run` prints, what its CSV and JSON hold, and how each number is defined.
 
 ## Printed report
 
@@ -105,6 +105,44 @@ a Claude Code scratchpad. `project` and `repo` are the root chat's; `repo` is em
 repository and `(unknown)` when that cannot be told. `working_seconds` sums the turns with a known
 working time; `untimed_turns` counts the others. A text field starting with `=`, `+`, `-`, `@`, a
 tab, or a carriage return gets a leading `'`, so a spreadsheet shows it as text.
+
+## JSON
+
+`--json <path>` writes one JSON object per session, one per line (JSON Lines), in the CSV's order
+and with its fields, typed and nested:
+
+```json
+{
+  "client": "claude",
+  "session_id": "…",
+  "parent": { "client": "claude", "session_id": "…" },
+  "kind": "subagent",
+  "project": "app/api",
+  "repo": "app",
+  "started": "2026-11-10T09:00:00+00:00",
+  "ended": "…",
+  "working_seconds": 120,
+  "wall_seconds": 3600,
+  "turns": 4,
+  "untimed_turns": 0,
+  "tool_calls": 12,
+  "tokens": { "input": 1000, "cached": 90000, "cache_write": 5000, "output": 2000 },
+  "spend_usd": 0.4123,
+  "unpriced_requests": 0,
+  "models": ["claude-opus-5-5"],
+  "label": {
+    "work": "Writing code",
+    "topic": "Backend and APIs",
+    "prs": [{ "role": "Contributed to", "url": "https://github.com/owner/repo/pull/7" }],
+    "model": "claude-haiku-5-5",
+    "from_cache": true
+  }
+}
+```
+
+Each object is on one line in the file. `parent` is null for a chat the user started, `label` for a
+session without a label, `repo` outside a repository, and a time or `wall_seconds` that was not
+recorded. `spend_usd` is a number rounded to six decimals. Text is not changed for spreadsheets.
 
 ## Accounting
 

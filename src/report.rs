@@ -722,19 +722,8 @@ impl Report<'_> {
         for row in &self.rows {
             let session = row.session;
             let time = |at: Option<DateTime<Utc>>| at.map_or(String::new(), |at| at.to_rfc3339());
-            let mut models: Vec<&str> = session
-                .usage
-                .iter()
-                .map(|usage| usage.model.as_str())
-                .collect();
-            models.sort_unstable();
-            models.dedup();
+            let models = models_of(session);
             let label = |pick: fn(&Label) -> String| row.label.map_or(String::new(), pick);
-            let kind = match session.kind {
-                Kind::Primary => "primary",
-                Kind::Subagent => "subagent",
-                Kind::Review => "review",
-            };
             let fields = [
                 session.client.name().to_string(),
                 session.id.clone(),
@@ -747,7 +736,7 @@ impl Report<'_> {
                     .parent
                     .as_ref()
                     .map_or(String::new(), |parent| parent.id.clone()),
-                kind.to_string(),
+                kind(session).to_string(),
                 row.place.project.clone(),
                 row.place.repo.clone(),
                 time(session.started),
@@ -757,12 +746,7 @@ impl Report<'_> {
                     .wall()
                     .map_or(String::new(), |wall| wall.num_seconds().to_string()),
                 session.turns.len().to_string(),
-                session
-                    .turns
-                    .iter()
-                    .filter(|turn| turn.working.is_none())
-                    .count()
-                    .to_string(),
+                untimed(session).to_string(),
                 session.tool_calls.to_string(),
                 row.cost.tokens.input.to_string(),
                 row.cost.tokens.cached.to_string(),
@@ -788,6 +772,91 @@ impl Report<'_> {
         }
         out
     }
+
+    /// Render one JSON object per session, one per line, with the CSV's fields: tokens, the
+    /// parent, and the label nested, models and pull requests as lists, and null for what is not
+    /// known.
+    pub fn json(&self) -> String {
+        let mut out = String::new();
+        for row in &self.rows {
+            let session = row.session;
+            let tokens = &row.cost.tokens;
+            let parent = session.parent.as_ref().map(|parent| {
+                serde_json::json!({ "client": parent.client.name(), "session_id": parent.id })
+            });
+            let label = row.label.map(|label| {
+                let prs: Vec<_> = label
+                    .prs
+                    .iter()
+                    .map(|pr| serde_json::json!({ "role": pr.role.name(), "url": pr.url }))
+                    .collect();
+                serde_json::json!({
+                    "work": label.work,
+                    "topic": label.topic,
+                    "prs": prs,
+                    "model": label.model,
+                    "from_cache": label.from_cache,
+                })
+            });
+            let line = serde_json::json!({
+                "client": session.client.name(),
+                "session_id": session.id,
+                "parent": parent,
+                "kind": kind(session),
+                "project": row.place.project,
+                "repo": (!row.place.repo.is_empty()).then_some(&row.place.repo),
+                "started": session.started.map(|at| at.to_rfc3339()),
+                "ended": session.ended.map(|at| at.to_rfc3339()),
+                "working_seconds": session.working().num_seconds(),
+                "wall_seconds": session.wall().map(|wall| wall.num_seconds()),
+                "turns": session.turns.len(),
+                "untimed_turns": untimed(session),
+                "tool_calls": session.tool_calls,
+                "tokens": {
+                    "input": tokens.input,
+                    "cached": tokens.cached,
+                    "cache_write": tokens.cache_write,
+                    "output": tokens.output,
+                },
+                "spend_usd": row.cost.spend.round_dp(6).to_f64(),
+                "unpriced_requests": row.cost.unpriced_requests,
+                "models": models_of(session),
+                "label": label,
+            });
+            writeln!(out, "{line}").unwrap();
+        }
+        out
+    }
+}
+
+/// A session's kind in the CSV and the JSON.
+fn kind(session: &Session) -> &'static str {
+    match session.kind {
+        Kind::Primary => "primary",
+        Kind::Subagent => "subagent",
+        Kind::Review => "review",
+    }
+}
+
+/// The models a session made requests to, each once, by name.
+fn models_of(session: &Session) -> Vec<&str> {
+    let mut models: Vec<&str> = session
+        .usage
+        .iter()
+        .map(|usage| usage.model.as_str())
+        .collect();
+    models.sort_unstable();
+    models.dedup();
+    models
+}
+
+/// How many of a session's turns have no recorded working time.
+fn untimed(session: &Session) -> usize {
+    session
+        .turns
+        .iter()
+        .filter(|turn| turn.working.is_none())
+        .count()
 }
 
 /// The local date of a moment, with the time zone's offset at that moment, so daylight saving time
@@ -815,6 +884,73 @@ fn quote(field: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn writes_one_json_line_per_session_with_its_parts_nested() {
+        use crate::account::{cost, tests::session};
+        use crate::model::{PrRole, PullRequest};
+
+        let chat = session("chat", Kind::Primary, None, 1);
+        let agent = session("agent", Kind::Subagent, Some("chat"), 2);
+        let label = Label {
+            work: "Writing code".to_string(),
+            topic: "Backend and APIs".to_string(),
+            prs: vec![PullRequest {
+                url: "https://pr/7".to_string(),
+                role: PrRole::ContributedTo,
+            }],
+            model: "claude-haiku-5-5".to_string(),
+            from_cache: true,
+        };
+        let prices = PriceTable::built_in();
+        let place = Place {
+            project: "app".to_string(),
+            repo: String::new(),
+        };
+        let rows = [(&chat, Some(&label)), (&agent, None)]
+            .into_iter()
+            .map(|(session, label)| Row {
+                session,
+                cost: cost(session, &prices),
+                label,
+                root: 0,
+                place: &place,
+            })
+            .collect();
+        let report = Report {
+            period: "test",
+            rows,
+            taxonomy: None,
+            labeling: None,
+            pull_requests: true,
+            top: None,
+            prices: &prices,
+            paint: Paint::OFF,
+        };
+        let lines: Vec<serde_json::Value> = report
+            .json()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 2);
+        let (chat, agent) = (&lines[0], &lines[1]);
+        assert_eq!(chat["parent"], serde_json::Value::Null);
+        assert_eq!(
+            chat["repo"],
+            serde_json::Value::Null,
+            "outside a repository"
+        );
+        assert_eq!(chat["untimed_turns"], 1);
+        assert_eq!(chat["label"]["prs"][0]["role"], "Contributed to");
+        assert_eq!(chat["label"]["prs"][0]["url"], "https://pr/7");
+        assert_eq!(chat["label"]["from_cache"], true);
+        assert!(chat["models"].as_array().unwrap().len() > 1, "{chat}");
+        assert!(chat["spend_usd"].as_f64().unwrap() > 0.0, "{chat}");
+        assert_eq!(agent["kind"], "subagent");
+        assert_eq!(agent["parent"]["session_id"], "chat");
+        assert_eq!(agent["parent"]["client"], "claude");
+        assert_eq!(agent["label"], serde_json::Value::Null);
+    }
 
     #[test]
     fn keeps_csv_fields_as_text() {

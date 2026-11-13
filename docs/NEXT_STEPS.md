@@ -60,7 +60,8 @@ their own conversations. That review also settles:
 
 ## Later
 
-- Per-turn labeling, with per-turn rows in a second CSV keyed by `session_id` and `turn_index`.
+- Per-turn labeling, with each session's turns nested in the JSON, and per-turn rows in a second CSV
+  keyed by `session_id` and `turn_index`.
 - Fractional labels, replacing the chunk vote.
 - A stripping mode that sends each tool's name and the first 100 characters of its input.
 - Passing the parent's label as a hint when labeling a subagent with a thin task prompt.

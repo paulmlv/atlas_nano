@@ -239,7 +239,14 @@ fn configure_then_run_labels_reports_and_reuses_the_cache() {
     assert_eq!(sandbox.calls(), 1);
 
     let csv = sandbox.root.join("out.csv");
-    let first = sandbox.run(&["run", "--csv", csv.to_str().unwrap()]);
+    let json = sandbox.root.join("out.jsonl");
+    let first = sandbox.run(&[
+        "run",
+        "--csv",
+        csv.to_str().unwrap(),
+        "--json",
+        json.to_str().unwrap(),
+    ]);
     let (report, errors) = (text(&first.stdout), text(&first.stderr));
     assert!(first.status.success(), "{errors}");
     assert!(
@@ -291,6 +298,27 @@ fn configure_then_run_labels_reports_and_reuses_the_cache() {
     assert_eq!(csv_column(&csv, "turns"), ["1", "1", "1"]);
     assert_eq!(csv_column(&csv, "repo"), ["(unknown)"; 3]);
     assert_eq!(csv_column(&csv, "working_seconds"), ["120", "120", "120"]);
+    // The JSON holds the same sessions in the same order, with the label nested.
+    let lines: Vec<serde_json::Value> = fs::read_to_string(&json)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let work: Vec<_> = lines.iter().map(|line| &line["label"]["work"]).collect();
+    assert_eq!(
+        work,
+        [
+            &"Debugging".into(),
+            &"Writing code".into(),
+            &serde_json::Value::Null
+        ]
+    );
+    assert_eq!(lines[0]["turns"], 1);
+    assert_eq!(lines[0]["working_seconds"], 120);
+    assert_eq!(lines[0]["repo"], "(unknown)");
+    assert_eq!(lines[0]["parent"], serde_json::Value::Null);
+    assert_eq!(lines[0]["tokens"]["output"], 1_000_000);
+    assert_eq!(lines[0]["label"]["from_cache"], false);
 
     // A second run reuses the two stored labels and tries the failed session again.
     let second = text(&sandbox.run(&["run"]).stdout);
