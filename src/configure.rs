@@ -3,7 +3,7 @@
 use std::fs;
 use std::io::{self, BufRead as _, Write as _};
 
-use crate::config::{self, Config, DEFAULT_RETRIES, Labeler as Settings, labeling_model};
+use crate::config::{self, Config, DEFAULT_RETRIES, Labeler as Settings, Top, labeling_model};
 use crate::ingest::FOLDERS;
 use crate::label;
 use crate::labeler::{self, Failure, Labeler};
@@ -262,6 +262,16 @@ pub fn configure() -> Result<(), String> {
             ),
         }
     };
+    let names = Top::ALL.map(Top::name);
+    let chosen = choose(
+        "How many rows in the ranked tables?",
+        &names,
+        Top::default().name(),
+    )?;
+    let top = Top::ALL[names
+        .iter()
+        .position(|name| *name == chosen)
+        .expect("offered")];
     // Without colors there is nothing to preview.
     if paint.is_on() {
         for theme in Theme::ALL {
@@ -283,6 +293,7 @@ pub fn configure() -> Result<(), String> {
         unit: "conversation".to_string(),
         coverage: covered,
         theme,
+        top,
         labeler: Settings {
             client,
             model: labeling_model(client).to_string(),

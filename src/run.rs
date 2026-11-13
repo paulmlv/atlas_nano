@@ -120,6 +120,7 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
         taxonomy: outcome.as_ref().map(|_| &taxonomy),
         labeling: outcome.as_ref().map(|outcome| outcome.summary.clone()),
         pull_requests: outcome.is_some() && config.labeler.pull_requests,
+        top: config.top.limit(),
         prices: &prices,
         paint: Paint::stdout(config.theme),
     };
