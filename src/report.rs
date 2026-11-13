@@ -39,6 +39,8 @@ pub struct Report<'a> {
     pub taxonomy: Option<&'a Taxonomy>,
     pub labeling: Option<Labeling>,
     pub pull_requests: bool,
+    /// The most rows the ranked tables show; the rest share one row. None shows them all.
+    pub top: Option<usize>,
     pub prices: &'a PriceTable,
     pub paint: Paint,
 }
@@ -160,15 +162,44 @@ fn cells(paint: Paint, strong: bool, name: &str, totals: &Totals, all: &Totals) 
     ]
 }
 
+/// Whether a row shows 0% of both conversations and spend; such rows are left out.
+fn negligible(totals: &Totals, all: &Totals) -> bool {
+    let zero = "0%";
+    share(totals.conversations.into(), all.conversations.into()) == zero
+        && share(totals.spend, all.spend) == zero
+}
+
+/// A ranked table's title, saying how many rows it shows when they are limited.
+fn ranked(title: &str, top: Option<usize>) -> String {
+    match top {
+        Some(n) => format!("{title} (top {n})"),
+        None => title.to_string(),
+    }
+}
+
+/// The name of the row that stands for the `n` rows past the limit.
+fn others(n: usize) -> String {
+    format!("  ({n} {})", if n == 1 { "other" } else { "others" })
+}
+
+/// How many of `len` ranked rows are shown before the rest share one row.
+fn shown(len: usize, top: Option<usize>) -> usize {
+    top.map_or(len, |top| top.min(len))
+}
+
 /// Print a table of groups, largest spend first, each followed by its members when it has names.
+/// Rows that show 0% of both conversations and spend are left out. With `top`, the groups past it
+/// share one row.
 fn grouped(
     out: &mut String,
     paint: Paint,
     title: &str,
     groups: &[(String, Vec<(String, Totals)>)],
     all: &Totals,
+    top: Option<usize>,
 ) {
-    let mut header = vec![title];
+    let title = ranked(title, top);
+    let mut header = vec![title.as_str()];
     header.extend(COLUMNS);
     let mut rows = Vec::new();
     let mut ordered: Vec<_> = groups
@@ -185,10 +216,21 @@ fn grouped(
     let flat = |members: &[(String, Totals)]| members.len() == 1 && members[0].0.is_empty();
     // Groups are bold only when some have members under them.
     let nested = ordered.iter().any(|(_, _, members)| !flat(members));
+    ordered.retain(|(_, sum, _)| !negligible(sum, all));
+    let shown = shown(ordered.len(), top);
+    let mut rest = Totals::default();
+    for (_, sum, _) in &ordered[shown..] {
+        rest += sum;
+    }
+    let past = ordered.len() - shown;
+    ordered.truncate(shown);
     for (group, sum, members) in ordered {
         rows.push(cells(paint, nested, &format!("  {group}"), &sum, all));
         if !flat(members) {
-            let mut members: Vec<&(String, Totals)> = members.iter().collect();
+            let mut members: Vec<&(String, Totals)> = members
+                .iter()
+                .filter(|(_, totals)| !negligible(totals, all))
+                .collect();
             members.sort_by(|a, b| b.1.spend.cmp(&a.1.spend).then(a.0.cmp(&b.0)));
             rows.extend(
                 members
@@ -196,6 +238,9 @@ fn grouped(
                     .map(|(name, totals)| cells(paint, false, &format!("    {name}"), totals, all)),
             );
         }
+    }
+    if past > 0 {
+        rows.push(cells(paint, nested, &others(past), &rest, all));
     }
     table(out, paint, &header, &rows);
     out.push('\n');
@@ -379,11 +424,11 @@ impl Report<'_> {
             let work = buckets(&self.rows, |row| {
                 category(row, &taxonomy.work, |label| &label.work)
             });
-            grouped(&mut out, p, "By type of work", &work, &all);
+            grouped(&mut out, p, "By type of work", &work, &all, None);
             let topics = buckets(&self.rows, |row| {
                 category(row, &taxonomy.topics, |label| &label.topic)
             });
-            grouped(&mut out, p, "By topic", &topics, &all);
+            grouped(&mut out, p, "By topic", &topics, &all, None);
         }
 
         self.models(&mut out, &all);
@@ -708,6 +753,44 @@ mod tests {
             let colored = render(Paint::colored(theme));
             assert_ne!(colored, render(Paint::OFF));
             assert_eq!(paint::strip(&colored), render(Paint::OFF));
+        }
+    }
+
+    #[test]
+    fn leaves_out_rows_at_zero_percent_of_both() {
+        let row = |conversations: u64, cents: i64| Totals {
+            conversations,
+            spend: Decimal::new(cents, 2),
+            ..Totals::default()
+        };
+        let groups = vec![
+            (
+                "Software".to_string(),
+                vec![
+                    ("Writing code".to_string(), row(100, 100_000)),
+                    ("Learning".to_string(), row(10, 100)),
+                    ("Testing".to_string(), row(0, 1_000)),
+                    ("Brainstorming".to_string(), row(0, 1)),
+                ],
+            ),
+            (
+                "Design".to_string(),
+                vec![("Naming".to_string(), row(0, 1))],
+            ),
+        ];
+        let mut all = Totals::default();
+        for (_, members) in &groups {
+            for (_, totals) in members {
+                all += totals;
+            }
+        }
+        let mut out = String::new();
+        grouped(&mut out, Paint::OFF, "By type of work", &groups, &all);
+        for kept in ["Writing code", "Learning", "Testing"] {
+            assert!(out.contains(kept), "{kept} missing:\n{out}");
+        }
+        for dropped in ["Brainstorming", "Design", "Naming"] {
+            assert!(!out.contains(dropped), "{dropped} shown:\n{out}");
         }
     }
 

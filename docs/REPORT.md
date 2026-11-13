@@ -51,7 +51,9 @@ Prices checked 2026-11-03
 
 - **Category tables:** labels are listed under their group or domain, largest spend first. Sessions
   without a label are in an `Unlabeled` row, and Codex safety reviews in an `Automatic reviews` row.
-  The `Subagents` column counts subagents and reviews.
+  The `Subagents` column counts subagents and reviews. A row that rounds to 0% of both conversations
+  and spend is left out, in these tables and in By project and By repo, so the shown rows can sum
+  to less than the total.
 - **By client / model** counts model requests, since one session can use several models. A model
   without a price shows `no price`.
 - **By project and By repo:** a chat's place is the folder it started in, and its subagents and
