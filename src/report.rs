@@ -433,42 +433,52 @@ impl Report<'_> {
 
         self.models(&mut out, &all);
         let projects = buckets(&self.rows, |row| (row.place.project.clone(), String::new()));
-        grouped(&mut out, p, "By project", &projects, &all);
+        grouped(&mut out, p, "By project", &projects, &all, self.top);
         let repos = buckets(&self.rows, |row| {
             let repo = &row.place.repo;
             let repo = if repo.is_empty() { NO_REPO } else { repo };
             (repo.to_string(), String::new())
         });
-        grouped(&mut out, p, "By repo", &repos, &all);
+        grouped(&mut out, p, "By repo", &repos, &all, self.top);
         self.days(&mut out);
         self.top(&mut out);
 
         if self.pull_requests {
             let listed = pull_requests(&self.rows);
+            let title = match self.top {
+                Some(n) => format!("Top {n} pull requests by spend"),
+                None => "Pull requests by spend".to_string(),
+            };
             writeln!(
                 out,
                 "{} {}",
-                p.tone(Tone::Heading, "Pull requests"),
+                p.tone(Tone::Heading, &title),
                 p.dim("(~ marks an amount split across several)")
             )
             .unwrap();
-            let rows: Vec<Vec<String>> = listed
+            let shown = shown(listed.len(), self.top);
+            let line = |name: &str, sessions: String, spend: Decimal, split: bool| {
+                let mark = if split { "~" } else { "" };
+                vec![
+                    p.tone(Tone::Plain, name),
+                    p.tone(Tone::Plain, &sessions),
+                    p.tone(Tone::Money, &format!("{mark}{}", money(spend))),
+                ]
+            };
+            let mut rows: Vec<Vec<String>> = listed[..shown]
                 .iter()
-                .take(15)
                 .map(|(url, sessions, spend, split)| {
-                    let mark = if *split { "~" } else { "" };
-                    vec![
-                        p.tone(Tone::Plain, &format!("  {url}")),
-                        p.tone(Tone::Plain, &sessions.to_string()),
-                        p.tone(Tone::Money, &format!("{mark}{}", money(*spend))),
-                    ]
+                    line(&format!("  {url}"), sessions.to_string(), *spend, *split)
                 })
                 .collect();
-            table(&mut out, p, &["  Pull request", "Sessions", "Spend"], &rows);
-            if listed.len() > 15 {
-                let more = format!("and {} more", listed.len() - 15);
-                writeln!(out, "  {}", p.dim(&more)).unwrap();
+            // A session can work on several of the rest, so their sessions are not added up.
+            let rest = &listed[shown..];
+            if !rest.is_empty() {
+                let spend = rest.iter().map(|pr| pr.2).sum();
+                let split = rest.iter().any(|pr| pr.3);
+                rows.push(line(&others(rest.len()), String::new(), spend, split));
             }
+            table(&mut out, p, &["  Pull request", "Sessions", "Spend"], &rows);
             out.push('\n');
         }
 
@@ -514,6 +524,18 @@ impl Report<'_> {
         }
         let mut listed: Vec<_> = models.into_iter().collect();
         listed.sort_by(|a, b| b.1.2.cmp(&a.1.2).then(a.0.cmp(&b.0)));
+        let shown = shown(listed.len(), self.top);
+        let rest = listed.split_off(shown);
+        if !rest.is_empty() {
+            let mut sum = (0, 0, Decimal::ZERO, 0);
+            for (_, (requests, tokens, spend, unpriced)) in &rest {
+                sum.0 += requests;
+                sum.1 += tokens;
+                sum.2 += spend;
+                sum.3 += unpriced;
+            }
+            listed.push((others(rest.len()), sum));
+        }
         let rows: Vec<Vec<String>> = listed
             .into_iter()
             .map(|(name, (requests, tokens, spend, unpriced))| {
@@ -531,10 +553,11 @@ impl Report<'_> {
                 ]
             })
             .collect();
+        let title = ranked("By client / model", self.top);
         table(
             out,
             p,
-            &["By client / model", "Requests", "Tokens", "Spend", "Spend%"],
+            &[&title, "Requests", "Tokens", "Spend", "Spend%"],
             &rows,
         );
         out.push('\n');
@@ -571,7 +594,7 @@ impl Report<'_> {
         out.push('\n');
     }
 
-    /// The five chats that cost the most, each with the sessions it started.
+    /// The chats that cost the most, each with the sessions it started.
     fn top(&self, out: &mut String) {
         let mut spend: HashMap<usize, Decimal> = HashMap::new();
         for row in &self.rows {
@@ -584,16 +607,20 @@ impl Report<'_> {
             .collect();
         chats.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         let p = self.paint;
+        let heading = match self.top {
+            Some(n) => format!("Top {n} conversations by spend"),
+            None => "Conversations by spend".to_string(),
+        };
         writeln!(
             out,
             "{}{}",
-            p.tone(Tone::Heading, "Top 5 conversations by spend"),
+            p.tone(Tone::Heading, &heading),
             p.dim(", subagents included")
         )
         .unwrap();
-        let rows: Vec<Vec<String>> = chats
+        let shown = shown(chats.len(), self.top);
+        let mut rows: Vec<Vec<String>> = chats[..shown]
             .iter()
-            .take(5)
             .map(|&(root, spend)| {
                 let session = self.rows[root].session;
                 let day = session.started.map_or(String::new(), local_day);
@@ -605,6 +632,16 @@ impl Report<'_> {
                 ]
             })
             .collect();
+        let rest = &chats[shown..];
+        if !rest.is_empty() {
+            let spend: Decimal = rest.iter().map(|chat| chat.1).sum();
+            rows.push(vec![
+                p.tone(Tone::Plain, &others(rest.len())),
+                String::new(),
+                String::new(),
+                p.tone(Tone::Money, &money(spend)),
+            ]);
+        }
         table(
             out,
             p,
@@ -785,13 +822,54 @@ mod tests {
             }
         }
         let mut out = String::new();
-        grouped(&mut out, Paint::OFF, "By type of work", &groups, &all);
+        grouped(&mut out, Paint::OFF, "By type of work", &groups, &all, None);
         for kept in ["Writing code", "Learning", "Testing"] {
             assert!(out.contains(kept), "{kept} missing:\n{out}");
         }
         for dropped in ["Brainstorming", "Design", "Naming"] {
             assert!(!out.contains(dropped), "{dropped} shown:\n{out}");
         }
+    }
+
+    #[test]
+    fn puts_the_groups_past_the_limit_in_one_row() {
+        let row = |cents: i64| {
+            vec![(
+                String::new(),
+                Totals {
+                    conversations: 1,
+                    spend: Decimal::new(cents, 2),
+                    ..Totals::default()
+                },
+            )]
+        };
+        let groups: Vec<_> = [("a", 400), ("b", 300), ("c", 200), ("d", 100)]
+            .into_iter()
+            .map(|(name, cents)| (name.to_string(), row(cents)))
+            .collect();
+        let mut all = Totals::default();
+        for (_, members) in &groups {
+            all += &members[0].1;
+        }
+        let mut out = String::new();
+        grouped(&mut out, Paint::OFF, "By project", &groups, &all, Some(2));
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(lines[0].starts_with("By project (top 2)"), "{out}");
+        assert!(
+            lines[1].starts_with("  a ") && lines[2].starts_with("  b "),
+            "{out}"
+        );
+        assert!(lines[3].starts_with("  (2 others)"), "{out}");
+        assert!(
+            lines[3].contains("$3.00") && lines[3].contains("30%"),
+            "{out}"
+        );
+        assert_eq!(lines[4], "", "{out}");
+
+        let mut out = String::new();
+        grouped(&mut out, Paint::OFF, "By project", &groups, &all, None);
+        assert!(out.starts_with("By project  "), "{out}");
+        assert!(out.contains("  d ") && !out.contains("others"), "{out}");
     }
 
     #[test]
