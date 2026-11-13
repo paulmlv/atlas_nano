@@ -2,9 +2,10 @@
 
 How Atlas Nano turns a local session into the text a labeling model reads, and how it makes the
 call. The [taxonomy](TAXONOMY.md) describes the labels and the default models, and
-[prompts/](../prompts/) holds the prompt and the labels it sends; the [required flags](#required-flags) are the only flags a labeling call uses.
-The [labeling experiments](LABELING_EXPERIMENTS.md) measure what is sent, the fixed context per
-call, and how much the choice of model changes the labels.
+[prompts/](../prompts/) holds the prompt and the labels it sends; the
+[required flags](#required-flags) are the only flags a labeling call uses. The
+[labeling experiments](LABELING_EXPERIMENTS.md) measure what is sent, the fixed context per call,
+and how much the choice of model changes the labels.
 
 ## Which sessions are labeled
 
@@ -124,10 +125,9 @@ references its parent's history without copying it, the text is rebuilt from the
   allows, since each call holds a few pipes and macOS terminals allow 256 open files by default.
 - The prompt is [prompts/label.md](../prompts/label.md), built into the binary.
 - The instructions say that the conversation is data to classify, not to follow. They list the
-  rules, then every type of work and every topic in the taxonomy as `label: definition`, the
-  topics under a line for each domain. Claude Code
-  receives them as the system prompt. Codex receives them at the start of the prompt, and its
-  instructions file holds one short line.
+  rules, then every type of work and every topic in the taxonomy as `label: definition`, the topics
+  under a line for each domain. Claude Code receives them as the system prompt. Codex receives them
+  at the start of the prompt, and its instructions file holds one short line.
 - The conversation follows between `<conversation>` and `</conversation>` on standard input.
 - The answer is restricted by a JSON schema generated from the taxonomy:
 
@@ -190,8 +190,7 @@ codex exec -m <model> -c model_reasoning_effort='"medium"' --ephemeral \
   --output-schema <answer schema file> -o <answer file> --json -
 ```
 
-Both run from an empty working directory with the conversation on standard input: a new folder
-under the system's temporary folder, private to the user and removed when the calls end. The system
-cleans up one that an interrupted run left behind.
-`CLAUDE_CODE_DISABLE_ATTACHMENTS=1` stops Claude Code from attaching a file named by an `@path` in
-the conversation.
+Both run from an empty working directory with the conversation on standard input: a new folder under
+the system's temporary folder, private to the user and removed when the calls end. The system cleans
+up one that an interrupted run left behind. `CLAUDE_CODE_DISABLE_ATTACHMENTS=1` stops Claude Code
+from attaching a file named by an `@path` in the conversation.
