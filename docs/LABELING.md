@@ -19,7 +19,8 @@ and how much the choice of model changes the labels.
 
 - Sent: the user's text, the model's replies, messages from other agents (including the task prompt
   a subagent received), and each tool call's name and full input.
-- A no-tools mode, chosen at configuration, sends no tool calls at all, not even their names.
+- With tool calls turned off at configuration (the no-tools mode), no tool calls are sent, not even
+  their names.
 - Dropped in every mode: tool result text, images returned by tools, thinking, injected context and
   session setup, request logs, the Codex event stream, structured copies of tool results, compaction
   records and summaries, and the record envelope apart from the times and ids the tool needs.
