@@ -251,7 +251,7 @@ pub fn configure() -> Result<(), String> {
         "Leave tool calls out of what is sent (no-tools mode)?",
         false,
     )?;
-    let pull_requests = yes("Map conversations to pull requests (experimental)?", false)?;
+    let pull_requests = yes("Map conversations to pull requests?", true)?;
     let jobs = loop {
         match ask("How many labeling calls at once?", "", "32")?.parse::<usize>() {
             Ok(jobs) if jobs > 0 => break jobs,

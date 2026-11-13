@@ -40,7 +40,7 @@ Top 5 conversations by spend, subagents included
     Conversation               Started     Project    Spend
     Fix the failing export     2026-11-10  app/api   $48.10
 
-Pull requests (experimental; ~ marks an amount split across several)
+Pull requests (~ marks an amount split across several)
     Pull request                             Sessions    Spend
     https://github.com/owner/repo/pull/7            3  ~$31.07
 

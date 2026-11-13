@@ -25,7 +25,7 @@ not asked. `codex` covers Codex and ChatGPT desktop sessions, and `claude` Claud
   installed, or whose version lacks its no-save flag, is skipped. With neither usable, configuration
   fails.
 - **Settings:** the unit (conversation), the coverage (Claude Code, Codex, or both), the labeling
-  model, the no-tools mode, the experimental pull request mapping, how many labeling calls run at
+  model, the no-tools mode, the pull request mapping (on by default), how many labeling calls run at
   once (32 by default; asked again until it is a whole number of at least 1), and the color theme.
   It also saves `retries = 1` without asking: how many more times a failed labeling call is tried.
   Edit the file to change it; `0` turns retries off. A file saved without it gets 1.
