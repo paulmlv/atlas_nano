@@ -56,9 +56,8 @@ Prices checked 2026-11-03
 - **Ranked tables:** By client / model, By project, By repo, the conversations, and the pull
   requests show their 10 largest rows by spend, and put the rest in one `(N others)` row, so the
   rows still sum to the total. The title says `top 10`. `configure` sets the count: 10, 20, 50, or
-  `all`, which shows every row and drops `top` from the titles. The category tables are not
-  limited. The pull requests' `(N others)` row leaves Sessions empty, since one session can work
-  on several.
+  `all`, which shows every row and drops `top` from the titles. The category tables are not limited.
+  The pull requests' `(N others)` row leaves Sessions empty, since one session can work on several.
 - **By client / model** counts model requests, since one session can use several models. A model
   without a price shows `no price`.
 - **By project and By repo:** a chat's place is the folder it started in, and its subagents and
