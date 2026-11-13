@@ -712,8 +712,7 @@ fn call(
 fn collect(
     pending: &[Plan<'_>],
     results: Vec<Result<Answer, Failure>>,
-    cache: Mutex<Store>,
-    cache_path: &Path,
+    cache: &Mutex<Store>,
     paint: Paint,
     summary: &mut Labeling,
 ) -> HashMap<String, Label> {
@@ -736,22 +735,12 @@ fn collect(
             Ok(answers) => {
                 let label = combine(&answers, &summary.model);
                 if plan.prompts.len() > 1 {
-                    store(&cache, &plan.key, &label);
+                    store(cache, &plan.key, &label);
                 }
                 summary.labeled += 1;
                 labels.insert(plan.session.key(), label);
             }
         }
-    }
-    let stored = cache.into_inner().expect("the cache lock is not poisoned");
-    if let Some(error) = stored.error {
-        // Shown like the other paths, with any control character in it as data.
-        eprintln!(
-            "{} could not store labels in {}: {error}; the next run labels these sessions \
-             again",
-            paint.tone(Tone::Warning, "warning:"),
-            paint.tone(Tone::Plain, &cache_path.display().to_string())
-        );
     }
     labels
 }
@@ -803,14 +792,17 @@ pub fn label(
             &mut summary,
         )?;
         let _ = fs::remove_dir_all(&folder);
-        labels.extend(collect(
-            &pending,
-            results,
-            cache,
-            &cache_path,
-            paint,
-            &mut summary,
-        ));
+        labels.extend(collect(&pending, results, &cache, paint, &mut summary));
+        let stored = cache.into_inner().expect("the cache lock is not poisoned");
+        if let Some(error) = stored.error {
+            // Shown like the other paths, with any control character in it as data.
+            eprintln!(
+                "{} could not store labels in {}: {error}; the next run labels these sessions \
+                 again",
+                paint.tone(Tone::Warning, "warning:"),
+                paint.tone(Tone::Plain, &cache_path.display().to_string())
+            );
+        }
     }
     if summary.unlabeled > 0 {
         eprintln!(
