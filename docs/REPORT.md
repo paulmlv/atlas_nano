@@ -52,15 +52,13 @@ Prices checked 2026-11-03
 
 - **Category tables:** labels are listed under their group or domain, largest spend first. Sessions
   without a label are in an `Unlabeled` row, and Codex safety reviews in an `Automatic reviews` row.
-  The `Subagents` column counts subagents and reviews. A row that rounds to 0% of both conversations
-  and spend is left out, in these tables and in By project and By repo, so the shown rows can sum
-  to less than the total.
+  The `Subagents` column counts subagents and reviews.
 - **Ranked tables:** By client / model, By project, By repo, the conversations, and the pull
   requests show their 10 largest rows by spend, and put the rest in one `(N others)` row, so the
   rows still sum to the total. The title says `top 10`. `configure` sets the count: 10, 20, 50, or
   `all`, which shows every row and drops `top` from the titles. The category tables are not
-  limited. In By project and By repo, rows left out at 0% are not counted in `(N others)`. The
-  pull requests' `(N others)` row leaves Sessions empty, since one session can work on several.
+  limited. The pull requests' `(N others)` row leaves Sessions empty, since one session can work
+  on several.
 - **By client / model** counts model requests, since one session can use several models. A model
   without a price shows `no price`.
 - **By project and By repo:** a chat's place is the folder it started in, and its subagents and
@@ -75,10 +73,10 @@ Prices checked 2026-11-03
   name. The home folder itself is never a repository.
 - **By day** puts each request's spend on the local day of the request, using the time zone's offset
   at that moment.
-- **Top conversations** adds to each chat the spend of the subagents and reviews it started. A subagent whose
-  chat was not loaded is not ranked. A conversation is shown by its title, else by the first line of
-  its first request. Control characters and text-direction marks in titles and folder names are
-  shown as `�`.
+- **Top conversations** adds to each chat the spend of the subagents and reviews it started. A
+  subagent whose chat was not loaded is not ranked. A conversation is shown by its title, else by
+  the first line of its first request. Control characters and text-direction marks in titles and
+  folder names are shown as `�`.
 - With `--no-label` the category tables and the labeling summary are left out.
 - The pull request section appears only with pull request mapping on.
 
