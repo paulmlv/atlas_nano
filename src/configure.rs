@@ -212,8 +212,6 @@ pub fn configure() -> Result<(), String> {
             _ => vec![Client::Codex],
         },
     };
-    // Said once, before the test call, which an exported API key pays for like any other.
-    println!("{}", label::billing_note(paint, &installed));
     // Each client labels with one model for now: Claude Code when it is installed, otherwise Codex.
     let offered: Vec<String> = installed
         .iter()
@@ -233,6 +231,9 @@ pub fn configure() -> Result<(), String> {
                 .expect("the choice was offered")]
         }
     };
+    // Said for the chosen labeler only, before the test call, which an exported API key pays for
+    // like any other.
+    println!("{}", label::billing_note(paint, &[client]));
     // Confirmed before any call or save, so the user can stop here and choose again.
     if let Some(notice) = provider_notice(&covered, client) {
         println!("{}", paint.tone(Tone::Warning, &notice));

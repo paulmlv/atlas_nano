@@ -165,7 +165,7 @@ references its parent's history without copying it, the text is rebuilt from the
 ## Required flags
 
 Every labeling call must use these flags, and no others that add context. Configuration runs one
-small labeling call per installed client with them and fails if the call is rejected.
+small labeling call with them, with the chosen labeling model, and fails if the call is rejected.
 
 ```sh
 CLAUDE_CODE_DISABLE_ATTACHMENTS=1 claude -p --model <model> --effort medium --no-session-persistence \
