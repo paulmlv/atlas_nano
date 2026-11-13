@@ -3,7 +3,9 @@
 use std::fs;
 use std::io::{self, BufRead as _, Write as _};
 
-use crate::config::{self, Config, DEFAULT_RETRIES, Labeler as Settings, Top, labeling_model};
+use crate::config::{
+    self, Config, DEFAULT_RETRIES, Labeler as Settings, Output, Top, labeling_model,
+};
 use crate::ingest::FOLDERS;
 use crate::label;
 use crate::labeler::{self, Failure, Labeler};
@@ -274,6 +276,16 @@ pub fn configure() -> Result<(), String> {
         .iter()
         .position(|name| *name == chosen)
         .expect("offered")];
+    let names = Output::ALL.map(Output::name);
+    let chosen = choose(
+        "Show the report in an interactive view (tui) or print it?",
+        &names,
+        Output::default().name(),
+    )?;
+    let output = Output::ALL[names
+        .iter()
+        .position(|name| *name == chosen)
+        .expect("offered")];
     // Without colors there is nothing to preview.
     if paint.is_on() {
         for theme in Theme::ALL {
@@ -296,6 +308,7 @@ pub fn configure() -> Result<(), String> {
         coverage: covered,
         theme,
         top,
+        output,
         labeler: Settings {
             client,
             model: labeling_model(client).to_string(),

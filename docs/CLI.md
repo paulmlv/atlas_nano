@@ -29,9 +29,11 @@ not asked. `codex` covers Codex and ChatGPT desktop sessions, and `claude` Claud
   many labeling calls run at once (by default the most this computer runs without slowing down, as
   in [the call](LABELING.md#the-call); asked again until it is a whole number of at least 1), how
   many rows the [ranked tables](REPORT.md#printed-report) show (10, 20, 50, or `all`; 10 by default,
-  and for a file saved without it), and the color theme. It also saves `retries = 1` without asking:
-  how many more times a failed labeling call is tried. Edit the file to change it; `0` turns retries
-  off. A file saved without it gets 1.
+  and for a file saved without it), how `run` shows the report (`tui`, the
+  [interactive view](REPORT.md#interactive-view), or `print`; `tui` by default, and for a file saved
+  without it), and the color theme. It also saves `retries = 1` without asking: how many more times
+  a failed labeling call is tried. Edit the file to change it; `0` turns retries off. A file saved
+  without it gets 1.
 - **Theme:** `minimal` (the default) uses bold, dim, and the terminal's own colors, so it suits any
   background. `soft` has muted blue headings and sage money; `warm` has amber headings and bars.
   Both use fixed 256-color shades. On a terminal, each theme is previewed before the question.
@@ -58,7 +60,7 @@ Requires a saved configuration; without one it stops and says to run `configure`
 | `--no-label`    | label     | Accounting only, with no model calls                               |
 | `--confirm`     | no prompt | Ask before labeling, after the estimate is printed                 |
 | `--retries <N>` | saved     | Try a [failed call](LABELING.md#the-call) N more times; `0` is off |
-| `--tui`         | print     | Show the [interactive view](REPORT.md#interactive-view) instead    |
+| `--output <M>`  | saved     | `tui` or `print`, instead of the saved setting                     |
 
 ### Period
 

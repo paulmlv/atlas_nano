@@ -8,7 +8,7 @@ use chrono::{Duration, Utc};
 
 use crate::account;
 use crate::cli::{Period, RunArgs};
-use crate::config::{self, Config};
+use crate::config::{self, Config, Output};
 use crate::dashboard;
 use crate::ingest;
 use crate::label;
@@ -40,8 +40,9 @@ fn name(period: Period) -> &'static str {
 
 pub fn run(args: &RunArgs) -> Result<(), String> {
     // Checked first, so no labeling is spent on a view that cannot be shown.
-    if args.tui && !io::stdout().is_terminal() {
-        return Err("--tui needs a terminal".to_string());
+    let terminal = io::stdout().is_terminal();
+    if args.output == Some(Output::Tui) && !terminal {
+        return Err("--output tui needs a terminal".to_string());
     }
     let Some(mut config) = Config::load()? else {
         return Err("no saved configuration; run `atlas-nano configure` first".to_string());
@@ -134,7 +135,8 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
         fs::write(path, report.csv()).map_err(|error| format!("{}: {error}", path.display()))?;
         eprintln!("{} {}", errors.tone(Tone::Done, "wrote"), path.display());
     }
-    if args.tui {
+    // The saved setting prints when the output goes to a file or a pipe.
+    if args.output.unwrap_or(config.output) == Output::Tui && terminal {
         return dashboard::show(&report);
     }
     match io::stdout().lock().write_all(report.render().as_bytes()) {

@@ -73,6 +73,28 @@ impl Top {
     }
 }
 
+/// How `run` shows the report.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum Output {
+    /// The interactive view. With output sent to a file or a pipe, the saved setting prints.
+    #[default]
+    Tui,
+    /// The printed tables.
+    Print,
+}
+
+impl Output {
+    pub const ALL: [Output; 2] = [Output::Tui, Output::Print];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Output::Tui => "tui",
+            Output::Print => "print",
+        }
+    }
+}
+
 /// What `atlas-nano configure` saves.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -86,6 +108,9 @@ pub struct Config {
     /// How many rows the ranked tables show. A file saved before this setting existed gets 10.
     #[serde(default)]
     pub top: Top,
+    /// How `run` shows the report. A file saved before this setting existed gets the view.
+    #[serde(default)]
+    pub output: Output,
     pub labeler: Labeler,
 }
 
@@ -215,6 +240,7 @@ pub mod tests {
             coverage: vec![Client::Claude, Client::Codex],
             theme: Theme::Soft,
             top: Top::Twenty,
+            output: Output::Print,
             labeler: Labeler {
                 client: Client::Claude,
                 model: "claude-haiku-5-5".to_string(),
@@ -281,6 +307,10 @@ pub mod tests {
             Top::All
         );
         assert!(Config::decode(&saved.replace("\"20\"", "\"15\"")).is_err());
+        // A file saved before output existed shows the interactive view.
+        let old = Config::decode(&saved.replace("output = \"print\"\n", "")).unwrap();
+        assert_eq!(old.output, Output::Tui);
+        assert!(Config::decode(&saved.replace("\"print\"", "\"json\"")).is_err());
         // Each client labels with one model: Haiku through Claude Code, Luna through Codex.
         assert!(Config::decode(&saved.replace("claude-haiku-5-5", "claude-opus-5-5")).is_err());
         let luna = saved.replace("claude-haiku-5-5", "gpt-6-luna");

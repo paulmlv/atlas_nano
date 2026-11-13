@@ -1,4 +1,4 @@
-//! `atlas-nano run --tui`: the report as an interactive view. Each table is a tab; a line opens the
+//! `atlas-nano run`'s interactive view of the report. Each table is a tab; a line opens the
 //! conversations it sums, and a conversation opens its sessions.
 
 use std::collections::{HashMap, HashSet};
