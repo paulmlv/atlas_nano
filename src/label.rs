@@ -528,9 +528,7 @@ pub fn label(
         {
             let _ = file.write_all(b"\n");
         }
-        let done = AtomicUsize::new(0);
         let progress = io::stderr().is_terminal();
-        let started = Instant::now();
         // Each line is redrawn over the last with a carriage return and padded to the widest so far,
         // so no escape code is needed to clear what a longer line left.
         let widest = AtomicUsize::new(0);
@@ -541,61 +539,92 @@ pub fn label(
                 .saturating_sub(width);
             eprint!("\r{line}{}", " ".repeat(pad));
         };
-        if progress {
-            redraw(bar(paint, 0, tasks.len(), started.elapsed()));
-        }
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(settings.jobs.min(tasks.len()))
             .build()
             .map_err(|error| error.to_string())?;
-        // One call per task, so an idle thread can always take the next one.
-        let results: Vec<Call> = pool.install(|| {
-            tasks
-                .par_iter()
-                .with_max_len(1)
-                .map(|&(plan, prompt)| {
-                    let result = labeler.call(prompt);
-                    // A session with one call is stored at once, so an interrupted run keeps it.
-                    if let Ok(answer) = &result.answer
-                        && pending[plan].prompts.len() == 1
-                    {
-                        let label = combine(std::slice::from_ref(answer), &settings.model);
-                        store(&cache_file, &pending[plan].key, &label);
-                    }
-                    let finished = done.fetch_add(1, Ordering::Relaxed) + 1;
-                    if progress {
-                        redraw(bar(paint, finished, tasks.len(), started.elapsed()));
-                    }
-                    result
-                })
-                .collect()
-        });
-        if progress {
-            eprintln!();
+        // One pass over the given tasks, with its own progress bar.
+        let pass = |todo: &[usize]| -> Vec<Call> {
+            let done = AtomicUsize::new(0);
+            let started = Instant::now();
+            widest.store(0, Ordering::Relaxed);
+            if progress {
+                redraw(bar(paint, 0, todo.len(), started.elapsed()));
+            }
+            // One call per task, so an idle thread can always take the next one.
+            let results = pool.install(|| {
+                todo.par_iter()
+                    .with_max_len(1)
+                    .map(|&task| {
+                        let (plan, prompt) = tasks[task];
+                        let result = labeler.call(prompt);
+                        // A session with one call is stored at once, so an interrupted run keeps it.
+                        if let Ok(answer) = &result.answer
+                            && pending[plan].prompts.len() == 1
+                        {
+                            let label = combine(std::slice::from_ref(answer), &settings.model);
+                            store(&cache_file, &pending[plan].key, &label);
+                        }
+                        let finished = done.fetch_add(1, Ordering::Relaxed) + 1;
+                        if progress {
+                            redraw(bar(paint, finished, todo.len(), started.elapsed()));
+                        }
+                        result
+                    })
+                    .collect()
+            });
+            if progress {
+                eprintln!();
+            }
+            results
+        };
+
+        // A failed call is tried again, up to `retries` more times, each time once every call of
+        // the pass before has finished. Every call counts, failed or not. Claude Code reports each
+        // call's cost; Codex reports tokens, priced call by call so one call's size sets its own
+        // rate.
+        let mut outcomes: Vec<Option<Result<Answer, Failure>>> =
+            tasks.iter().map(|_| None).collect();
+        let mut todo: Vec<usize> = (0..tasks.len()).collect();
+        let mut cost = Some(Decimal::ZERO);
+        for attempt in 0..=settings.retries {
+            if todo.is_empty() {
+                break;
+            }
+            if attempt > 0 {
+                eprintln!(
+                    "{}",
+                    paint.tone(
+                        Tone::Heading,
+                        &format!("Retrying {} failed calls", todo.len())
+                    )
+                );
+            }
+            for (&task, Call { answer, spent }) in todo.iter().zip(pass(&todo)) {
+                summary.input_tokens += spent.input_tokens;
+                summary.output_tokens += spent.output_tokens;
+                let priced = match client {
+                    Client::Claude => Some(spent.cost.unwrap_or_default()),
+                    Client::Codex => price(
+                        prices,
+                        client,
+                        &settings.model,
+                        spent.input_tokens,
+                        spent.cached_tokens,
+                        spent.output_tokens,
+                    ),
+                };
+                cost = cost.zip(priced).map(|(sum, call)| sum + call);
+                outcomes[task] = Some(answer);
+            }
+            todo.retain(|&task| matches!(outcomes[task], Some(Err(_))));
         }
         let _ = fs::remove_dir_all(&folder);
 
         let mut answers: Vec<Vec<Answer>> = pending.iter().map(|_| Vec::new()).collect();
         let mut failures: Vec<Option<Failure>> = pending.iter().map(|_| None).collect();
-        // Every call counts, failed or not. Claude Code reports each call's cost; Codex reports
-        // tokens, priced call by call so one call's size sets its own rate.
-        let mut cost = Some(Decimal::ZERO);
-        for ((plan, _), Call { answer, spent }) in tasks.iter().zip(results) {
-            summary.input_tokens += spent.input_tokens;
-            summary.output_tokens += spent.output_tokens;
-            let priced = match client {
-                Client::Claude => Some(spent.cost.unwrap_or_default()),
-                Client::Codex => price(
-                    prices,
-                    client,
-                    &settings.model,
-                    spent.input_tokens,
-                    spent.cached_tokens,
-                    spent.output_tokens,
-                ),
-            };
-            cost = cost.zip(priced).map(|(sum, call)| sum + call);
-            match answer {
+        for ((plan, _), outcome) in tasks.iter().zip(outcomes) {
+            match outcome.expect("every task was called") {
                 Ok(answer) => answers[*plan].push(answer),
                 Err(failure) => failures[*plan] = failures[*plan].take().or(Some(failure)),
             }

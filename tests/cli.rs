@@ -10,13 +10,18 @@ use chrono::{Duration, Utc};
 use serde_json::json;
 
 /// A stand-in for Claude Code: it answers `--help`, logs each call, rejects a conversation that
-/// says REJECT, and labels the rest by whether they mention a bug.
+/// says REJECT, rejects one that says FLAKY only the first time, and labels the rest by whether
+/// they mention a bug.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 case "$*" in *--help*) echo "  --no-session-persistence"; exit 0 ;; esac
 input=$(cat)
 echo call >> "$FAKE_LOG"
 case "$input" in
   *REJECT*) echo '{"is_error": true, "result": "Not logged in"}'; exit 1 ;;
+  *FLAKY*) if [ ! -e "$FAKE_LOG.flaky" ]; then
+      touch "$FAKE_LOG.flaky"; echo '{"is_error": true, "result": "Overloaded"}'; exit 1
+    fi
+    work="Writing code"; topic="Frontend and UI" ;;
   *bug*) work="Debugging"; topic="Backend and APIs" ;;
   *) work="Writing code"; topic="Frontend and UI" ;;
 esac
@@ -128,6 +133,35 @@ fn run_needs_a_configuration() {
 }
 
 #[test]
+fn a_failed_call_is_retried_unless_retries_are_off() {
+    let sandbox = Sandbox::new("retried");
+    sandbox.session("flaky", "A FLAKY request", 1);
+    assert!(sandbox.answer(&["configure"], "\n\n\n\n").status.success());
+    assert_eq!(sandbox.calls(), 1);
+
+    // With retries off, the first failure leaves the session unlabeled.
+    let off = sandbox.run(&["run", "--retries", "0"]);
+    let (report, errors) = (text(&off.stdout), text(&off.stderr));
+    assert!(
+        report.contains("0 labeled, 0 from cache, 1 unlabeled"),
+        "{report}"
+    );
+    assert!(!errors.contains("Retrying"), "{errors}");
+    assert_eq!(sandbox.calls(), 2);
+
+    // The saved retry tries it again after a failure, and the second try labels it.
+    fs::remove_file(sandbox.root.join("calls.log.flaky")).unwrap();
+    let on = sandbox.run(&["run"]);
+    let (report, errors) = (text(&on.stdout), text(&on.stderr));
+    assert!(
+        report.contains("1 labeled, 0 from cache, 0 unlabeled"),
+        "{report}"
+    );
+    assert!(errors.contains("Retrying 1 failed calls"), "{errors}");
+    assert_eq!(sandbox.calls(), 4);
+}
+
+#[test]
 fn configure_then_run_labels_reports_and_reuses_the_cache() {
     let sandbox = Sandbox::new("labeled");
     sandbox.session("bug", "Please fix the bug in the server", 1);
@@ -165,6 +199,7 @@ fn configure_then_run_labels_reports_and_reuses_the_cache() {
     assert!(saved.contains("coverage = [\"claude\"]"));
     assert!(saved.contains("theme = \"minimal\""));
     assert!(saved.contains("jobs = 32"));
+    assert!(saved.contains("retries = 1"));
     assert_eq!(sandbox.calls(), 1);
 
     let csv = sandbox.root.join("out.csv");
@@ -208,7 +243,9 @@ fn configure_then_run_labels_reports_and_reuses_the_cache() {
         errors.contains("claude:refused is unlabeled: claude: Not logged in"),
         "{errors}"
     );
-    assert_eq!(sandbox.calls(), 4);
+    // The refused call is tried once more.
+    assert!(errors.contains("Retrying 1 failed calls"), "{errors}");
+    assert_eq!(sandbox.calls(), 5);
     assert_eq!(csv_column(&csv, "work"), ["Debugging", "Writing code", ""]);
     assert_eq!(csv_column(&csv, "label_from_cache"), ["false", "false", ""]);
     assert_eq!(csv_column(&csv, "turns"), ["1", "1", "1"]);
@@ -221,7 +258,7 @@ fn configure_then_run_labels_reports_and_reuses_the_cache() {
         second.contains("Labeling run: 0 labeled, 2 from cache, 1 unlabeled"),
         "{second}"
     );
-    assert_eq!(sandbox.calls(), 5);
+    assert_eq!(sandbox.calls(), 7);
 
     let relabeled = text(
         &sandbox
@@ -236,12 +273,12 @@ fn configure_then_run_labels_reports_and_reuses_the_cache() {
         relabeled.contains("Labeling run: 3 labeled, 0 from cache, 1 unlabeled"),
         "{relabeled}"
     );
-    assert_eq!(sandbox.calls(), 9);
+    assert_eq!(sandbox.calls(), 12);
 
     let unlabeled = text(&sandbox.run(&["run", "--no-label"]).stdout);
     assert!(!unlabeled.contains("By type of work") && !unlabeled.contains("Labeling run"));
     assert!(unlabeled.contains("By project"));
-    assert_eq!(sandbox.calls(), 9);
+    assert_eq!(sandbox.calls(), 12);
 
     // A reply with no usage warns, but only in a period that covers it.
     sandbox.session(

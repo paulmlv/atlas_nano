@@ -41,6 +41,10 @@ pub struct RunArgs {
     /// Ask before labeling, after the estimate is printed.
     #[arg(long)]
     pub confirm: bool,
+
+    /// Try a failed labeling call this many more times, instead of the saved setting.
+    #[arg(long, value_name = "N")]
+    pub retries: Option<usize>,
 }
 
 /// Which sessions a run covers, by when their conversation started.
@@ -80,6 +84,7 @@ mod tests {
         assert!(!run.no_label);
         assert!(!run.confirm);
         assert_eq!(run.csv, None);
+        assert_eq!(run.retries, None);
     }
 
     #[test]
@@ -92,12 +97,15 @@ mod tests {
             "out.csv",
             "--no-label",
             "--confirm",
+            "--retries",
+            "0",
         ]);
         assert_eq!(run.period, Period::Days30);
         assert!(run.no_cache);
         assert!(run.no_label);
         assert!(run.confirm);
         assert_eq!(run.csv, Some(PathBuf::from("out.csv")));
+        assert_eq!(run.retries, Some(0));
     }
 
     #[test]

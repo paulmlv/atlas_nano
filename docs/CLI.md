@@ -27,6 +27,8 @@ not asked. `codex` covers Codex and ChatGPT desktop sessions, and `claude` Claud
 - **Settings:** the unit (conversation), the coverage (Claude Code, Codex, or both), the labeling
   model, the no-tools mode, the experimental pull request mapping, how many labeling calls run at
   once (32 by default; asked again until it is a whole number of at least 1), and the color theme.
+  It also saves `retries = 1` without asking: how many more times a failed labeling call is tried.
+  Edit the file to change it; `0` turns retries off. A file saved without it gets 1.
 - **Theme:** `minimal` (the default) uses bold, dim, and the terminal's own colors, so it suits any
   background. `soft` has muted blue headings and sage money; `warm` has amber headings and bars.
   Both use fixed 256-color shades. On a terminal, each theme is previewed before the question.
@@ -45,13 +47,14 @@ not asked. `codex` covers Codex and ChatGPT desktop sessions, and `claude` Claud
 
 Requires a saved configuration; without one it stops and says to run `configure`.
 
-| Flag           | Default   | Meaning                                            |
-| -------------- | --------- | -------------------------------------------------- |
-| `--period`     | `7d`      | Time horizon: `1d`, `7d`, `30d`, or `all`          |
-| `--no-cache`   | cache on  | Relabel everything, ignoring stored labels         |
-| `--csv <path>` | no file   | Also write the per-session [CSV](REPORT.md#csv)    |
-| `--no-label`   | label     | Accounting only, with no model calls               |
-| `--confirm`    | no prompt | Ask before labeling, after the estimate is printed |
+| Flag            | Default   | Meaning                                                            |
+| --------------- | --------- | ------------------------------------------------------------------ |
+| `--period`      | `7d`      | Time horizon: `1d`, `7d`, `30d`, or `all`                          |
+| `--no-cache`    | cache on  | Relabel everything, ignoring stored labels                         |
+| `--csv <path>`  | no file   | Also write the per-session [CSV](REPORT.md#csv)                    |
+| `--no-label`    | label     | Accounting only, with no model calls                               |
+| `--confirm`     | no prompt | Ask before labeling, after the estimate is printed                 |
+| `--retries <N>` | saved     | Try a [failed call](LABELING.md#the-call) N more times; `0` is off |
 
 ### Period
 
@@ -77,7 +80,8 @@ does not record it. Usage counts as read only when it has both input and output 
   prompt to its one-hour cache, as it does.
 - By default the run then proceeds. With `--confirm` it asks first.
 - While the calls run, a progress bar on standard error shows the calls done, the time spent, and an
-  estimate of the time left.
+  estimate of the time left. Each retry of failed calls prints how many it retries and has its own
+  bar.
 - After labeling, the run prints the tokens actually used and their API-equivalent cost.
 
 ### Label cache

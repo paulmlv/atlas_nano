@@ -3,7 +3,7 @@
 use std::fs;
 use std::io::{self, BufRead as _, Write as _};
 
-use crate::config::{self, Config, Labeler as Settings, labeling_model};
+use crate::config::{self, Config, DEFAULT_RETRIES, Labeler as Settings, labeling_model};
 use crate::ingest::FOLDERS;
 use crate::label;
 use crate::labeler::{self, Failure, Labeler};
@@ -288,6 +288,7 @@ pub fn configure() -> Result<(), String> {
             tools,
             pull_requests,
             jobs,
+            retries: DEFAULT_RETRIES,
         },
     };
     // Decode what will be saved, so a setting `run` would refuse is refused here.

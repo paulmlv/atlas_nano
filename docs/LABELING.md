@@ -153,10 +153,13 @@ references its parent's history without copying it, the text is rebuilt from the
   `usage`, and `total_cost_usd`.
 - Codex writes the answer to the answer file and reports usage in its `turn.completed` event, priced
   per call from the price table.
-- A call that fails, runs longer than ten minutes, or returns an answer that does not match the
-  schema is not retried. A call past ten minutes is stopped. The error is logged, the session counts
-  as unlabeled, and the run continues. Its tokens and cost still count in the labeling summary. A
-  session split into chunks is unlabeled when any of its calls fails.
+- A call fails when it is rejected, runs longer than ten minutes, or returns an answer that does not
+  match the schema. A call past ten minutes is stopped. Once every call has run, each failed call is
+  tried again, and this repeats up to `retries` times (1 by default, set in `config.toml` or with
+  `--retries`). Only the failed call is tried again, not the other chunks of its session. Every
+  try's tokens and cost count in the labeling summary, so retries can cost more than the estimate.
+- A call that still fails after its last try is logged, its session counts as unlabeled, and the run
+  continues. A session split into chunks is unlabeled when any of its calls fails.
 - Labeling calls are never saved as sessions. The no-save flags are the only mechanism, and client
   versions without them are not supported.
 
