@@ -31,8 +31,7 @@ pub struct Config {
     pub unit: String,
     /// The clients whose sessions are read.
     pub coverage: Vec<Client>,
-    /// The color theme of the output; settings saved before themes existed use the default.
-    #[serde(default)]
+    /// The color theme of the output.
     pub theme: Theme,
     pub labeler: Labeler,
 }
@@ -153,11 +152,6 @@ pub mod tests {
         assert!(Config::decode(&saved.replace("conversation", "turn")).is_err());
         assert!(Config::decode(&saved.replace("jobs = 16", "jobs = 0")).is_err());
         assert!(Config::decode(&saved.replace("\"soft\"", "\"neon\"")).is_err());
-        let before_themes = saved.replace("theme = \"soft\"\n", "");
-        assert_eq!(
-            Config::decode(&before_themes).unwrap().theme,
-            Theme::default()
-        );
         // Each client labels with one model: Haiku through Claude Code, Luna through Codex.
         assert!(Config::decode(&saved.replace("claude-haiku-5-5", "claude-opus-5-5")).is_err());
         let luna = saved.replace("claude-haiku-5-5", "gpt-6-luna");
