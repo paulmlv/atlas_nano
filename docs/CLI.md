@@ -57,6 +57,7 @@ Requires a saved configuration; without one it stops and says to run `configure`
 | `--period`      | `7d`      | Time horizon: `1d`, `7d`, `30d`, or `all`                          |
 | `--no-cache`    | cache on  | Relabel everything, ignoring stored labels                         |
 | `--csv <path>`  | no file   | Also write the per-session [CSV](REPORT.md#csv)                    |
+| `--json <path>` | no file   | Also write the per-session [JSON](REPORT.md#json)                  |
 | `--no-label`    | label     | Accounting only, with no model calls                               |
 | `--confirm`     | no prompt | Ask before labeling, after the estimate is printed                 |
 | `--retries <N>` | saved     | Try a [failed call](LABELING.md#the-call) N more times; `0` is off |

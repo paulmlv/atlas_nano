@@ -36,6 +36,10 @@ pub struct RunArgs {
     #[arg(long, value_name = "PATH")]
     pub csv: Option<PathBuf>,
 
+    /// Also write one JSON line per session to this path.
+    #[arg(long, value_name = "PATH")]
+    pub json: Option<PathBuf>,
+
     /// Accounting only, with no model calls.
     #[arg(long)]
     pub no_label: bool,
@@ -90,6 +94,7 @@ mod tests {
         assert!(!run.no_label);
         assert!(!run.confirm);
         assert_eq!(run.csv, None);
+        assert_eq!(run.json, None);
         assert_eq!(run.retries, None);
         assert_eq!(run.output, None);
     }
@@ -102,6 +107,8 @@ mod tests {
             "--no-cache",
             "--csv",
             "out.csv",
+            "--json",
+            "out.jsonl",
             "--no-label",
             "--confirm",
             "--retries",
@@ -115,6 +122,7 @@ mod tests {
         assert!(run.no_label);
         assert!(run.confirm);
         assert_eq!(run.csv, Some(PathBuf::from("out.csv")));
+        assert_eq!(run.json, Some(PathBuf::from("out.jsonl")));
         assert_eq!(run.retries, Some(0));
     }
 

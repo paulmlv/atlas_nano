@@ -55,7 +55,7 @@ design. The [next steps](docs/NEXT_STEPS.md) list what is left to test and decid
 | `place.rs`     | A chat's project and repository, from the folder it started in          |
 | `prices.rs`    | The built-in price table, `prices.toml`                                 |
 | `prompt.rs`    | Fill the labeling prompt from `prompts/label.md`, built into the binary |
-| `report.rs`    | The printed report and the CSV                                          |
+| `report.rs`    | The printed report, the CSV, and the JSON                               |
 | `run.rs`       | `run`: load, select the period, label, print                            |
 | `taxonomy.rs`  | Read the label lists from `prompts/labels.md`, built into the binary    |
 | `text.rs`      | Render a session's parts and split them into chunks                     |
