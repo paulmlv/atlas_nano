@@ -13,7 +13,7 @@ yanked = "deny"
 # Unicode-3.0 is unicode-ident's data tables.
 [licenses]
 version = 2
-allow = ["Apache-2.0", "BSD-3-Clause", "MIT", "Unicode-3.0"]
+allow = ["Apache-2.0", "BSD-3-Clause", "MIT", "Unicode-3.0", "Zlib"]
 
 # Warn when two versions of one crate are built; refuse wildcard version requirements.
 [bans]
