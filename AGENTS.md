@@ -17,9 +17,11 @@ cargo test --locked
 Add dependencies with `cargo add` and commit `Cargo.toml` and `Cargo.lock` together. Tests use
 synthetic sessions only, never real conversations.
 
-To release, set `version` in `Cargo.toml`, merge it, then push a matching tag:
-`git tag v0.1.0 && git push origin v0.1.0`. The [release workflow](.github/workflows/release.yml)
-builds the binaries that [install.sh](install.sh) downloads.
+To release, set `version` in `Cargo.toml`, run `cargo build` to update `Cargo.lock`, and merge
+both. Then tag `main` with the same version: `git tag v0.1.0 && git push origin v0.1.0`. A tag with
+a hyphen, such as `v0.2.0-rc1`, becomes a prerelease. The
+[release workflow](.github/workflows/release.yml) tests and builds the binaries that
+[install.sh](install.sh) downloads.
 
 Read the [command line](docs/CLI.md), [report](docs/REPORT.md), [labeling](docs/LABELING.md), and
 [taxonomy](docs/TAXONOMY.md) pages before changing behavior they define, and update the page whose
