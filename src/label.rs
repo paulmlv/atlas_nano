@@ -383,13 +383,15 @@ pub fn label(
             .iter()
             .map(|chunk| prompt.conversation(&url, branch, chunk))
             .collect();
-        // Everything sent to the labeler, so a changed instruction or label list relabels.
+        // Everything sent to the labeler, and how, so a changed instruction, label list or effort
+        // relabels.
         let mut parts = vec![
             prompt.instructions.as_str(),
             schema_text.as_str(),
             prompt.codex_system.as_str(),
             client.name(),
             settings.model.as_str(),
+            labeler::EFFORT,
             config.unit.as_str(),
         ];
         parts.extend(prompts.iter().map(String::as_str));

@@ -84,6 +84,6 @@ does not record it. Usage counts as read only when it has both input and output 
 
 Labels are stored in `~/.cache/atlas-nano/labels.jsonl`, or under `$XDG_CACHE_HOME` when that is
 set. A stored label is reused only when everything sent to the labeler (the instructions, the label
-lists, the answer schema, and the conversation's text) and the labeler and unit are unchanged, so a
+lists, the answer schema, and the conversation's text) and the labeler, its effort and the unit are unchanged, so a
 conversation that grew, or any change to the prompt, labels it again. A
 session whose call failed is not stored, so the next run tries it again.

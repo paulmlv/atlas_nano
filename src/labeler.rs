@@ -17,6 +17,9 @@ use crate::model::{Client, PrRole, PullRequest};
 use crate::prompt::Prompt;
 use crate::taxonomy::Taxonomy;
 
+/// The reasoning effort of every labeling call. It is part of the label cache key.
+pub const EFFORT: &str = "medium";
+
 const CODEX_DISABLED: [&str; 18] = [
     "shell_tool",
     "unified_exec",
@@ -275,7 +278,7 @@ impl Labeler<'_> {
             "--model",
             self.model,
             "--effort",
-            "medium",
+            EFFORT,
             "--no-session-persistence",
             "--system-prompt",
             &self.prompt.instructions,
@@ -331,7 +334,8 @@ impl Labeler<'_> {
         command
             .current_dir(self.folder)
             .args(["exec", "-m", self.model]);
-        command.args(["-c", "model_reasoning_effort=\"medium\"", "--ephemeral"]);
+        let effort = format!("model_reasoning_effort=\"{EFFORT}\"");
+        command.args(["-c", &effort, "--ephemeral"]);
         command.args(["--skip-git-repo-check", "--sandbox", "read-only"]);
         command.args([
             "--ignore-user-config",
