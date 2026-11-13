@@ -169,6 +169,31 @@ fn a_failed_call_is_retried_unless_retries_are_off() {
 }
 
 #[test]
+fn more_calls_at_once_than_the_computer_runs_are_lowered() {
+    let sandbox = Sandbox::new("lowered");
+    sandbox.session("plain", "A plain request", 1);
+    assert!(
+        sandbox
+            .answer(&["configure"], "\n\n\n\n\n")
+            .status
+            .success()
+    );
+    let path = sandbox.root.join("config/atlas-nano/config.toml");
+    let saved = fs::read_to_string(&path).unwrap();
+    let most = atlas_nano::label::jobs_limit();
+    fs::write(
+        &path,
+        saved.replace(&format!("jobs = {most}"), "jobs = 100000"),
+    )
+    .unwrap();
+    let errors = text(&sandbox.run(&["run"]).stderr);
+    assert!(
+        errors.contains(&format!("jobs = 100000 is more calls at once than this computer can run without slowing down, so {most} run at once")),
+        "{errors}"
+    );
+}
+
+#[test]
 fn configure_then_run_labels_reports_and_reuses_the_cache() {
     let sandbox = Sandbox::new("labeled");
     sandbox.session("bug", "Please fix the bug in the server", 1);
@@ -182,8 +207,8 @@ fn configure_then_run_labels_reports_and_reuses_the_cache() {
     assert!(text(&cancelled.stderr).contains("nothing was saved"));
     assert!(!sandbox.root.join("config/atlas-nano/config.toml").exists());
 
-    // Blank answers take the defaults: tool calls kept, pull requests mapped, once 0 is refused 32
-    // calls at once, 10 rows in the ranked tables, and the minimal theme.
+    // Blank answers take the defaults: tool calls kept, pull requests mapped, once 0 is refused the
+    // most calls at once this computer runs, 10 rows in the ranked tables, and the minimal theme.
     let configured = sandbox.answer(&["configure"], "\n\n0\n\n\n\n");
     let said = text(&configured.stdout);
     assert!(
@@ -209,7 +234,7 @@ fn configure_then_run_labels_reports_and_reuses_the_cache() {
     assert!(saved.contains("theme = \"minimal\""));
     assert!(saved.contains("top = \"10\""));
     assert!(saved.contains("pull_requests = true"));
-    assert!(saved.contains("jobs = 32"));
+    assert!(saved.contains(&format!("jobs = {}", atlas_nano::label::jobs_limit())));
     assert!(saved.contains("retries = 1"));
     assert_eq!(sandbox.calls(), 1);
 

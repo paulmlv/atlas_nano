@@ -125,6 +125,24 @@ GPT-6 Astra in one call that also returned the pull requests. No call failed.
   4, all Mentioned only, so none receives cost. No model returned a repository found neither in the
   text nor in the session.
 
+## Calls at once
+
+On a MacBook Air with an Apple M4 (10 cores, 16 GB), Claude Code 2.1.322 and Haiku 5.5 labeled a
+one-line conversation, many calls started together. One `claude` process peaks at about 250 MB, and
+a Codex 0.167.0 process at about 117 MB; part of it is shared between processes.
+
+| At once | Batch time | Calls per second | Median call | Swapped                |
+| ------: | ---------: | ---------------: | ----------: | ---------------------- |
+|       8 |       2.4s |              3.3 |        1.2s | no                     |
+|      16 |       2.8s |              5.7 |        1.1s | no                     |
+|      32 |   4.3–5.2s |          6.2–7.4 |    1.5–1.6s | no                     |
+|      48 |      10.1s |              4.8 |        3.8s | a little               |
+|      64 |      17.5s |              3.7 |        9.3s | no                     |
+|     128 |       252s |              0.5 |        137s | heavily; the Mac froze |
+
+Past about 32, each call waits for a core, then for memory. A real run of 1,571 calls at 128 took 23
+minutes. The limit of three calls per core and one per 500 MB of memory gives 30 on this Mac.
+
 ## Limits
 
 - One person's history, mostly software work: about 80% of the sample's spend is in the Software

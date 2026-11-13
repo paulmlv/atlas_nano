@@ -641,6 +641,44 @@ impl Passes<'_> {
     }
 }
 
+/// The memory one labeling call is allowed, in bytes. A Claude Code process takes about 250 MB, part
+/// of it shared with the other calls; this leaves room for longer conversations and other programs.
+const MEMORY_PER_CALL: u64 = 500 * 1024 * 1024;
+
+/// How many labeling calls a computer with `cores` cores and `memory` bytes runs at once without
+/// slowing down: three per core, and one per `MEMORY_PER_CALL`, whichever is fewer. With the
+/// memory unknown, only the cores count.
+fn limit(cores: usize, memory: Option<u64>) -> usize {
+    let by_cores = 3 * cores;
+    let by_memory = memory.map_or(by_cores, |bytes| {
+        usize::try_from(bytes / MEMORY_PER_CALL).unwrap_or(usize::MAX)
+    });
+    by_cores.min(by_memory).max(1)
+}
+
+/// The total memory of this computer in bytes, or `None` if it cannot be read.
+fn memory() -> Option<u64> {
+    if cfg!(target_os = "macos") {
+        let output = Command::new("/usr/sbin/sysctl")
+            .args(["-n", "hw.memsize"])
+            .output()
+            .ok()?;
+        String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+    } else {
+        let info = fs::read_to_string("/proc/meminfo").ok()?;
+        let line = info.lines().find(|line| line.starts_with("MemTotal:"))?;
+        let kilobytes: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
+        Some(kilobytes * 1024)
+    }
+}
+
+/// The most labeling calls this computer runs at once without slowing down. Past it, the calls
+/// wait for a core or for memory, and a run takes longer, not shorter.
+pub fn jobs_limit() -> usize {
+    let cores = std::thread::available_parallelism().map_or(1, |cores| cores.get());
+    limit(cores, memory())
+}
+
 /// Call the labeler for every prompt of `pending`. A failed call is tried again, up to `retries`
 /// more times, each time once every call of the pass before has finished. Every call counts in
 /// the summary, failed or not.
@@ -659,8 +697,17 @@ fn call(
         .iter()
         .flat_map(|plan| plan.prompts.iter().map(move |prompt| Task { plan, prompt }))
         .collect();
+    let limit = jobs_limit();
+    if settings.jobs > limit {
+        eprintln!(
+            "{} jobs = {} is more calls at once than this computer can run without slowing down, \
+             so {limit} run at once",
+            paint.tone(Tone::Warning, "warning:"),
+            settings.jobs
+        );
+    }
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(settings.jobs.min(tasks.len()))
+        .num_threads(settings.jobs.min(limit).min(tasks.len()))
         .build()
         .map_err(|error| error.to_string())?;
     let passes = Passes {
@@ -817,6 +864,16 @@ pub fn label(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_calls_at_once_follow_cores_and_memory() {
+        const GB: u64 = 1024 * 1024 * 1024;
+        assert_eq!(limit(10, Some(16 * GB)), 30, "the cores");
+        assert_eq!(limit(8, Some(8 * GB)), 16, "the memory");
+        assert_eq!(limit(16, Some(64 * GB)), 48);
+        assert_eq!(limit(4, None), 12, "memory unknown");
+        assert_eq!(limit(1, Some(GB / 4)), 1, "at least one");
+    }
 
     #[test]
     fn rounds_the_estimate_to_one_figure() {
