@@ -73,17 +73,20 @@ fn share(part: Decimal, whole: Decimal) -> String {
     format!("{percent}%")
 }
 
+/// A token count in a short form. Each range ends where its form would round up into the next
+/// one, so 999,999 is `1.0M`, not `1000k`.
 fn count(tokens: u64) -> String {
     let value = tokens as f64;
     match tokens {
         0..1_000 => tokens.to_string(),
-        1_000..1_000_000 => format!("{:.0}k", value / 1e3),
-        1_000_000..10_000_000 => format!("{:.1}M", value / 1e6),
-        10_000_000..1_000_000_000 => format!("{:.0}M", value / 1e6),
+        1_000..999_500 => format!("{:.0}k", value / 1e3),
+        999_500..9_950_000 => format!("{:.1}M", value / 1e6),
+        9_950_000..999_500_000 => format!("{:.0}M", value / 1e6),
         _ => format!("{:.1}B", value / 1e9),
     }
 }
 
+/// A length of time in a short form. One decimal of hours ends at 9.95 hours, which is `10h`.
 fn span(duration: Duration) -> String {
     let seconds = duration.num_seconds();
     let hours = seconds as f64 / 3600.0;
@@ -91,7 +94,7 @@ fn span(duration: Duration) -> String {
         0 => "-".to_string(),
         1..60 => format!("{seconds}s"),
         60..3600 => format!("{}m", seconds / 60),
-        3600..36_000 => format!("{hours:.1}h"),
+        3600..35_820 => format!("{hours:.1}h"),
         _ => format!("{hours:.0}h"),
     }
 }
@@ -306,12 +309,21 @@ pub fn title(session: &Session) -> String {
     }
 }
 
-/// Split each session's spend evenly among the pull requests it worked on.
-///
-/// Returns each pull request's sessions, its spend, and whether any of that spend was split. A pull
-/// request whose sessions used no tokens is left out.
-fn pull_requests(rows: &[Row]) -> Vec<(String, u64, Decimal, bool)> {
-    let mut found: BTreeMap<&str, (u64, Decimal, bool, u64)> = BTreeMap::new();
+/// One pull request's sessions and its share of their spend.
+struct PrSpend {
+    url: String,
+    sessions: u64,
+    spend: Decimal,
+    /// Whether any of the spend comes from a session that worked on several pull requests.
+    split: bool,
+    /// The tokens of those sessions; a pull request with none is left out.
+    tokens: u64,
+}
+
+/// Split each session's spend evenly among the pull requests it worked on, largest spend first.
+/// A pull request whose sessions used no tokens is left out.
+fn pull_requests(rows: &[Row]) -> Vec<PrSpend> {
+    let mut found: BTreeMap<&str, PrSpend> = BTreeMap::new();
     for row in rows {
         let worked: Vec<&str> = row
             .label
@@ -321,20 +333,31 @@ fn pull_requests(rows: &[Row]) -> Vec<(String, u64, Decimal, bool)> {
             .map(|pr| pr.url.as_str())
             .collect();
         for url in &worked {
-            let entry = found.entry(url).or_default();
-            entry.0 += 1;
-            entry.1 += row.cost.spend / Decimal::from(worked.len());
-            entry.2 |= worked.len() > 1;
-            entry.3 += row.cost.tokens.total();
+            let pr = found.entry(url).or_insert_with(|| PrSpend {
+                url: url.to_string(),
+                sessions: 0,
+                spend: Decimal::ZERO,
+                split: false,
+                tokens: 0,
+            });
+            pr.sessions += 1;
+            pr.spend += row.cost.spend / Decimal::from(worked.len());
+            pr.split |= worked.len() > 1;
+            pr.tokens += row.cost.tokens.total();
         }
     }
-    let mut listed: Vec<_> = found
-        .into_iter()
-        .filter(|(_, (_, _, _, tokens))| *tokens > 0)
-        .map(|(url, (n, spend, split, _))| (url.to_string(), n, spend, split))
-        .collect();
-    listed.sort_by(|a, b| b.2.cmp(&a.2).then(a.0.cmp(&b.0)));
+    let mut listed: Vec<PrSpend> = found.into_values().filter(|pr| pr.tokens > 0).collect();
+    listed.sort_by(|a, b| b.spend.cmp(&a.spend).then(a.url.cmp(&b.url)));
     listed
+}
+
+/// One model's requests, tokens, and spend, and how many of the requests have no price.
+#[derive(Default)]
+struct ModelUse {
+    requests: u64,
+    tokens: u64,
+    spend: Decimal,
+    unpriced: u64,
 }
 
 impl Report<'_> {
@@ -345,8 +368,44 @@ impl Report<'_> {
             all.add(row.session, &row.cost);
         }
         let p = self.paint;
-        let dot = p.dot();
         let mut out = String::new();
+        self.header(&mut out, &all);
+        self.totals(&mut out, &all);
+
+        if let Some(taxonomy) = self.taxonomy {
+            let work = buckets(&self.rows, |row| {
+                category(row, &taxonomy.work, |label| &label.work)
+            });
+            grouped(&mut out, p, "By type of work", &work, &all, None);
+            let topics = buckets(&self.rows, |row| {
+                category(row, &taxonomy.topics, |label| &label.topic)
+            });
+            grouped(&mut out, p, "By topic", &topics, &all, None);
+        }
+
+        self.models(&mut out, &all);
+        let projects = buckets(&self.rows, |row| (row.place.project.clone(), String::new()));
+        grouped(&mut out, p, "By project", &projects, &all, self.top);
+        let repos = buckets(&self.rows, |row| {
+            let repo = &row.place.repo;
+            let repo = if repo.is_empty() { NO_REPO } else { repo };
+            (repo.to_string(), String::new())
+        });
+        grouped(&mut out, p, "By repo", &repos, &all, self.top);
+        self.days(&mut out);
+        self.top(&mut out);
+
+        if self.pull_requests {
+            self.prs(&mut out);
+        }
+        self.footer(&mut out);
+        out
+    }
+
+    /// The first line: the period and how many sessions it covers.
+    fn header(&self, out: &mut String, all: &Totals) {
+        let p = self.paint;
+        let dot = p.dot();
         let reviews = if all.reviews > 0 {
             format!("{dot}{} reviews", all.reviews)
         } else {
@@ -361,7 +420,12 @@ impl Report<'_> {
             all.subagents
         )
         .unwrap();
+    }
 
+    /// The spend, time, tokens, and counts of all the sessions together.
+    fn totals(&self, out: &mut String, all: &Totals) {
+        let p = self.paint;
+        let dot = p.dot();
         let Tokens {
             input,
             cached,
@@ -424,141 +488,56 @@ impl Report<'_> {
             b(all.turns.to_string())
         )
         .unwrap();
-
-        if let Some(taxonomy) = self.taxonomy {
-            let work = buckets(&self.rows, |row| {
-                category(row, &taxonomy.work, |label| &label.work)
-            });
-            grouped(&mut out, p, "By type of work", &work, &all, None);
-            let topics = buckets(&self.rows, |row| {
-                category(row, &taxonomy.topics, |label| &label.topic)
-            });
-            grouped(&mut out, p, "By topic", &topics, &all, None);
-        }
-
-        self.models(&mut out, &all);
-        let projects = buckets(&self.rows, |row| (row.place.project.clone(), String::new()));
-        grouped(&mut out, p, "By project", &projects, &all, self.top);
-        let repos = buckets(&self.rows, |row| {
-            let repo = &row.place.repo;
-            let repo = if repo.is_empty() { NO_REPO } else { repo };
-            (repo.to_string(), String::new())
-        });
-        grouped(&mut out, p, "By repo", &repos, &all, self.top);
-        self.days(&mut out);
-        self.top(&mut out);
-
-        if self.pull_requests {
-            let listed = pull_requests(&self.rows);
-            let title = match self.top {
-                Some(n) => format!("Top {n} pull requests by spend"),
-                None => "Pull requests by spend".to_string(),
-            };
-            writeln!(
-                out,
-                "{} {}",
-                p.tone(Tone::Heading, &title),
-                p.dim("(~ marks an amount split across several)")
-            )
-            .unwrap();
-            let shown = shown(listed.len(), self.top);
-            let line = |name: &str, sessions: String, spend: Decimal, split: bool| {
-                let mark = if split { "~" } else { "" };
-                vec![
-                    p.tone(Tone::Plain, name),
-                    p.tone(Tone::Plain, &sessions),
-                    p.tone(Tone::Money, &format!("{mark}{}", money(spend))),
-                ]
-            };
-            let mut rows: Vec<Vec<String>> = listed[..shown]
-                .iter()
-                .map(|(url, sessions, spend, split)| {
-                    line(&format!("  {url}"), sessions.to_string(), *spend, *split)
-                })
-                .collect();
-            // A session can work on several of the rest, so their sessions are not added up.
-            let rest = &listed[shown..];
-            if !rest.is_empty() {
-                let spend = rest.iter().map(|pr| pr.2).sum();
-                let split = rest.iter().any(|pr| pr.3);
-                rows.push(line(&others(rest.len()), String::new(), spend, split));
-            }
-            table(&mut out, p, &["  Pull request", "Sessions", "Spend"], &rows);
-            out.push('\n');
-        }
-
-        // The run's own details close the report, dimmed.
-        if let Some(labeling) = &self.labeling {
-            let run = format!(
-                "Labeling run: {} labeled, {} from cache, {} unlabeled · {}",
-                labeling.labeled, labeling.from_cache, labeling.unlabeled, labeling.model
-            );
-            writeln!(out, "{}", p.dim(&run)).unwrap();
-            let cost = labeling
-                .cost
-                .map_or("no price for this model".to_string(), |cost| {
-                    format!("API-equivalent {}", money(cost))
-                });
-            let tokens = format!(
-                "  in {} · out {} tokens · {cost}",
-                count(labeling.input_tokens),
-                count(labeling.output_tokens)
-            );
-            writeln!(out, "{}", p.dim(&tokens)).unwrap();
-        }
-        let checked = format!("Prices checked {}", self.prices.checked);
-        writeln!(out, "{}", p.dim(&checked)).unwrap();
-        out
     }
 
     /// Requests, tokens, and spend per client and model.
     fn models(&self, out: &mut String, all: &Totals) {
         let p = self.paint;
-        let mut models: BTreeMap<String, (u64, u64, Decimal, u64)> = BTreeMap::new();
+        let mut models: BTreeMap<String, ModelUse> = BTreeMap::new();
         for row in &self.rows {
             for (usage, price) in row.session.usage.iter().zip(&row.cost.requests) {
                 let name = format!("  {} / {}", row.session.client.name(), usage.model);
-                let entry = models.entry(name).or_default();
-                entry.0 += 1;
-                entry.1 += usage.tokens();
+                let model = models.entry(name).or_default();
+                model.requests += 1;
+                model.tokens += usage.tokens();
                 match price {
-                    Some(cost) => entry.2 += cost,
-                    None => entry.3 += 1,
+                    Some(cost) => model.spend += cost,
+                    None => model.unpriced += 1,
                 }
             }
         }
         // A model whose requests used no tokens is left out.
         let mut listed: Vec<_> = models
             .into_iter()
-            .filter(|(_, (_, tokens, _, _))| *tokens > 0)
+            .filter(|(_, model)| model.tokens > 0)
             .collect();
-        listed.sort_by(|a, b| b.1.2.cmp(&a.1.2).then(a.0.cmp(&b.0)));
+        listed.sort_by(|a, b| b.1.spend.cmp(&a.1.spend).then(a.0.cmp(&b.0)));
         let shown = shown(listed.len(), self.top);
         let rest = listed.split_off(shown);
         if !rest.is_empty() {
-            let mut sum = (0, 0, Decimal::ZERO, 0);
-            for (_, (requests, tokens, spend, unpriced)) in &rest {
-                sum.0 += requests;
-                sum.1 += tokens;
-                sum.2 += spend;
-                sum.3 += unpriced;
+            let mut sum = ModelUse::default();
+            for (_, model) in &rest {
+                sum.requests += model.requests;
+                sum.tokens += model.tokens;
+                sum.spend += model.spend;
+                sum.unpriced += model.unpriced;
             }
             listed.push((others(rest.len()), sum));
         }
         let rows: Vec<Vec<String>> = listed
             .into_iter()
-            .map(|(name, (requests, tokens, spend, unpriced))| {
-                let shown = if unpriced == requests {
+            .map(|(name, model)| {
+                let spend = if model.unpriced == model.requests {
                     p.tone(Tone::Warning, "no price")
                 } else {
-                    p.tone(Tone::Money, &money(spend))
+                    p.tone(Tone::Money, &money(model.spend))
                 };
                 vec![
                     p.tone(Tone::Plain, &name),
-                    p.tone(Tone::Plain, &requests.to_string()),
-                    p.tone(Tone::Plain, &count(tokens)),
-                    shown,
-                    p.dim(&share(spend, all.spend)),
+                    p.tone(Tone::Plain, &model.requests.to_string()),
+                    p.tone(Tone::Plain, &count(model.tokens)),
+                    spend,
+                    p.dim(&share(model.spend, all.spend)),
                 ]
             })
             .collect();
@@ -664,6 +643,73 @@ impl Report<'_> {
             &rows,
         );
         out.push('\n');
+    }
+
+    /// The pull requests that cost the most.
+    fn prs(&self, out: &mut String) {
+        let p = self.paint;
+        let listed = pull_requests(&self.rows);
+        let title = match self.top {
+            Some(n) => format!("Top {n} pull requests by spend"),
+            None => "Pull requests by spend".to_string(),
+        };
+        writeln!(
+            out,
+            "{} {}",
+            p.tone(Tone::Heading, &title),
+            p.dim("(~ marks an amount split across several)")
+        )
+        .unwrap();
+        let shown = shown(listed.len(), self.top);
+        let line = |name: &str, sessions: String, spend: Decimal, split: bool| {
+            let mark = if split { "~" } else { "" };
+            vec![
+                p.tone(Tone::Plain, name),
+                p.tone(Tone::Plain, &sessions),
+                p.tone(Tone::Money, &format!("{mark}{}", money(spend))),
+            ]
+        };
+        let mut rows: Vec<Vec<String>> = listed[..shown]
+            .iter()
+            .map(|pr| {
+                let name = format!("  {}", pr.url);
+                line(&name, pr.sessions.to_string(), pr.spend, pr.split)
+            })
+            .collect();
+        // A session can work on several of the rest, so their sessions are not added up.
+        let rest = &listed[shown..];
+        if !rest.is_empty() {
+            let spend = rest.iter().map(|pr| pr.spend).sum();
+            let split = rest.iter().any(|pr| pr.split);
+            rows.push(line(&others(rest.len()), String::new(), spend, split));
+        }
+        table(out, p, &["  Pull request", "Sessions", "Spend"], &rows);
+        out.push('\n');
+    }
+
+    /// The labeling run's own details and the date of the prices close the report, dimmed.
+    fn footer(&self, out: &mut String) {
+        let p = self.paint;
+        if let Some(labeling) = &self.labeling {
+            let run = format!(
+                "Labeling run: {} labeled, {} from cache, {} unlabeled · {}",
+                labeling.labeled, labeling.from_cache, labeling.unlabeled, labeling.model
+            );
+            writeln!(out, "{}", p.dim(&run)).unwrap();
+            let cost = labeling
+                .cost
+                .map_or("no price for this model".to_string(), |cost| {
+                    format!("API-equivalent {}", money(cost))
+                });
+            let tokens = format!(
+                "  in {} · out {} tokens · {cost}",
+                count(labeling.input_tokens),
+                count(labeling.output_tokens)
+            );
+            writeln!(out, "{}", p.dim(&tokens)).unwrap();
+        }
+        let checked = format!("Prices checked {}", self.prices.checked);
+        writeln!(out, "{}", p.dim(&checked)).unwrap();
     }
 
     /// Render one CSV row per session, with a header.
@@ -805,6 +851,31 @@ mod tests {
             let colored = render(Paint::colored(theme));
             assert_ne!(colored, render(Paint::OFF));
             assert_eq!(paint::strip(&colored), render(Paint::OFF));
+        }
+    }
+
+    #[test]
+    fn a_short_form_never_rounds_past_its_unit() {
+        let counts = [
+            (999, "999"),
+            (999_499, "999k"),
+            (999_999, "1.0M"),
+            (9_949_999, "9.9M"),
+            (9_999_999, "10M"),
+            (999_499_999, "999M"),
+            (999_999_999, "1.0B"),
+        ];
+        for (tokens, shown) in counts {
+            assert_eq!(count(tokens), shown);
+        }
+        let spans = [
+            (59, "59s"),
+            (3599, "59m"),
+            (35_819, "9.9h"),
+            (35_999, "10h"),
+        ];
+        for (seconds, shown) in spans {
+            assert_eq!(span(Duration::seconds(seconds)), shown);
         }
     }
 

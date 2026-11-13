@@ -43,7 +43,7 @@ design. The [next steps](docs/NEXT_STEPS.md) list what is left to test and decid
 | -------------- | ----------------------------------------------------------------------- |
 | `account.rs`   | The period, each session's cost, and totals                             |
 | `cli.rs`       | The commands and flags                                                  |
-| `config.rs`    | The saved settings and the config and cache folders                     |
+| `config.rs`    | The saved settings and the config, cache, and call folders              |
 | `configure.rs` | `configure`: detection, questions, the test call, saving                |
 | `ingest/`      | Find and parse both clients' sessions; forks; each request once         |
 | `label.rs`     | The cache, the estimate, the parallel calls, and the chunk vote         |
