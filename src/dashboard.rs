@@ -1,25 +1,23 @@
 //! `atlas-nano run --tui`: the report as an interactive view. Each table is a tab; a line opens the
 //! conversations it sums, and a conversation opens its sessions.
 
-use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{HashMap, HashSet};
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Flex, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Cell, Paragraph, Row as TableRow, Table as TableWidget, TableState, Tabs,
 };
 use rust_decimal::Decimal;
-use rust_decimal::prelude::ToPrimitive;
 
 use crate::account::Totals;
 use crate::model::{Kind, Label, Usage};
 use crate::paint::{Paint, Tone, printable};
 use crate::report::{
-    self, COLUMNS, NO_REPO, Report, Row, category, count, local_day, money, share, span,
+    self, COLUMNS, Group, NO_REPO, Report, Row, category, count, local_day, money, share, span,
 };
 
 /// Which part of a session's requests a line holds.
@@ -52,13 +50,8 @@ fn part(row: &Row, slice: &Slice) -> (u64, Decimal) {
         }
         Slice::Day(day) => requests(&|usage| local_day(usage.at) == *day),
         Slice::PullRequest(url) => {
-            let worked: Vec<_> = row
-                .label
-                .iter()
-                .flat_map(|label| &label.prs)
-                .filter(|pr| pr.role.worked_on())
-                .collect();
-            if worked.iter().any(|pr| pr.url == *url) {
+            let worked = report::worked_on(row);
+            if worked.contains(&url.as_str()) {
                 let n = worked.len() as u64;
                 (
                     row.cost.tokens.total() / n,
@@ -80,9 +73,9 @@ enum Open {
     Chat(usize),
 }
 
-/// One line of a table: its cells, whether it heads a group, and what it opens.
+/// One line of a table: its cells, each in its tone, whether it heads a group, and what it opens.
 struct Item {
-    cells: Vec<String>,
+    cells: Vec<(String, Tone)>,
     strong: bool,
     open: Option<Open>,
 }
@@ -108,12 +101,17 @@ impl Table {
         }
     }
 
+    /// Select line `at`, or the last line when there are fewer.
+    fn go(&mut self, at: usize) {
+        if let Some(last) = self.items.len().checked_sub(1) {
+            self.state.select(Some(at.min(last)));
+        }
+    }
+
     /// Move the selection by `delta` lines, staying on the table.
     fn step(&mut self, delta: isize) {
-        if let Some(last) = self.items.len().checked_sub(1) {
-            let at = self.state.selected().unwrap_or(0) as isize + delta;
-            self.state.select(Some(at.clamp(0, last as isize) as usize));
-        }
+        let at = self.state.selected().unwrap_or(0);
+        self.go(at.saturating_add_signed(delta));
     }
 
     fn opens(&self) -> Option<&Open> {
@@ -121,17 +119,17 @@ impl Table {
     }
 
     /// Move each of `columns` whose cells all hold one value into the note, so titles get the
-    /// room. A column holding only `-`, nothing known, is left out.
+    /// room. A column holding only `-` or nothing, so nothing known, is left out.
     fn fold(&mut self, columns: &[usize]) {
         let mut moved = Vec::new();
         for &column in columns.iter().rev() {
-            let Some(first) = self.items.first().map(|item| item.cells[column].clone()) else {
+            let Some(first) = self.items.first().map(|item| item.cells[column].0.clone()) else {
                 return;
             };
-            if self.items.iter().any(|item| item.cells[column] != first) {
+            if self.items.iter().any(|item| item.cells[column].0 != first) {
                 continue;
             }
-            if first != "-" {
+            if first != "-" && !first.is_empty() {
                 moved.push(format!("{} {first}", self.header[column]));
             }
             self.header.remove(column);
@@ -146,86 +144,43 @@ impl Table {
     }
 }
 
-/// Rows of the report by group and member name.
-type Groups = BTreeMap<String, BTreeMap<String, Vec<usize>>>;
-
-/// A name, the rows it holds, and their sums.
-type Bucket = (String, Vec<usize>, Totals);
-
-fn by_spend(a: &Bucket, b: &Bucket) -> Ordering {
-    b.2.spend.cmp(&a.2.spend).then(a.0.cmp(&b.0))
+fn plain(text: impl Into<String>) -> (String, Tone) {
+    (text.into(), Tone::Plain)
 }
 
-fn sum(report: &Report, rows: &[usize]) -> Totals {
-    let mut totals = Totals::default();
-    for &n in rows {
-        totals.add(report.rows[n].session, &report.rows[n].cost);
-    }
-    totals
-}
-
-fn groups(report: &Report, key: impl Fn(&Row) -> (String, String)) -> Groups {
-    let mut groups = Groups::new();
-    for (n, row) in report.rows.iter().enumerate() {
-        let (group, name) = key(row);
-        groups
-            .entry(group)
-            .or_default()
-            .entry(name)
-            .or_default()
-            .push(n);
-    }
-    groups
-}
-
-/// A table of groups, largest spend first, each followed by its members when it has names.
-fn grouped(report: &Report, all: &Totals, title: &str, groups: Groups) -> Table {
-    let mut ordered: Vec<(Bucket, Vec<Bucket>)> = groups
-        .into_iter()
-        .map(|(group, members)| {
-            let mut members: Vec<Bucket> = members
-                .into_iter()
-                .map(|(name, rows)| {
-                    let totals = sum(report, &rows);
-                    (name, rows, totals)
-                })
-                .collect();
-            members.sort_by(by_spend);
-            let rows: Vec<usize> = members.iter().flat_map(|m| m.1.iter().copied()).collect();
-            let totals = sum(report, &rows);
-            ((group, rows, totals), members)
-        })
-        .collect();
-    ordered.sort_by(|a, b| by_spend(&a.0, &b.0));
-    let flat = |members: &[Bucket]| members.len() == 1 && members[0].0.is_empty();
-    // Groups are bold only when some have members under them.
-    let nested = ordered.iter().any(|(_, members)| !flat(members));
-    let line =
-        |name: &str, indent: &str, strong: bool, (rows, totals): (Vec<usize>, Totals)| Item {
+/// A table of groups, each followed by its members, as the printed report sorts them.
+fn grouped(all: &Totals, title: &str, groups: Vec<Group>) -> Table {
+    let nested = report::nested(&groups);
+    let line = |line: report::Line, indent: &str, strong: bool| {
+        let totals = &line.totals;
+        Item {
             cells: vec![
-                format!("{indent}{name}"),
-                totals.conversations.to_string(),
-                share(totals.conversations.into(), all.conversations.into()),
-                (totals.subagents + totals.reviews).to_string(),
-                totals.turns.to_string(),
-                span(totals.working),
-                span(totals.wall),
-                count(totals.tokens.total()),
-                money(totals.spend),
-                share(totals.spend, all.spend),
+                plain(format!("{indent}{}", line.name)),
+                plain(totals.conversations.to_string()),
+                (
+                    share(totals.conversations.into(), all.conversations.into()),
+                    Tone::Dim,
+                ),
+                plain((totals.subagents + totals.reviews).to_string()),
+                plain(totals.turns.to_string()),
+                plain(span(totals.working)),
+                plain(span(totals.wall)),
+                plain(count(totals.tokens.total())),
+                (money(totals.spend), Tone::Money),
+                (share(totals.spend, all.spend), Tone::Dim),
             ],
             strong,
-            open: Some(Open::Chats(name.to_string(), rows, Slice::All)),
-        };
-    let mut items = Vec::new();
-    for ((group, rows, totals), members) in ordered {
-        let is_flat = flat(&members);
-        items.push(line(&group, "", nested, (rows, totals)));
-        if !is_flat {
-            for (name, rows, totals) in members {
-                items.push(line(&name, "  ", false, (rows, totals)));
-            }
+            open: Some(Open::Chats(line.name, line.rows, Slice::All)),
         }
+    };
+    let mut items = Vec::new();
+    for Group {
+        line: group,
+        members,
+    } in groups
+    {
+        items.push(line(group, "", nested));
+        items.extend(members.into_iter().map(|member| line(member, "  ", false)));
     }
     let mut header = vec![title];
     header.extend(COLUMNS);
@@ -234,40 +189,29 @@ fn grouped(report: &Report, all: &Totals, title: &str, groups: Groups) -> Table 
 
 /// Requests, tokens, and spend per client and model.
 fn models(report: &Report, all: &Totals) -> Table {
-    let mut models: BTreeMap<String, (u64, u64, Decimal, u64, Vec<usize>)> = BTreeMap::new();
-    for (n, row) in report.rows.iter().enumerate() {
-        for (usage, price) in row.session.usage.iter().zip(&row.cost.requests) {
-            let name = format!("{} / {}", row.session.client.name(), usage.model);
-            let entry = models.entry(name).or_default();
-            entry.0 += 1;
-            entry.1 += usage.tokens();
-            match price {
-                Some(cost) => entry.2 += cost,
-                None => entry.3 += 1,
-            }
-            if entry.4.last() != Some(&n) {
-                entry.4.push(n);
-            }
-        }
-    }
-    let mut listed: Vec<_> = models.into_iter().collect();
-    listed.sort_by(|a, b| b.1.2.cmp(&a.1.2).then(a.0.cmp(&b.0)));
-    let items = listed
+    let items = report::models(&report.rows)
         .into_iter()
-        .map(|(name, (requests, tokens, spend, unpriced, rows))| Item {
-            cells: vec![
-                name.clone(),
-                requests.to_string(),
-                count(tokens),
-                if unpriced == requests {
-                    "no price".to_string()
-                } else {
-                    money(spend)
-                },
-                share(spend, all.spend),
-            ],
-            strong: false,
-            open: Some(Open::Chats(name.clone(), rows, Slice::Model(name))),
+        .map(|model| {
+            let spend = if model.unpriced == model.requests {
+                ("no price".to_string(), Tone::Warning)
+            } else {
+                (money(model.spend), Tone::Money)
+            };
+            Item {
+                cells: vec![
+                    plain(model.name.clone()),
+                    plain(model.requests.to_string()),
+                    plain(count(model.tokens)),
+                    spend,
+                    (share(model.spend, all.spend), Tone::Dim),
+                ],
+                strong: false,
+                open: Some(Open::Chats(
+                    model.name.clone(),
+                    model.rows,
+                    Slice::Model(model.name),
+                )),
+            }
         })
         .collect();
     Table::new(
@@ -279,33 +223,18 @@ fn models(report: &Report, all: &Totals) -> Table {
 
 /// Spend per local day of the request, with a bar.
 fn days(report: &Report) -> Table {
-    let mut days: BTreeMap<String, (Decimal, Vec<usize>)> = BTreeMap::new();
-    for (n, row) in report.rows.iter().enumerate() {
-        for (usage, price) in row.session.usage.iter().zip(&row.cost.requests) {
-            let entry = days.entry(local_day(usage.at)).or_default();
-            entry.0 += price.unwrap_or_default();
-            if entry.1.last() != Some(&n) {
-                entry.1.push(n);
-            }
-        }
-    }
-    let top = days.values().map(|day| day.0).max().unwrap_or_default();
+    let days = report::days(&report.rows);
+    let top = days.iter().map(|day| day.spend).max().unwrap_or_default();
     let items = days
         .into_iter()
-        .map(|(day, (spend, rows))| {
-            let width = if top.is_zero() {
-                0
-            } else {
-                (spend * Decimal::from(30) / top)
-                    .round()
-                    .to_usize()
-                    .unwrap_or(0)
-            };
-            Item {
-                cells: vec![day.clone(), money(spend), "█".repeat(width)],
-                strong: false,
-                open: Some(Open::Chats(day.clone(), rows, Slice::Day(day))),
-            }
+        .map(|day| Item {
+            cells: vec![
+                plain(day.day.clone()),
+                (money(day.spend), Tone::Money),
+                (report::bar(day.spend, top), Tone::Accent),
+            ],
+            strong: false,
+            open: Some(Open::Chats(day.day.clone(), day.rows, Slice::Day(day.day))),
         })
         .collect();
     Table::new("Days", &["By day", "Spend", ""], items)
@@ -319,9 +248,9 @@ fn pull_requests(report: &Report) -> Table {
             let mark = if pr.split { "~" } else { "" };
             Item {
                 cells: vec![
-                    pr.url.clone(),
-                    pr.rows.len().to_string(),
-                    format!("{mark}{}", money(pr.spend)),
+                    plain(pr.url.clone()),
+                    plain(pr.rows.len().to_string()),
+                    (format!("{mark}{}", money(pr.spend)), Tone::Money),
                 ],
                 strong: false,
                 open: Some(Open::Chats(
@@ -341,22 +270,41 @@ fn pull_requests(report: &Report) -> Table {
     table
 }
 
+/// One conversation's part of a line: its sessions there, their tokens and spend, and the session
+/// whose type of work it shows.
+struct ChatPart {
+    sessions: u64,
+    tokens: u64,
+    spend: Decimal,
+    labeled: usize,
+}
+
 /// The conversations that `rows` belong to, largest spend first, counting only those rows' `slice`.
 fn chats(report: &Report, title: &str, rows: &[usize], slice: &Slice) -> Table {
-    let mut by_root: HashMap<usize, (u64, u64, Decimal)> = HashMap::new();
+    let mut by_root: HashMap<usize, ChatPart> = HashMap::new();
     for &n in rows {
-        let (tokens, spend) = part(&report.rows[n], slice);
-        let chat = by_root.entry(report.rows[n].root).or_default();
-        chat.0 += 1;
-        chat.1 += tokens;
-        chat.2 += spend;
+        let row = &report.rows[n];
+        let (tokens, spend) = part(row, slice);
+        let chat = by_root.entry(row.root).or_insert(ChatPart {
+            sessions: 0,
+            tokens: 0,
+            spend: Decimal::ZERO,
+            labeled: n,
+        });
+        chat.sessions += 1;
+        chat.tokens += tokens;
+        chat.spend += spend;
+        // The chat's own label when it is one of the rows, else the first session's that is.
+        if n == row.root {
+            chat.labeled = n;
+        }
     }
-    let mut listed: Vec<(usize, (u64, u64, Decimal))> = by_root.into_iter().collect();
-    listed.sort_by(|a, b| b.1.2.cmp(&a.1.2).then(a.0.cmp(&b.0)));
-    let whole: Decimal = listed.iter().map(|chat| chat.1.2).sum();
+    let mut listed: Vec<(usize, ChatPart)> = by_root.into_iter().collect();
+    listed.sort_by(|a, b| b.1.spend.cmp(&a.1.spend).then(a.0.cmp(&b.0)));
+    let whole: Decimal = listed.iter().map(|chat| chat.1.spend).sum();
     let items = listed
         .into_iter()
-        .map(|(root, (sessions, tokens, spend))| {
+        .map(|(root, chat)| {
             let row = &report.rows[root];
             let name = report::title(row.session);
             // A subagent whose chat was not loaded is its own root.
@@ -365,16 +313,22 @@ fn chats(report: &Report, title: &str, rows: &[usize], slice: &Slice) -> Table {
                 Kind::Subagent => format!("(subagent) {name}"),
                 Kind::Review => format!("(review) {name}"),
             };
+            let work = report.rows[chat.labeled]
+                .label
+                .map_or("-", |label| &label.work);
             Item {
                 cells: vec![
-                    name,
-                    row.session.started.map_or(String::new(), local_day),
-                    row.place.project.clone(),
-                    row.label.map_or("-", |label| &label.work).to_string(),
-                    sessions.to_string(),
-                    count(tokens),
-                    money(spend),
-                    share(spend, whole),
+                    plain(name),
+                    (
+                        row.session.started.map_or(String::new(), local_day),
+                        Tone::Dim,
+                    ),
+                    plain(row.place.project.clone()),
+                    plain(work),
+                    plain(chat.sessions.to_string()),
+                    plain(count(chat.tokens)),
+                    (money(chat.spend), Tone::Money),
+                    (share(chat.spend, whole), Tone::Dim),
                 ],
                 strong: false,
                 open: Some(Open::Chat(root)),
@@ -427,11 +381,15 @@ fn chat(report: &Report, root: usize) -> Table {
         first.session.client.name(),
         first.place.project
     )];
+    // Each pull request once, though several sessions name it.
     let prs = rows
         .iter()
         .flat_map(|&n| report.rows[n].label.iter().flat_map(|label| &label.prs));
     for pr in prs {
-        note.push(format!("{} {}", pr.role.name(), pr.url));
+        let line = format!("{} {}", pr.role.name(), pr.url);
+        if !note.contains(&line) {
+            note.push(line);
+        }
     }
     let items = rows
         .iter()
@@ -452,17 +410,17 @@ fn chat(report: &Report, root: usize) -> Table {
                 .collect();
             models.sort_unstable();
             models.dedup();
-            let label = |pick: fn(&Label) -> &str| row.label.map_or("-", pick).to_string();
+            let label = |pick: fn(&Label) -> &str| plain(row.label.map_or("-", pick));
             Item {
                 cells: vec![
-                    format!("{kind}  {}", report::title(session)),
+                    plain(format!("{kind}  {}", report::title(session))),
                     label(|label| &label.work),
                     label(|label| &label.topic),
-                    models.join(", "),
-                    session.turns.len().to_string(),
-                    span(session.working()),
-                    count(row.cost.tokens.total()),
-                    money(row.cost.spend),
+                    plain(models.join(", ")),
+                    plain(session.turns.len().to_string()),
+                    plain(span(session.working())),
+                    plain(count(row.cost.tokens.total())),
+                    (money(row.cost.spend), Tone::Money),
                 ],
                 strong: n == root,
                 open: None,
@@ -506,25 +464,31 @@ struct Dashboard<'r, 'a> {
 
 impl<'r, 'a> Dashboard<'r, 'a> {
     fn new(report: &'r Report<'a>) -> Self {
-        let all = sum(report, &(0..report.rows.len()).collect::<Vec<_>>());
+        let mut all = Totals::default();
+        for row in &report.rows {
+            all.add(row.session, &row.cost);
+        }
+        let groups = |key: &dyn Fn(&Row) -> (String, String)| report::groups(&report.rows, key);
         let mut tabs = Vec::new();
         if let Some(taxonomy) = report.taxonomy {
-            let work = groups(report, |row| category(row, &taxonomy.work, |l| &l.work));
-            tabs.push(("Work", grouped(report, &all, "By type of work", work)));
-            let topics = groups(report, |row| category(row, &taxonomy.topics, |l| &l.topic));
-            tabs.push(("Topic", grouped(report, &all, "By topic", topics)));
+            let work = groups(&|row| category(row, &taxonomy.work, |l| &l.work));
+            tabs.push(("Work", grouped(&all, "By type of work", work)));
+            let topics = groups(&|row| category(row, &taxonomy.topics, |l| &l.topic));
+            tabs.push(("Topic", grouped(&all, "By topic", topics)));
         }
         tabs.push(("Models", models(report, &all)));
-        let projects = groups(report, |row| (row.place.project.clone(), String::new()));
-        tabs.push(("Projects", grouped(report, &all, "By project", projects)));
-        let repos = groups(report, |row| {
-            let repo = &row.place.repo;
-            let repo = if repo.is_empty() { NO_REPO } else { repo };
-            (repo.to_string(), String::new())
-        });
-        tabs.push(("Repos", grouped(report, &all, "By repo", repos)));
+        let projects = groups(&|row| (row.place.project.clone(), String::new()));
+        tabs.push(("Projects", grouped(&all, "By project", projects)));
+        tabs.push(("Repos", grouped(&all, "By repo", groups(&report::repo))));
         tabs.push(("Days", days(report)));
-        let every: Vec<usize> = (0..report.rows.len()).collect();
+        // The conversations the printed report ranks, with every session they started.
+        let ranked: HashSet<usize> = report::chats(&report.rows)
+            .into_iter()
+            .map(|(root, _)| root)
+            .collect();
+        let every: Vec<usize> = (0..report.rows.len())
+            .filter(|&n| ranked.contains(&report.rows[n].root))
+            .collect();
         tabs.push((
             "Conversations",
             chats(report, "Conversations", &every, &Slice::All),
@@ -572,8 +536,8 @@ impl<'r, 'a> Dashboard<'r, 'a> {
             KeyCode::Up | KeyCode::Char('k') => self.screen().step(-1),
             KeyCode::PageDown => self.screen().step(10),
             KeyCode::PageUp => self.screen().step(-10),
-            KeyCode::Home | KeyCode::Char('g') => self.screen().step(isize::MIN / 2),
-            KeyCode::End | KeyCode::Char('G') => self.screen().step(isize::MAX / 2),
+            KeyCode::Home | KeyCode::Char('g') => self.screen().go(0),
+            KeyCode::End | KeyCode::Char('G') => self.screen().go(usize::MAX),
             KeyCode::Enter => {
                 let next = match self.screen().opens().cloned() {
                     Some(Open::Chats(title, rows, slice)) => {
@@ -608,29 +572,41 @@ impl<'r, 'a> Dashboard<'r, 'a> {
             String::new()
         };
         let tokens = all.tokens;
+        let (dim, warning) = (p.style(Tone::Dim, false), p.style(Tone::Warning, false));
+        let caveat = |n: u64, text: &str| match n {
+            0 => Span::raw(""),
+            n => Span::styled(format!(" ({n} {text})"), warning),
+        };
         let header = vec![
             Line::from(vec![
                 Span::styled("atlas-nano", p.style(Tone::Heading, false)),
                 format!(" · {} · ", self.report.period).into(),
                 Span::styled(money(all.spend), p.style(Tone::Money, true)),
+                caveat(
+                    all.unpriced_requests,
+                    "requests have no price and count as $0",
+                ),
                 format!(
                     " · {} conversations · {} subagents{reviews}",
                     all.conversations, all.subagents
                 )
                 .into(),
             ]),
-            Line::styled(
-                format!(
-                    "working {} · wall {} · tokens in {} · cached {} · cache-write {} · out {}",
-                    span(all.working),
-                    span(all.wall),
-                    count(tokens.input),
-                    count(tokens.cached),
-                    count(tokens.cache_write),
-                    count(tokens.output)
+            Line::from(vec![
+                Span::styled(format!("working {}", span(all.working)), dim),
+                caveat(all.unknown_turns, "turns with no recorded completion"),
+                Span::styled(
+                    format!(
+                        " · wall {} · tokens in {} · cached {} · cache-write {} · out {}",
+                        span(all.wall),
+                        count(tokens.input),
+                        count(tokens.cached),
+                        count(tokens.cache_write),
+                        count(tokens.output)
+                    ),
+                    dim,
                 ),
-                p.style(Tone::Dim, false),
-            ),
+            ]),
         ];
         frame.render_widget(Paragraph::new(header), head);
         let names = self
@@ -658,20 +634,11 @@ impl<'r, 'a> Dashboard<'r, 'a> {
         } else {
             "  esc back"
         };
-        let help = format!("←/→ tab  ↑/↓ move  enter open{back}  q quit");
+        let opens = self.screen().items.iter().any(|item| item.open.is_some());
+        let open = if opens { "  enter open" } else { "" };
+        let help = format!("←/→ tab  ↑/↓ move{open}{back}  q quit");
         frame.render_widget(Paragraph::new(help).style(p.style(Tone::Dim, false)), foot);
         render(self.screen(), frame, inner, p);
-    }
-}
-
-/// The tone of a cell, from its column and text.
-fn tone(header: &str, text: &str) -> Tone {
-    match header {
-        _ if text == "no price" => Tone::Warning,
-        _ if text.starts_with('█') => Tone::Accent,
-        "Spend" => Tone::Money,
-        "Conv%" | "Spend%" | "Started" => Tone::Dim,
-        _ => Tone::Plain,
     }
 }
 
@@ -702,16 +669,25 @@ fn fit(text: &str, width: usize) -> String {
 /// Draw a table with its note above it. Numbers are right-aligned; the first column gets the room
 /// the others leave, up to its widest cell.
 fn render(table: &mut Table, frame: &mut Frame, area: Rect, p: Paint) {
-    let [note, area] = Layout::vertical([
-        Constraint::Length(table.note.len() as u16),
-        Constraint::Fill(1),
-    ])
-    .areas(area);
-    let lines: Vec<Line> = table
+    // The note takes at most a third of the height, so the table always shows.
+    let room = (area.height / 3) as usize;
+    let mut lines: Vec<Line> = table
         .note
         .iter()
         .map(|text| Line::styled(printable(text), p.style(Tone::Dim, false)))
         .collect();
+    if lines.len() > room {
+        let past = lines.len() + 1 - room;
+        lines.truncate(room.saturating_sub(1));
+        if room > 0 {
+            lines.push(Line::styled(
+                format!("and {past} more"),
+                p.style(Tone::Dim, false),
+            ));
+        }
+    }
+    let [note, area] =
+        Layout::vertical([Constraint::Length(lines.len() as u16), Constraint::Fill(1)]).areas(area);
     frame.render_widget(Paragraph::new(lines), note);
     let mut widths: Vec<usize> = table
         .header
@@ -719,7 +695,7 @@ fn render(table: &mut Table, frame: &mut Frame, area: Rect, p: Paint) {
         .map(|cell| Span::raw(cell).width())
         .collect();
     for item in &table.items {
-        for (width, cell) in widths.iter_mut().zip(&item.cells) {
+        for (width, (cell, _)) in widths.iter_mut().zip(&item.cells) {
             *width = (*width).max(Span::raw(printable(cell)).width());
         }
     }
@@ -735,8 +711,22 @@ fn render(table: &mut Table, frame: &mut Frame, area: Rect, p: Paint) {
         + widths[1..].iter().sum::<usize>();
     let room = (area.width as usize).saturating_sub(taken);
     widths[0] = widths[0].min(room.max(TITLE_WIDTH));
+    let widths: Vec<Constraint> = widths
+        .iter()
+        .map(|&width| Constraint::Length(width as u16))
+        .collect();
+    // Cut each cell to the width ratatui draws, which is less than asked for on a narrow screen,
+    // so a cut number ends in `…` rather than losing its first digits.
+    let symbol = Span::raw(SYMBOL).width() as u16;
+    let drawn: Vec<usize> = Layout::horizontal(widths.clone())
+        .flex(Flex::Start)
+        .spacing(SPACING as u16)
+        .split(Rect::new(0, 0, area.width.saturating_sub(symbol), 1))
+        .iter()
+        .map(|column| column.width as usize)
+        .collect();
     let cell = |n: usize, text: &str, style: Style| {
-        let line = Line::styled(fit(&printable(text), widths[n]), style);
+        let line = Line::styled(fit(&printable(text), drawn[n]), style);
         Cell::from(line.alignment(if left(n) {
             Alignment::Left
         } else {
@@ -748,12 +738,13 @@ fn render(table: &mut Table, frame: &mut Frame, area: Rect, p: Paint) {
         cell(n, text, p.style(tone, false))
     }));
     let rows = table.items.iter().map(|item| {
-        TableRow::new(item.cells.iter().enumerate().map(|(n, text)| {
-            let style = p.style(tone(&table.header[n], text), item.strong);
-            cell(n, text, style)
-        }))
+        TableRow::new(
+            item.cells
+                .iter()
+                .enumerate()
+                .map(|(n, (text, tone))| cell(n, text, p.style(*tone, item.strong))),
+        )
     });
-    let widths = widths.iter().map(|&width| Constraint::Length(width as u16));
     // Reversed text would hide the selected day's bar, so its cell is never reversed.
     let bar = table.header.iter().position(|cell| cell.is_empty());
     table.state.select_column(bar);
@@ -769,7 +760,11 @@ fn render(table: &mut Table, frame: &mut Frame, area: Rect, p: Paint) {
 /// Show the report until the user quits, then give the terminal back as it was.
 pub fn show(report: &Report) -> Result<(), String> {
     let mut dashboard = Dashboard::new(report);
-    let mut terminal = ratatui::try_init().map_err(|error| error.to_string())?;
+    // `try_init` turns raw mode on before steps that can fail, so give the terminal back on error.
+    let mut terminal = ratatui::try_init().map_err(|error| {
+        ratatui::restore();
+        error.to_string()
+    })?;
     let result = (|| {
         loop {
             terminal.draw(|frame| dashboard.draw(frame))?;
@@ -815,13 +810,26 @@ mod tests {
 
     /// Draw `sessions`, each labeled "Writing code", on a screen `width` wide, after `keys`.
     fn draw(sessions: &[Session], keys: &[KeyCode], paint: Paint, width: u16) -> Buffer {
+        draw_labeled(sessions, &[], keys, paint, width)
+    }
+
+    /// `draw`, with each session's type of work from `works`, "Writing code" past its end.
+    fn draw_labeled(
+        sessions: &[Session],
+        works: &[&str],
+        keys: &[KeyCode],
+        paint: Paint,
+        width: u16,
+    ) -> Buffer {
         let prices = PriceTable::built_in();
         let taxonomy = Taxonomy::built_in();
         let place = Place {
             project: "app".to_string(),
             repo: "app".to_string(),
         };
-        let labels: Vec<Label> = sessions.iter().map(|_| label("Writing code")).collect();
+        let labels: Vec<Label> = (0..sessions.len())
+            .map(|n| label(works.get(n).copied().unwrap_or("Writing code")))
+            .collect();
         let roots = account::roots(sessions);
         let report = Report {
             period: "last 7 days",
@@ -857,7 +865,10 @@ mod tests {
     }
 
     fn narrow(sessions: &[Session], keys: &[KeyCode], width: u16) -> String {
-        let buffer = draw(sessions, keys, Paint::OFF, width);
+        text(&draw(sessions, keys, Paint::OFF, width))
+    }
+
+    fn text(buffer: &Buffer) -> String {
         let width = buffer.area.width as usize;
         let symbols: Vec<&str> = buffer.content().iter().map(|cell| cell.symbol()).collect();
         symbols
@@ -1016,5 +1027,117 @@ mod tests {
         let off = bar(&draw(&sessions(), &days, Paint::OFF, 120));
         assert!(!off.modifier.contains(Modifier::REVERSED));
         assert!(minimal.modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn the_header_says_what_the_totals_leave_out() {
+        // Each session has one request to an unpriced model and one turn with no completion.
+        let shown = screen(&sessions(), &[]);
+        assert!(
+            shown.contains("(2 requests have no price and count as $0)"),
+            "{shown}"
+        );
+        assert!(
+            shown.contains("(2 turns with no recorded completion)"),
+            "{shown}"
+        );
+    }
+
+    #[test]
+    fn a_narrow_screen_cuts_numbers_at_the_end() {
+        let mut cut = false;
+        for width in 40..90 {
+            let shown = narrow(&sessions(), &[], width);
+            let line = shown.lines().find(|line| line.contains("▸")).unwrap();
+            // Spend is the only column with a `$`: whole, or cut with `…`, never missing its start.
+            if let Some(at) = line.find('$') {
+                let before = line[..at].chars().last().unwrap();
+                assert!(before == ' ' || before == '~', "{width}: {line}");
+                cut |= line[at..].starts_with("$1…") || line[at..].starts_with("$…");
+            }
+        }
+        assert!(cut, "no width cut the spend");
+    }
+
+    #[test]
+    fn a_conversation_lists_each_pull_request_once() {
+        let shown = screen(&sessions(), &[KeyCode::Enter, KeyCode::Enter]);
+        let found = shown
+            .matches("https://github.com/owner/repo/pull/7")
+            .count();
+        assert_eq!(found, 1, "{shown}");
+    }
+
+    #[test]
+    fn a_long_note_leaves_room_for_the_table() {
+        let item = Item {
+            cells: vec![plain("line")],
+            strong: false,
+            open: None,
+        };
+        let mut table = Table::new("t", &["Name"], vec![item]);
+        table.note = (0..20).map(|n| format!("note {n}")).collect();
+        let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        terminal
+            .draw(|frame| render(&mut table, frame, frame.area(), Paint::OFF))
+            .unwrap();
+        let shown = text(terminal.backend().buffer());
+        assert!(shown.contains("note 2\nand 17 more\n  Name"), "{shown}");
+        assert!(shown.contains("▸ line"), "{shown}");
+    }
+
+    #[test]
+    fn leaves_out_what_the_printed_report_leaves_out() {
+        let mut sessions = sessions();
+        // A subagent whose chat was not loaded, and a chat that used no tokens.
+        let mut orphan = session("orphan", Kind::Subagent, Some("gone"), 3);
+        orphan.title = Some("Orphan task".to_string());
+        let mut idle = session("idle", Kind::Primary, None, 4);
+        idle.title = Some("Idle chat".to_string());
+        for usage in &mut idle.usage {
+            usage.input = 0;
+            usage.cached = 0;
+            usage.cache_write = 0;
+            usage.cache_write_1h = 0;
+            usage.output = 0;
+        }
+        idle.usage[0].model = "<synthetic>".to_string();
+        sessions.extend([orphan, idle]);
+        let shown = screen(&sessions, &[KeyCode::Char('7')]);
+        assert!(shown.contains("Fix the export"), "{shown}");
+        assert!(!shown.contains("Orphan task"), "{shown}");
+        assert!(!shown.contains("Idle chat"), "{shown}");
+        let shown = screen(&sessions, &[KeyCode::Char('3')]);
+        assert!(!shown.contains("<synthetic>"), "{shown}");
+    }
+
+    #[test]
+    fn a_line_shows_the_type_of_work_of_the_sessions_it_holds() {
+        // The chat writes code; its subagent debugs. Debugging opens the chat as debugging.
+        let buffer = draw_labeled(
+            &sessions(),
+            &["Writing code", "Debugging"],
+            &[KeyCode::Down, KeyCode::Enter],
+            Paint::OFF,
+            120,
+        );
+        let shown = text(&buffer);
+        assert!(shown.contains("Work › Debugging"), "{shown}");
+        assert!(shown.contains("Type of work Debugging"), "{shown}");
+    }
+
+    #[test]
+    fn home_and_end_go_to_the_first_and_last_line() {
+        let shown = screen(&sessions(), &[KeyCode::End]);
+        assert!(shown.contains("▸   Writing code"), "{shown}");
+        let shown = screen(&sessions(), &[KeyCode::End, KeyCode::Home]);
+        assert!(shown.contains("▸ Software"), "{shown}");
+    }
+
+    #[test]
+    fn the_footer_offers_enter_only_where_it_opens() {
+        assert!(screen(&sessions(), &[]).contains("enter open"));
+        let shown = screen(&sessions(), &[KeyCode::Enter, KeyCode::Enter]);
+        assert!(!shown.contains("enter open"), "{shown}");
     }
 }

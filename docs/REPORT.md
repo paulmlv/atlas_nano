@@ -87,18 +87,22 @@ Prices checked 2026-11-03
 
 ## Interactive view
 
-`--tui` shows the same report in the terminal until `q`. It needs a terminal; with output sent to a
-file or a pipe the run stops before labeling. A `--csv` file is still written first.
+`--tui` shows the report's tables in the terminal until `q`. It needs a terminal; with output sent
+to a file or a pipe the run stops before labeling. A `--csv` file is still written first.
 
-- **Header:** the period, spend, counts, time, and tokens of the totals block.
+- **Header:** the period, spend, counts, time, and tokens of the totals block, with its notes on
+  requests without a price and turns with no recorded completion.
 - **Tabs:** one per table, in the printed order: type of work, topic, model, project, repo, day,
   conversations, and pull requests. `←`/`→`, `Tab`, or a number switches tabs.
+- **Rows:** the same rows as the printed tables, empty rows left out, but every row: `top` does not
+  apply, since the view scrolls. The labeling summary and the price date are not shown.
 - **Open:** `Enter` on a line lists the conversations it holds, largest spend first, with only that
   line's part of their tokens and spend: the requests to that model or on that day, or the pull
-  request's even split. `Enter` on a conversation shows its sessions, the chat first and the others
-  by spend, with labels, models, and pull requests. `Esc` goes back.
+  request's even split. A conversation's type of work is its chat's when the chat is in the line,
+  else that of its first session that is. `Enter` on a conversation shows its sessions, the chat
+  first and the others by spend, with labels, models, and each pull request once. `Esc` goes back.
 - **Columns:** a column whose cells all hold one value moves above the table, so titles get the
-  room.
+  room. On a narrow screen, text and numbers that do not fit end in `…`.
 - **Colors:** the configured theme, off as for the printed report. The selected line has a dark gray
   background, or reversed text with colors off.
 
