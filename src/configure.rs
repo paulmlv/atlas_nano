@@ -152,26 +152,25 @@ pub fn configure() -> Result<(), String> {
     let mut paint = Paint::stdout(Theme::default());
     let mut installed = Vec::new();
     for client in [Client::Claude, Client::Codex] {
-        let name = format!("{} ({})", client.name(), label(client));
+        let name = label(client);
         match labeler::no_save_support(client) {
             Err(_) => println!(
-                "{} {}",
-                paint.bold(&format!("{name}:")),
-                paint.dim("not installed, skipped")
+                "{}",
+                paint.dim(&format!("No {name} installation detected, skipped"))
             ),
             Ok(false) => println!(
                 "{} {}",
-                paint.bold(&format!("{name}:")),
+                paint.bold(name),
                 paint.dim(
-                    "installed, but this version cannot run a call without saving it; \
-                     skipped until it is updated"
+                    "installation detected, but this version cannot run a call without saving \
+                     it; skipped until it is updated"
                 )
             ),
             Ok(true) => {
                 println!(
                     "{} {}",
-                    paint.bold(&format!("{name}:")),
-                    paint.tone(Tone::Done, "installed")
+                    paint.bold(name),
+                    paint.tone(Tone::Done, "installation detected")
                 );
                 installed.push(client);
             }
@@ -250,11 +249,11 @@ pub fn configure() -> Result<(), String> {
             return Ok(());
         }
     }
-    let tools = !yes(
-        "Leave tool calls out of what is sent (no-tools mode)?",
-        false,
+    let tools = yes(
+        "Include tool calls for labeling (more accurate, costs more)?",
+        true,
     )?;
-    let pull_requests = yes("Map conversations to pull requests?", true)?;
+    let pull_requests = yes("Include PRs (costs more)?", true)?;
     let jobs = loop {
         match ask("How many labeling calls at once?", "", "32")?.parse::<usize>() {
             Ok(jobs) if jobs > 0 => break jobs,

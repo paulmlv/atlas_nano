@@ -25,12 +25,12 @@ not asked. `codex` covers Codex and ChatGPT desktop sessions, and `claude` Claud
   installed, or whose version lacks its no-save flag, is skipped. With neither usable, configuration
   fails.
 - **Settings:** the unit (conversation), the coverage (Claude Code, Codex, or both), the labeling
-  model, the no-tools mode, the pull request mapping (on by default), how many labeling calls run at
-  once (32 by default; asked again until it is a whole number of at least 1), how many rows the
-  [ranked tables](REPORT.md#printed-report) show (10, 20, 50, or `all`; 10 by default, and for a
-  file saved without it), and the color theme. It also saves `retries = 1` without asking: how many
-  more times a failed labeling call is tried. Edit the file to change it; `0` turns retries off. A
-  file saved without it gets 1.
+  model, whether tool calls are sent (on by default), the pull request mapping (on by default), how
+  many labeling calls run at once (32 by default; asked again until it is a whole number of at least
+  1), how many rows the [ranked tables](REPORT.md#printed-report) show (10, 20, 50, or `all`; 10 by
+  default, and for a file saved without it), and the color theme. It also saves `retries = 1`
+  without asking: how many more times a failed labeling call is tried. Edit the file to change it;
+  `0` turns retries off. A file saved without it gets 1.
 - **Theme:** `minimal` (the default) uses bold, dim, and the terminal's own colors, so it suits any
   background. `soft` has muted blue headings and sage money; `warm` has amber headings and bars.
   Both use fixed 256-color shades. On a terminal, each theme is previewed before the question.

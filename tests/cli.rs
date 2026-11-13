@@ -191,9 +191,11 @@ fn configure_then_run_labels_reports_and_reuses_the_cache() {
         "{said}{}",
         text(&configured.stderr)
     );
-    assert!(said.contains("codex (Codex/ChatGPT): not installed, skipped"));
+    assert!(said.contains("No Codex/ChatGPT installation detected, skipped"));
     assert!(said.contains("reading Claude Code sessions, the only ones on this computer"));
-    assert!(said.contains("(y / n) [n]"));
+    assert!(
+        said.contains("Include tool calls for labeling (more accurate, costs more)? (y / n) [y]")
+    );
     assert!(said.contains("please answer a whole number of at least 1"));
     assert!(said.contains("We label conversations with your signed-in account"));
     assert!(said.contains("anthropic/claude-haiku-5-5 labels, through the only client installed"));
