@@ -4,8 +4,9 @@ What `atlas-nano run` prints, what its CSV holds, and how each number is defined
 
 ## Printed report
 
-The command prints its tables and exits; there is no interactive view. Every category is shown both
-by conversation count and by spend, each with its share. Numbers below are invented.
+The command prints its tables and exits, unless `--tui` asks for the
+[interactive view](#interactive-view). Every category is shown both by conversation count and by
+spend, each with its share. Numbers below are invented.
 
 ```text
 atlas-nano · last 7 days · 142 conversations · 31 subagents · 12 reviews
@@ -78,11 +79,32 @@ Prices checked 2026-11-03
 - **By day** puts each request's spend on the local day of the request, using the time zone's offset
   at that moment.
 - **Top conversations** adds to each chat the spend of the subagents and reviews it started. A
-  subagent whose chat was not loaded is not ranked. A conversation is shown by its title, else by
-  the first line of its first request. Control characters and text-direction marks in titles and
-  folder names are shown as `�`.
+  subagent whose chat was not loaded is not ranked. A session is shown by its title, else by the
+  first line of its first request, else of the task an agent gave it. Control characters and
+  text-direction marks in titles and folder names are shown as `�`.
 - With `--no-label` the category tables and the labeling summary are left out.
 - The pull request section appears only with pull request mapping on.
+
+## Interactive view
+
+`--tui` shows the report's tables in the terminal until `q`. It needs a terminal; with output sent
+to a file or a pipe the run stops before labeling. A `--csv` file is still written first.
+
+- **Header:** the period, spend, counts, time, and tokens of the totals block, with its notes on
+  requests without a price and turns with no recorded completion.
+- **Tabs:** one per table, in the printed order: type of work, topic, model, project, repo, day,
+  conversations, and pull requests. `←`/`→`, `Tab`, or a number switches tabs.
+- **Rows:** the same rows as the printed tables, empty rows left out, but every row: `top` does not
+  apply, since the view scrolls. The labeling summary and the price date are not shown.
+- **Open:** `Enter` on a line lists the conversations it holds, largest spend first, with only that
+  line's part of their tokens and spend: the requests to that model or on that day, or the pull
+  request's even split. A conversation's type of work is its chat's when the chat is in the line,
+  else that of its first session that is. `Enter` on a conversation shows its sessions, the chat
+  first and the others by spend, with labels, models, and each pull request once. `Esc` goes back.
+- **Columns:** a column whose cells all hold one value moves above the table, so titles get the
+  room. On a narrow screen, text and numbers that do not fit end in `…`.
+- **Colors:** the configured theme, off as for the printed report. The selected line has a dark gray
+  background, or reversed text with colors off.
 
 ## CSV
 

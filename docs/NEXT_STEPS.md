@@ -7,6 +7,8 @@ What is left to test and decide for Atlas Nano. The [command line](CLI.md), [rep
 
 - Whether a `run` flag may override a configured value for one run.
 - Whether users can supply their own taxonomy.
+- Whether the interactive view becomes the default in a terminal, and whether it sorts, filters, or
+  changes the period without leaving.
 - How updates are installed, and whether macOS binaries need signing.
 
 ## To test

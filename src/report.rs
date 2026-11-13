@@ -19,7 +19,7 @@ use crate::taxonomy::{Entry, Taxonomy};
 
 const UNLABELED: &str = "Unlabeled";
 const REVIEWS: &str = "Automatic reviews";
-const NO_REPO: &str = "(no repo)";
+pub(crate) const NO_REPO: &str = "(no repo)";
 /// One session in the report, with its cost, its label, and the chat it descends from.
 pub struct Row<'a> {
     pub session: &'a Session,
@@ -48,7 +48,7 @@ pub struct Report<'a> {
 /// Halves round up, as people expect of a price: $0.125 is $0.13, not $0.12.
 const HALF_UP: RoundingStrategy = RoundingStrategy::MidpointAwayFromZero;
 
-fn money(amount: Decimal) -> String {
+pub(crate) fn money(amount: Decimal) -> String {
     let cents = amount.round_dp_with_strategy(2, HALF_UP).to_string();
     let (whole, fraction) = cents.split_once('.').unwrap_or((&cents, "00"));
     let mut grouped = String::new();
@@ -62,7 +62,7 @@ fn money(amount: Decimal) -> String {
 }
 
 /// A whole percentage; `0%` only for none, and `<1%` for a part too small to round to 1%.
-fn share(part: Decimal, whole: Decimal) -> String {
+pub(crate) fn share(part: Decimal, whole: Decimal) -> String {
     if whole.is_zero() {
         return "-".to_string();
     }
@@ -75,7 +75,7 @@ fn share(part: Decimal, whole: Decimal) -> String {
 
 /// A token count in a short form. Each range ends where its form would round up into the next
 /// one, so 999,999 is `1.0M`, not `1000k`.
-fn count(tokens: u64) -> String {
+pub(crate) fn count(tokens: u64) -> String {
     let value = tokens as f64;
     match tokens {
         0..1_000 => tokens.to_string(),
@@ -87,7 +87,7 @@ fn count(tokens: u64) -> String {
 }
 
 /// A length of time in a short form. One decimal of hours ends at 9.95 hours, which is `10h`.
-fn span(duration: Duration) -> String {
+pub(crate) fn span(duration: Duration) -> String {
     let seconds = duration.num_seconds();
     let hours = seconds as f64 / 3600.0;
     match seconds {
@@ -137,7 +137,7 @@ fn table(out: &mut String, paint: Paint, header: &[&str], rows: &[Vec<String>]) 
     }
 }
 
-const COLUMNS: [&str; 9] = [
+pub(crate) const COLUMNS: [&str; 9] = [
     "Convs",
     "Conv%",
     "Subagents",
@@ -192,95 +192,135 @@ fn shown(len: usize, top: Option<usize>) -> usize {
     top.map_or(len, |top| top.min(len))
 }
 
-/// Print a table of groups, largest spend first, each followed by its members when it has names.
-/// Rows with no conversations and no tokens are left out. With `top`, the groups past it share one
+/// Print a table of groups, each followed by its members. With `top`, the groups past it share one
 /// row.
 fn grouped(
     out: &mut String,
     paint: Paint,
     title: &str,
-    groups: &[(String, Vec<(String, Totals)>)],
+    groups: &[Group],
     all: &Totals,
     top: Option<usize>,
 ) {
     let title = ranked(title, top);
     let mut header = vec![title.as_str()];
     header.extend(COLUMNS);
+    let nested = nested(groups);
+    let shown = shown(groups.len(), top);
     let mut rows = Vec::new();
-    let mut ordered: Vec<_> = groups
-        .iter()
-        .map(|(group, members)| {
-            let mut sum = Totals::default();
-            for (_, totals) in members {
-                sum += totals;
-            }
-            (group, sum, members)
-        })
-        .collect();
-    ordered.sort_by(|a, b| b.1.spend.cmp(&a.1.spend).then(a.0.cmp(b.0)));
-    let flat = |members: &[(String, Totals)]| members.len() == 1 && members[0].0.is_empty();
-    // Groups are bold only when some have members under them.
-    let nested = ordered.iter().any(|(_, _, members)| !flat(members));
-    ordered.retain(|(_, sum, _)| !empty(sum));
-    let shown = shown(ordered.len(), top);
-    let mut rest = Totals::default();
-    for (_, sum, _) in &ordered[shown..] {
-        rest += sum;
-    }
-    let past = ordered.len() - shown;
-    ordered.truncate(shown);
-    for (group, sum, members) in ordered {
-        rows.push(cells(paint, nested, &format!("  {group}"), &sum, all));
-        if !flat(members) {
-            let mut members: Vec<&(String, Totals)> = members
+    for group in &groups[..shown] {
+        let line = &group.line;
+        rows.push(cells(
+            paint,
+            nested,
+            &format!("  {}", line.name),
+            &line.totals,
+            all,
+        ));
+        rows.extend(
+            group
+                .members
                 .iter()
-                .filter(|(_, totals)| !empty(totals))
-                .collect();
-            members.sort_by(|a, b| b.1.spend.cmp(&a.1.spend).then(a.0.cmp(&b.0)));
-            rows.extend(
-                members
-                    .iter()
-                    .map(|(name, totals)| cells(paint, false, &format!("    {name}"), totals, all)),
-            );
-        }
+                .map(|m| cells(paint, false, &format!("    {}", m.name), &m.totals, all)),
+        );
     }
-    if past > 0 {
-        rows.push(cells(paint, nested, &others(past), &rest, all));
+    let rest = &groups[shown..];
+    if !rest.is_empty() {
+        let mut sum = Totals::default();
+        for group in rest {
+            sum += &group.line.totals;
+        }
+        rows.push(cells(paint, nested, &others(rest.len()), &sum, all));
     }
     table(out, paint, &header, &rows);
     out.push('\n');
 }
 
-/// Sum the rows into `(group, name)` buckets, in first-seen order.
-fn buckets<'a>(
-    rows: &'a [Row<'a>],
-    key: impl Fn(&'a Row<'a>) -> (String, String),
-) -> Vec<(String, Vec<(String, Totals)>)> {
-    let mut groups: Vec<(String, Vec<(String, Totals)>)> = Vec::new();
-    for row in rows {
+/// A line of a grouped table: its name, the report rows it holds, and their sums.
+pub(crate) struct Line {
+    pub(crate) name: String,
+    pub(crate) rows: Vec<usize>,
+    pub(crate) totals: Totals,
+}
+
+/// A group and the members under it; a group with no names under it has no members.
+pub(crate) struct Group {
+    pub(crate) line: Line,
+    pub(crate) members: Vec<Line>,
+}
+
+/// Groups are bold only when some have members under them.
+pub(crate) fn nested(groups: &[Group]) -> bool {
+    groups.iter().any(|group| !group.members.is_empty())
+}
+
+/// Sort the rows into `(group, name)` lines, largest spend first. Lines with no conversations and
+/// no tokens are left out.
+pub(crate) fn groups(rows: &[Row], key: impl Fn(&Row) -> (String, String)) -> Vec<Group> {
+    let mut found: BTreeMap<String, BTreeMap<String, Vec<usize>>> = BTreeMap::new();
+    for (n, row) in rows.iter().enumerate() {
         let (group, name) = key(row);
-        let at = groups
-            .iter()
-            .position(|(g, _)| *g == group)
-            .unwrap_or_else(|| {
-                groups.push((group, Vec::new()));
-                groups.len() - 1
-            });
-        let members = &mut groups[at].1;
-        let member = members
-            .iter()
-            .position(|(n, _)| *n == name)
-            .unwrap_or_else(|| {
-                members.push((name, Totals::default()));
-                members.len() - 1
-            });
-        members[member].1.add(row.session, &row.cost);
+        found
+            .entry(group)
+            .or_default()
+            .entry(name)
+            .or_default()
+            .push(n);
     }
+    let line = |name: String, at: Vec<usize>| {
+        let mut totals = Totals::default();
+        for &n in &at {
+            totals.add(rows[n].session, &rows[n].cost);
+        }
+        Line {
+            name,
+            rows: at,
+            totals,
+        }
+    };
+    let by_spend = |a: &Line, b: &Line| {
+        (b.totals.spend.cmp(&a.totals.spend)).then_with(|| a.name.cmp(&b.name))
+    };
+    let mut groups: Vec<Group> = found
+        .into_iter()
+        .map(|(group, members)| {
+            let mut members: Vec<Line> = members
+                .into_iter()
+                .map(|(name, at)| line(name, at))
+                .collect();
+            let all = members
+                .iter()
+                .flat_map(|m| m.rows.iter().copied())
+                .collect();
+            if members.len() == 1 && members[0].name.is_empty() {
+                members.clear();
+            }
+            members.retain(|member| !empty(&member.totals));
+            members.sort_by(by_spend);
+            Group {
+                line: line(group, all),
+                members,
+            }
+        })
+        .filter(|group| !empty(&group.line.totals))
+        .collect();
+    groups.sort_by(|a, b| by_spend(&a.line, &b.line));
     groups
 }
 
+/// A row's `(repo, "")`, `(no repo)` outside a repository.
+pub(crate) fn repo(row: &Row) -> (String, String) {
+    let repo = &row.place.repo;
+    let repo = if repo.is_empty() { NO_REPO } else { repo };
+    (repo.to_string(), String::new())
+}
+
 /// The `(group, label)` of a row on one axis; reviews and unlabeled sessions get their own rows.
-fn category(row: &Row, entries: &[Entry], pick: impl Fn(&Label) -> &str) -> (String, String) {
+pub(crate) fn category(
+    row: &Row,
+    entries: &[Entry],
+    pick: impl Fn(&Label) -> &str,
+) -> (String, String) {
     if row.session.kind == Kind::Review {
         return (REVIEWS.to_string(), String::new());
     }
@@ -294,9 +334,12 @@ fn category(row: &Row, entries: &[Entry], pick: impl Fn(&Label) -> &str) -> (Str
     }
 }
 
-/// A session's title, else the first line of its first user message, as one short line.
+/// A session's title, else the first line of its first user message, else of the task an agent gave
+/// it, as one short line.
 pub fn title(session: &Session) -> String {
-    let first = session.items.iter().find(|item| item.role == Role::User);
+    let first = [Role::User, Role::Agent]
+        .into_iter()
+        .find_map(|role| session.items.iter().find(|item| item.role == role));
     let text = match &session.title {
         Some(title) => title.as_str(),
         None => first.map_or("", |item| item.text.lines().next().unwrap_or_default()),
@@ -310,37 +353,42 @@ pub fn title(session: &Session) -> String {
 }
 
 /// One pull request's sessions and its share of their spend.
-struct PrSpend {
-    url: String,
-    sessions: u64,
-    spend: Decimal,
+pub(crate) struct PrSpend {
+    pub(crate) url: String,
+    /// The rows of the sessions that worked on it.
+    pub(crate) rows: Vec<usize>,
+    pub(crate) spend: Decimal,
     /// Whether any of the spend comes from a session that worked on several pull requests.
-    split: bool,
+    pub(crate) split: bool,
     /// The tokens of those sessions; a pull request with none is left out.
     tokens: u64,
 }
 
+/// The pull requests a session worked on, each of which gets an even share of its spend.
+pub(crate) fn worked_on<'a>(row: &Row<'a>) -> Vec<&'a str> {
+    row.label
+        .iter()
+        .flat_map(|label| &label.prs)
+        .filter(|pr| pr.role.worked_on())
+        .map(|pr| pr.url.as_str())
+        .collect()
+}
+
 /// Split each session's spend evenly among the pull requests it worked on, largest spend first.
 /// A pull request whose sessions used no tokens is left out.
-fn pull_requests(rows: &[Row]) -> Vec<PrSpend> {
+pub(crate) fn pull_requests(rows: &[Row]) -> Vec<PrSpend> {
     let mut found: BTreeMap<&str, PrSpend> = BTreeMap::new();
-    for row in rows {
-        let worked: Vec<&str> = row
-            .label
-            .iter()
-            .flat_map(|label| &label.prs)
-            .filter(|pr| pr.role.worked_on())
-            .map(|pr| pr.url.as_str())
-            .collect();
+    for (n, row) in rows.iter().enumerate() {
+        let worked = worked_on(row);
         for url in &worked {
             let pr = found.entry(url).or_insert_with(|| PrSpend {
                 url: url.to_string(),
-                sessions: 0,
+                rows: Vec::new(),
                 spend: Decimal::ZERO,
                 split: false,
                 tokens: 0,
             });
-            pr.sessions += 1;
+            pr.rows.push(n);
             pr.spend += row.cost.spend / Decimal::from(worked.len());
             pr.split |= worked.len() > 1;
             pr.tokens += row.cost.tokens.total();
@@ -351,13 +399,101 @@ fn pull_requests(rows: &[Row]) -> Vec<PrSpend> {
     listed
 }
 
-/// One model's requests, tokens, and spend, and how many of the requests have no price.
+/// One model's requests, tokens, and spend, how many of the requests have no price, and the rows
+/// that made them.
 #[derive(Default)]
-struct ModelUse {
-    requests: u64,
-    tokens: u64,
-    spend: Decimal,
-    unpriced: u64,
+pub(crate) struct ModelUse {
+    /// `client / model`.
+    pub(crate) name: String,
+    pub(crate) requests: u64,
+    pub(crate) tokens: u64,
+    pub(crate) spend: Decimal,
+    pub(crate) unpriced: u64,
+    pub(crate) rows: Vec<usize>,
+}
+
+/// The requests per client and model, largest spend first. A model whose requests used no tokens
+/// is left out.
+pub(crate) fn models(rows: &[Row]) -> Vec<ModelUse> {
+    let mut models: BTreeMap<String, ModelUse> = BTreeMap::new();
+    for (n, row) in rows.iter().enumerate() {
+        for (usage, price) in row.session.usage.iter().zip(&row.cost.requests) {
+            let name = format!("{} / {}", row.session.client.name(), usage.model);
+            let model = models.entry(name.clone()).or_default();
+            model.name = name;
+            model.requests += 1;
+            model.tokens += usage.tokens();
+            match price {
+                Some(cost) => model.spend += cost,
+                None => model.unpriced += 1,
+            }
+            if model.rows.last() != Some(&n) {
+                model.rows.push(n);
+            }
+        }
+    }
+    let mut listed: Vec<ModelUse> = models
+        .into_values()
+        .filter(|model| model.tokens > 0)
+        .collect();
+    listed.sort_by(|a, b| b.spend.cmp(&a.spend).then_with(|| a.name.cmp(&b.name)));
+    listed
+}
+
+/// One local day's spend and the rows with requests on it.
+pub(crate) struct DaySpend {
+    pub(crate) day: String,
+    pub(crate) spend: Decimal,
+    pub(crate) rows: Vec<usize>,
+}
+
+/// Spend per local day of the request, in date order.
+pub(crate) fn days(rows: &[Row]) -> Vec<DaySpend> {
+    let mut days: BTreeMap<String, (Decimal, Vec<usize>)> = BTreeMap::new();
+    for (n, row) in rows.iter().enumerate() {
+        for (usage, price) in row.session.usage.iter().zip(&row.cost.requests) {
+            let day = days.entry(local_day(usage.at)).or_default();
+            day.0 += price.unwrap_or_default();
+            if day.1.last() != Some(&n) {
+                day.1.push(n);
+            }
+        }
+    }
+    days.into_iter()
+        .map(|(day, (spend, rows))| DaySpend { day, spend, rows })
+        .collect()
+}
+
+/// A day's bar: 30 blocks for the largest day, `top`.
+pub(crate) fn bar(spend: Decimal, top: Decimal) -> String {
+    let width = if top.is_zero() {
+        0
+    } else {
+        (spend * Decimal::from(30) / top)
+            .round()
+            .to_usize()
+            .unwrap_or(0)
+    };
+    "█".repeat(width)
+}
+
+/// The chats the user started, by row, each with the spend of the sessions it started, largest
+/// first. A subagent whose chat was not loaded is its own root, but it is not a conversation. A chat
+/// that, with its subagents, used no tokens is left out.
+pub(crate) fn chats(rows: &[Row]) -> Vec<(usize, Decimal)> {
+    let mut found: HashMap<usize, (Decimal, u64)> = HashMap::new();
+    for row in rows {
+        let entry = found.entry(row.root).or_default();
+        entry.0 += row.cost.spend;
+        entry.1 += row.cost.tokens.total();
+    }
+    let mut chats: Vec<(usize, Decimal)> = found
+        .into_iter()
+        .filter(|&(root, (_, tokens))| rows[root].session.kind == Kind::Primary && tokens > 0)
+        .map(|(root, (spend, _))| (root, spend))
+        .collect();
+    chats.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    chats
 }
 
 impl Report<'_> {
@@ -373,24 +509,20 @@ impl Report<'_> {
         self.totals(&mut out, &all);
 
         if let Some(taxonomy) = self.taxonomy {
-            let work = buckets(&self.rows, |row| {
+            let work = groups(&self.rows, |row| {
                 category(row, &taxonomy.work, |label| &label.work)
             });
             grouped(&mut out, p, "By type of work", &work, &all, None);
-            let topics = buckets(&self.rows, |row| {
+            let topics = groups(&self.rows, |row| {
                 category(row, &taxonomy.topics, |label| &label.topic)
             });
             grouped(&mut out, p, "By topic", &topics, &all, None);
         }
 
         self.models(&mut out, &all);
-        let projects = buckets(&self.rows, |row| (row.place.project.clone(), String::new()));
+        let projects = groups(&self.rows, |row| (row.place.project.clone(), String::new()));
         grouped(&mut out, p, "By project", &projects, &all, self.top);
-        let repos = buckets(&self.rows, |row| {
-            let repo = &row.place.repo;
-            let repo = if repo.is_empty() { NO_REPO } else { repo };
-            (repo.to_string(), String::new())
-        });
+        let repos = groups(&self.rows, repo);
         grouped(&mut out, p, "By repo", &repos, &all, self.top);
         self.days(&mut out);
         self.top(&mut out);
@@ -493,47 +625,35 @@ impl Report<'_> {
     /// Requests, tokens, and spend per client and model.
     fn models(&self, out: &mut String, all: &Totals) {
         let p = self.paint;
-        let mut models: BTreeMap<String, ModelUse> = BTreeMap::new();
-        for row in &self.rows {
-            for (usage, price) in row.session.usage.iter().zip(&row.cost.requests) {
-                let name = format!("  {} / {}", row.session.client.name(), usage.model);
-                let model = models.entry(name).or_default();
-                model.requests += 1;
-                model.tokens += usage.tokens();
-                match price {
-                    Some(cost) => model.spend += cost,
-                    None => model.unpriced += 1,
-                }
-            }
+        let mut listed = models(&self.rows);
+        for model in &mut listed {
+            model.name = format!("  {}", model.name);
         }
-        // A model whose requests used no tokens is left out.
-        let mut listed: Vec<_> = models
-            .into_iter()
-            .filter(|(_, model)| model.tokens > 0)
-            .collect();
-        listed.sort_by(|a, b| b.1.spend.cmp(&a.1.spend).then(a.0.cmp(&b.0)));
         let shown = shown(listed.len(), self.top);
         let rest = listed.split_off(shown);
         if !rest.is_empty() {
-            let mut sum = ModelUse::default();
-            for (_, model) in &rest {
+            let mut sum = ModelUse {
+                name: others(rest.len()),
+                ..ModelUse::default()
+            };
+            for model in &rest {
                 sum.requests += model.requests;
                 sum.tokens += model.tokens;
                 sum.spend += model.spend;
                 sum.unpriced += model.unpriced;
             }
-            listed.push((others(rest.len()), sum));
+            listed.push(sum);
         }
         let rows: Vec<Vec<String>> = listed
             .into_iter()
-            .map(|(name, model)| {
+            .map(|model| {
                 let spend = if model.unpriced == model.requests {
                     p.tone(Tone::Warning, "no price")
                 } else {
                     p.tone(Tone::Money, &money(model.spend))
                 };
                 vec![
-                    p.tone(Tone::Plain, &name),
+                    p.tone(Tone::Plain, &model.name),
                     p.tone(Tone::Plain, &model.requests.to_string()),
                     p.tone(Tone::Plain, &count(model.tokens)),
                     spend,
@@ -553,29 +673,16 @@ impl Report<'_> {
 
     /// Spend per local day of the request, with a bar.
     fn days(&self, out: &mut String) {
-        let mut days: BTreeMap<String, Decimal> = BTreeMap::new();
-        for row in &self.rows {
-            for (usage, price) in row.session.usage.iter().zip(&row.cost.requests) {
-                *days.entry(local_day(usage.at)).or_default() += price.unwrap_or_default();
-            }
-        }
+        let days = days(&self.rows);
         let p = self.paint;
-        let top = days.values().copied().max().unwrap_or_default();
+        let top = days.iter().map(|day| day.spend).max().unwrap_or_default();
         writeln!(out, "{}", p.tone(Tone::Heading, "By day")).unwrap();
-        for (day, spend) in &days {
-            let width = if top.is_zero() {
-                0
-            } else {
-                (spend * Decimal::from(30) / top)
-                    .round()
-                    .to_usize()
-                    .unwrap_or(0)
-            };
+        for DaySpend { day, spend, .. } in &days {
             writeln!(
                 out,
                 "  {day}  {}  {}",
                 p.tone(Tone::Money, &format!("{:>10}", money(*spend))),
-                p.tone(Tone::Accent, &"█".repeat(width))
+                p.tone(Tone::Accent, &bar(*spend, top))
             )
             .unwrap();
         }
@@ -584,22 +691,7 @@ impl Report<'_> {
 
     /// The chats that cost the most, each with the sessions it started.
     fn top(&self, out: &mut String) {
-        let mut found: HashMap<usize, (Decimal, u64)> = HashMap::new();
-        for row in &self.rows {
-            let entry = found.entry(row.root).or_default();
-            entry.0 += row.cost.spend;
-            entry.1 += row.cost.tokens.total();
-        }
-        // A subagent whose chat was not loaded is its own root, but it is not a conversation. A
-        // chat that, with its subagents, used no tokens is left out.
-        let mut chats: Vec<(usize, Decimal)> = found
-            .into_iter()
-            .filter(|&(root, (_, tokens))| {
-                self.rows[root].session.kind == Kind::Primary && tokens > 0
-            })
-            .map(|(root, (spend, _))| (root, spend))
-            .collect();
-        chats.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        let chats = chats(&self.rows);
         let p = self.paint;
         let heading = match self.top {
             Some(n) => format!("Top {n} conversations by spend"),
@@ -673,7 +765,7 @@ impl Report<'_> {
             .iter()
             .map(|pr| {
                 let name = format!("  {}", pr.url);
-                line(&name, pr.sessions.to_string(), pr.spend, pr.split)
+                line(&name, pr.rows.len().to_string(), pr.spend, pr.split)
             })
             .collect();
         // A session can work on several of the rest, so their sessions are not added up.
@@ -792,7 +884,7 @@ impl Report<'_> {
 
 /// The local date of a moment, with the time zone's offset at that moment, so daylight saving time
 /// moves no request to the wrong day.
-fn local_day(at: DateTime<Utc>) -> String {
+pub(crate) fn local_day(at: DateTime<Utc>) -> String {
     at.with_timezone(&Local).format("%Y-%m-%d").to_string()
 }
 
@@ -881,23 +973,25 @@ mod tests {
 
     #[test]
     fn puts_the_groups_past_the_limit_in_one_row() {
-        let row = |cents: i64| {
-            vec![(
-                String::new(),
-                Totals {
+        let group = |name: &str, cents: i64| Group {
+            line: Line {
+                name: name.to_string(),
+                rows: Vec::new(),
+                totals: Totals {
                     conversations: 1,
                     spend: Decimal::new(cents, 2),
                     ..Totals::default()
                 },
-            )]
+            },
+            members: Vec::new(),
         };
-        let groups: Vec<_> = [("a", 400), ("b", 300), ("c", 200), ("d", 100)]
+        let groups: Vec<Group> = [("a", 400), ("b", 300), ("c", 200), ("d", 100)]
             .into_iter()
-            .map(|(name, cents)| (name.to_string(), row(cents)))
+            .map(|(name, cents)| group(name, cents))
             .collect();
         let mut all = Totals::default();
-        for (_, members) in &groups {
-            all += &members[0].1;
+        for group in &groups {
+            all += &group.line.totals;
         }
         let mut out = String::new();
         grouped(&mut out, Paint::OFF, "By project", &groups, &all, Some(2));
@@ -921,59 +1015,79 @@ mod tests {
     }
 
     #[test]
-    fn leaves_out_rows_with_no_conversations_and_no_tokens() {
-        let row = |conversations: u64, output: u64, cents: i64| Totals {
-            conversations,
-            tokens: Tokens {
-                output,
-                ..Tokens::default()
-            },
-            spend: Decimal::new(cents, 2),
-            ..Totals::default()
+    fn leaves_out_lines_with_no_conversations_and_no_tokens() {
+        use crate::account::{cost, tests::session};
+
+        let idle = |mut session: Session| {
+            session.usage.clear();
+            session
         };
-        let groups = vec![
+        let sessions = [
             (
-                "Software".to_string(),
-                vec![
-                    ("Writing code".to_string(), row(100, 1_000_000, 100_000)),
-                    ("Learning".to_string(), row(1, 0, 0)),
-                    ("Testing".to_string(), row(0, 10, 1)),
-                    // Tokens on a model with no price: no spend, but not empty.
-                    ("Debugging".to_string(), row(0, 10, 0)),
-                    ("Brainstorming".to_string(), row(0, 0, 0)),
-                ],
+                "Software",
+                "Writing code",
+                session("a", Kind::Primary, None, 1),
             ),
             (
-                "Design".to_string(),
-                vec![("Naming".to_string(), row(0, 0, 0))],
+                "Software",
+                "Learning",
+                idle(session("b", Kind::Primary, None, 1)),
+            ),
+            (
+                "Software",
+                "Testing",
+                session("c", Kind::Subagent, Some("a"), 1),
+            ),
+            (
+                "Software",
+                "Brainstorming",
+                idle(session("d", Kind::Subagent, Some("a"), 1)),
+            ),
+            (
+                "Design",
+                "Naming",
+                idle(session("e", Kind::Subagent, Some("a"), 1)),
             ),
         ];
-        let mut all = Totals::default();
-        for (_, members) in &groups {
-            for (_, totals) in members {
-                all += totals;
-            }
-        }
-        let mut out = String::new();
-        grouped(&mut out, Paint::OFF, "By type of work", &groups, &all, None);
-        for kept in ["Writing code", "Learning", "Testing", "Debugging"] {
-            assert!(out.contains(kept), "{kept} missing:\n{out}");
-        }
-        for dropped in ["Brainstorming", "Design", "Naming"] {
-            assert!(!out.contains(dropped), "{dropped} shown:\n{out}");
-        }
-
-        // A group left out is not counted in the row past the limit.
-        let mut out = String::new();
-        grouped(
-            &mut out,
-            Paint::OFF,
-            "By type of work",
-            &groups,
-            &all,
-            Some(1),
-        );
-        assert!(!out.contains("other"), "{out}");
+        let prices = PriceTable::built_in();
+        let place = Place {
+            project: "app".to_string(),
+            repo: "app".to_string(),
+        };
+        let rows: Vec<Row> = sessions
+            .iter()
+            .map(|(_, _, session)| Row {
+                session,
+                cost: cost(session, &prices),
+                label: None,
+                root: 0,
+                place: &place,
+            })
+            .collect();
+        let groups = groups(&rows, |row| {
+            let at = rows
+                .iter()
+                .position(|r| r.session.id == row.session.id)
+                .unwrap();
+            (sessions[at].0.to_string(), sessions[at].1.to_string())
+        });
+        let names: Vec<(&str, Vec<&str>)> = groups
+            .iter()
+            .map(|g| {
+                (
+                    g.line.name.as_str(),
+                    g.members.iter().map(|m| m.name.as_str()).collect(),
+                )
+            })
+            .collect();
+        // Learning has a conversation and Testing has tokens; the others have neither.
+        assert_eq!(names.len(), 1, "{:?}", names);
+        assert_eq!(names[0].0, "Software");
+        let mut members = names[0].1.clone();
+        members.sort_unstable();
+        assert_eq!(members, ["Learning", "Testing", "Writing code"]);
+        // The group's own line still holds every row, so its sums match its members'.
+        assert_eq!(groups[0].line.rows.len(), 4);
     }
 
     #[test]
