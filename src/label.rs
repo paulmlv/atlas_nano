@@ -272,6 +272,27 @@ pub fn billing_note(paint: Paint, clients: &[Client]) -> String {
     }
 }
 
+/// `value` to one significant figure: the estimate is only good to its order of magnitude.
+fn rough(value: Decimal) -> Decimal {
+    value
+        .round_sf_with_strategy(1, rust_decimal::RoundingStrategy::MidpointAwayFromZero)
+        .unwrap_or(value)
+        .normalize()
+}
+
+/// A count to one significant figure, shortened: 40581319 is `40M`.
+fn rough_count(count: u64) -> String {
+    let value = rough(Decimal::from(count));
+    let (unit, suffix) = if value >= Decimal::from(1_000_000) {
+        (Decimal::from(1_000_000), "M")
+    } else if value >= Decimal::from(1_000) {
+        (Decimal::from(1_000), "k")
+    } else {
+        (Decimal::ONE, "")
+    };
+    format!("{}{suffix}", (value / unit).normalize())
+}
+
 /// Who pays for the calls. Claude Code bills an exported `ANTHROPIC_API_KEY` before a subscription.
 fn billing(charged: bool) -> &'static str {
     if charged {
@@ -419,11 +440,7 @@ pub fn label(
 
     // The estimate: what will be sent, before anything is.
     let calls: usize = pending.iter().map(|plan| plan.prompts.len()).sum();
-    let characters: usize = pending
-        .iter()
-        .flat_map(|plan| &plan.prompts)
-        .map(String::len)
-        .sum();
+    // Each call sends the instructions, the conversation, and the client's own context.
     let per_call = |characters: usize| -> u64 {
         #[allow(
             clippy::cast_possible_truncation,
@@ -470,12 +487,12 @@ pub fn label(
         ))
     );
     let cost = estimate.map_or("no price for this model".to_string(), |cost| {
-        paint.tone(
-            Tone::Money,
-            &format!("about ${} API-equivalent", cost.round_dp(2)),
-        )
+        paint.tone(Tone::Money, &format!("${}", rough(cost)))
     });
-    eprintln!("  {characters} characters to send, roughly {tokens} tokens, {cost}");
+    eprintln!(
+        "  Estimated tokens: {} · API-equivalent: {cost}",
+        rough_count(tokens)
+    );
     if !pending.is_empty() {
         eprintln!("  {}", billing_note(paint, &[client]));
     }
@@ -656,6 +673,20 @@ pub fn label(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rounds_the_estimate_to_one_figure() {
+        assert_eq!(rough(Decimal::new(1944, 2)).to_string(), "20");
+        assert_eq!(rough(Decimal::new(41_230, 2)).to_string(), "400");
+        assert_eq!(rough(Decimal::new(34, 3)).to_string(), "0.03");
+        assert_eq!(rough(Decimal::new(15, 1)).to_string(), "2");
+        assert_eq!(rough_count(74_347_701), "70M");
+        assert_eq!(rough_count(40_581_319), "40M");
+        assert_eq!(rough_count(999_600), "1M");
+        assert_eq!(rough_count(2_345), "2k");
+        assert_eq!(rough_count(87), "90");
+        assert_eq!(rough_count(0), "0");
+    }
 
     #[test]
     fn says_when_an_api_key_pays_for_claude_calls() {

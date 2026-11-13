@@ -75,10 +75,12 @@ does not record it. Usage counts as read only when it has both input and output 
 ### Labeling cost
 
 - After reading all sessions and before labeling, the run prints an estimate on standard error: the
-  sessions to label, the calls, the characters to send, and a rough token count and API-equivalent
-  cost. Tokens are estimated at 2.3 characters per token for a Claude labeler and 3.6 for a Codex
-  labeler, plus each client's fixed context per call. The cost assumes Claude Code writes each
-  prompt to its one-hour cache, as it does.
+  sessions to label, the calls, and the estimated tokens and API-equivalent cost. Each call's tokens
+  count the labeling instructions and the conversation, at 2.3 characters per token for a Claude
+  labeler and 3.6 for a Codex labeler, plus the client's fixed context. The cost assumes Claude
+  Code writes each prompt to its one-hour cache, as it does. The tokens and cost are shown to one
+  significant figure, such as `40M` and `$20`, since the estimate is only good to its order of
+  magnitude.
 - By default the run then proceeds. With `--confirm` it asks first.
 - While the calls run, a progress bar on standard error shows the calls done, the time spent, and an
   estimate of the time left. Each retry of failed calls prints how many it retries and has its own
