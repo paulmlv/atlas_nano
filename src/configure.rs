@@ -1,4 +1,4 @@
-//! `atlas-nano configure`: detect the clients, ask for the settings, test a call, and save.
+//! `atlas-nano configure`: detect the clients, ask for the settings, test the labeler, and save.
 
 use std::fs;
 use std::io::{self, BufRead as _, Write as _};
@@ -212,8 +212,6 @@ pub fn configure() -> Result<(), String> {
             _ => vec![Client::Codex],
         },
     };
-    // Said once, before the test calls, which an exported API key pays for like any other.
-    println!("{}", label::billing_note(paint, &installed));
     // Each client labels with one model for now: Claude Code when it is installed, otherwise Codex.
     let offered: Vec<String> = installed
         .iter()
@@ -233,6 +231,9 @@ pub fn configure() -> Result<(), String> {
                 .expect("the choice was offered")]
         }
     };
+    // Said for the chosen labeler only, before the test call, which an exported API key pays for
+    // like any other.
+    println!("{}", label::billing_note(paint, &[client]));
     // Confirmed before any call or save, so the user can stop here and choose again.
     if let Some(notice) = provider_notice(&covered, client) {
         println!("{}", paint.tone(Tone::Warning, &notice));
@@ -275,20 +276,9 @@ pub fn configure() -> Result<(), String> {
         .expect("offered")];
     paint = paint.with(theme);
 
-    // Only the labeler's call must work; another client's failure is reported and not used.
-    println!(
-        "{}",
-        paint.dim("testing a labeling call for each installed client")
-    );
-    for &tested in &installed {
-        match test_call(paint, tested, labeling_model(tested)) {
-            Err(error) if tested != client => {
-                let note = format!("warning: {error}; it does not label, so configuration goes on");
-                println!("  {}", paint.tone(Tone::Warning, &note));
-            }
-            result => result?,
-        }
-    }
+    // Only the chosen labeler is tested: another client's call would cost and change nothing.
+    println!("{}", paint.dim("testing a labeling call"));
+    test_call(paint, client, labeling_model(client))?;
     let config = Config {
         unit: "conversation".to_string(),
         coverage: covered,
