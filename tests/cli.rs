@@ -138,7 +138,12 @@ fn run_needs_a_configuration() {
 fn a_failed_call_is_retried_unless_retries_are_off() {
     let sandbox = Sandbox::new("retried");
     sandbox.session("flaky", "A FLAKY request", 1);
-    assert!(sandbox.answer(&["configure"], "\n\n\n\n").status.success());
+    assert!(
+        sandbox
+            .answer(&["configure"], "\n\n\n\n\n")
+            .status
+            .success()
+    );
     assert_eq!(sandbox.calls(), 1);
 
     // With retries off, the first failure leaves the session unlabeled.
@@ -178,8 +183,8 @@ fn configure_then_run_labels_reports_and_reuses_the_cache() {
     assert!(!sandbox.root.join("config/atlas-nano/config.toml").exists());
 
     // Blank answers take the defaults: tool calls kept, pull requests mapped, once 0 is refused 32
-    // calls at once, and the minimal theme.
-    let configured = sandbox.answer(&["configure"], "\n\n0\n\n\n");
+    // calls at once, 10 rows in the ranked tables, and the minimal theme.
+    let configured = sandbox.answer(&["configure"], "\n\n0\n\n\n\n");
     let said = text(&configured.stdout);
     assert!(
         configured.status.success(),
@@ -200,6 +205,7 @@ fn configure_then_run_labels_reports_and_reuses_the_cache() {
     let saved = fs::read_to_string(sandbox.root.join("config/atlas-nano/config.toml")).unwrap();
     assert!(saved.contains("coverage = [\"claude\"]"));
     assert!(saved.contains("theme = \"minimal\""));
+    assert!(saved.contains("top = \"10\""));
     assert!(saved.contains("pull_requests = true"));
     assert!(saved.contains("jobs = 32"));
     assert!(saved.contains("retries = 1"));
@@ -228,7 +234,9 @@ fn configure_then_run_labels_reports_and_reuses_the_cache() {
         "in 200 · out 10 tokens · API-equivalent $0.02",
         // Three sessions of 1,000 input and 1,000,000 output Haiku tokens each.
         "Spend (API-equivalent)  $1.50",
-        "Pull requests (~ marks an amount split across several)",
+        "By project (top 10)",
+        "Top 10 conversations by spend",
+        "Top 10 pull requests by spend (~ marks an amount split across several)",
         "https://github.com/owner/repo/pull/7",
     ] {
         assert!(
