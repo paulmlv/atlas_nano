@@ -21,6 +21,17 @@ pub struct Labeler {
     pub pull_requests: bool,
     /// How many labeling calls run at once.
     pub jobs: usize,
+    /// How many more times a failed labeling call is tried. A file saved before this setting
+    /// existed gets the default.
+    #[serde(default = "default_retries")]
+    pub retries: usize,
+}
+
+/// One more try for a failed labeling call.
+pub const DEFAULT_RETRIES: usize = 1;
+
+fn default_retries() -> usize {
+    DEFAULT_RETRIES
 }
 
 /// What `atlas-nano configure` saves.
@@ -139,6 +150,7 @@ pub mod tests {
                 tools: true,
                 pull_requests: false,
                 jobs: 16,
+                retries: 1,
             },
         }
     }
@@ -151,6 +163,13 @@ pub mod tests {
         assert!(Config::decode(&saved.replace("\"codex\"]", "\"cursor\"]")).is_err());
         assert!(Config::decode(&saved.replace("conversation", "turn")).is_err());
         assert!(Config::decode(&saved.replace("jobs = 16", "jobs = 0")).is_err());
+        // A file saved before retries existed gets one retry; zero turns them off.
+        assert_eq!(
+            Config::decode(&saved.replace("retries = 1\n", "")),
+            Ok(config())
+        );
+        let none = Config::decode(&saved.replace("retries = 1", "retries = 0")).unwrap();
+        assert_eq!(none.labeler.retries, 0);
         assert!(Config::decode(&saved.replace("\"soft\"", "\"neon\"")).is_err());
         // Each client labels with one model: Haiku through Claude Code, Luna through Codex.
         assert!(Config::decode(&saved.replace("claude-haiku-5-5", "claude-opus-5-5")).is_err());
