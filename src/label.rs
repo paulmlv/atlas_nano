@@ -260,11 +260,12 @@ fn api_key() -> bool {
     std::env::var_os("ANTHROPIC_API_KEY").is_some_and(|key| !key.is_empty())
 }
 
-/// The billing note for `client`'s calls: a warning when they are a real charge, else a quiet aside.
-pub fn billing_note(paint: Paint, client: Client) -> String {
-    let api_key = api_key();
-    let note = billing(client, api_key);
-    if api_key && client == Client::Claude {
+/// The billing note for calls through `clients`: a warning when they are a real charge, else a
+/// quiet aside.
+pub fn billing_note(paint: Paint, clients: &[Client]) -> String {
+    let charged = api_key() && clients.contains(&Client::Claude);
+    let note = billing(charged);
+    if charged {
         format!("{} {note}", paint.tone(Tone::Warning, "warning:"))
     } else {
         paint.dim(note)
@@ -272,20 +273,13 @@ pub fn billing_note(paint: Paint, client: Client) -> String {
 }
 
 /// Who pays for the calls. Claude Code bills an exported `ANTHROPIC_API_KEY` before a subscription.
-fn billing(client: Client, api_key: bool) -> &'static str {
-    match client {
-        Client::Claude if api_key => {
-            "ANTHROPIC_API_KEY is set, so Claude Code bills these calls to that API key: the dollar \
-             figure is a charge."
-        }
-        Client::Claude => {
-            "The calls go through your signed-in Claude Code client: on a subscription they use \
-             your plan's limits, and the dollar figure is what the API would cost, not a charge."
-        }
-        Client::Codex => {
-            "The calls go through your signed-in Codex client: on a subscription they use your \
-             plan's limits, and the dollar figure is what the API would cost, not a charge."
-        }
+fn billing(charged: bool) -> &'static str {
+    if charged {
+        "ANTHROPIC_API_KEY is set, so Claude Code bills these calls to that API key: the dollar \
+         figure is a charge."
+    } else {
+        "We label conversations with your signed-in account. On a subscription this counts \
+         toward your plan's limits; on an API account it is a charge."
     }
 }
 
@@ -483,7 +477,7 @@ pub fn label(
     });
     eprintln!("  {characters} characters to send, roughly {tokens} tokens, {cost}");
     if !pending.is_empty() {
-        eprintln!("  {}", billing_note(paint, client));
+        eprintln!("  {}", billing_note(paint, &[client]));
     }
     if confirm && !pending.is_empty() {
         eprint!("{} {} ", paint.bold("Proceed?"), paint.dim("(y / n) [n]"));
@@ -636,10 +630,8 @@ mod tests {
 
     #[test]
     fn says_when_an_api_key_pays_for_claude_calls() {
-        assert!(billing(Client::Claude, true).contains("ANTHROPIC_API_KEY"));
-        assert!(billing(Client::Claude, false).contains("not a charge"));
-        // Codex does not read ANTHROPIC_API_KEY.
-        assert!(billing(Client::Codex, true).contains("not a charge"));
+        assert!(billing(true).contains("ANTHROPIC_API_KEY"));
+        assert!(billing(false).contains("plan's limits"));
     }
 
     #[test]

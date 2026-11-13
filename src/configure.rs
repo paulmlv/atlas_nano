@@ -32,14 +32,17 @@ fn label(client: Client) -> &'static str {
 
 /// Ask a question on the terminal, showing what can be answered and the default in brackets.
 ///
-/// An empty answer takes the default. The end of input cancels, so nothing is saved: a closed or
-/// empty input never stands for the defaults.
+/// An empty hint is left out. An empty answer takes the default. The end of input cancels, so
+/// nothing is saved: a closed or empty input never stands for the defaults.
 fn ask(question: &str, hint: &str, default: &str) -> Result<String, String> {
     let paint = Paint::stdout(Theme::default());
+    let hint = match hint {
+        "" => String::new(),
+        _ => format!("{} ", paint.dim(&format!("({hint})"))),
+    };
     print!(
-        "{} {} {} ",
+        "{} {hint}{} ",
         paint.bold(question),
-        paint.dim(&format!("({hint})")),
         paint.tone(Tone::Accent, &format!("[{default}]"))
     );
     io::stdout().flush().map_err(|error| error.to_string())?;
@@ -89,8 +92,8 @@ fn yes(question: &str, default: bool) -> Result<bool, String> {
     Ok(choose(question, &["y", "n"], if default { "y" } else { "n" })? == "y")
 }
 
-/// The warning when the labeler would read another provider's conversations, if it would.
-pub fn provider_warning(coverage: &[Client], labeler: Client) -> Option<String> {
+/// The notice when the labeler would read another provider's conversations, if it would.
+pub fn provider_notice(coverage: &[Client], labeler: Client) -> Option<String> {
     let other = coverage.iter().find(|client| **client != labeler)?;
     let provider = if labeler == Client::Claude {
         "Anthropic"
@@ -98,7 +101,7 @@ pub fn provider_warning(coverage: &[Client], labeler: Client) -> Option<String> 
         "OpenAI"
     };
     Some(format!(
-        "warning: {} conversations will be sent to {provider}, because {} labels every session",
+        "{} conversations will be sent to {provider}, because {} labels every session",
         label(*other),
         label(labeler)
     ))
@@ -209,10 +212,8 @@ pub fn configure() -> Result<(), String> {
             _ => vec![Client::Codex],
         },
     };
-    // Said before the test calls, which an exported API key pays for like any other.
-    for &client in &installed {
-        println!("{}", label::billing_note(paint, client));
-    }
+    // Said once, before the test calls, which an exported API key pays for like any other.
+    println!("{}", label::billing_note(paint, &installed));
     // Each client labels with one model for now: Claude Code when it is installed, otherwise Codex.
     let offered: Vec<String> = installed
         .iter()
@@ -232,9 +233,19 @@ pub fn configure() -> Result<(), String> {
                 .expect("the choice was offered")]
         }
     };
-    // Warned before any call or save, so the user can stop here and choose again.
-    if let Some(warning) = provider_warning(&covered, client) {
-        println!("{}", paint.tone(Tone::Warning, &warning));
+    // Confirmed before any call or save, so the user can stop here and choose again.
+    if let Some(notice) = provider_notice(&covered, client) {
+        println!("{}", paint.tone(Tone::Warning, &notice));
+        if !yes("Continue?", true)? {
+            println!(
+                "{}",
+                paint.dim(
+                    "nothing saved: run configure again to choose another model or read one \
+                     client's sessions"
+                )
+            );
+            return Ok(());
+        }
     }
     let tools = !yes(
         "Leave tool calls out of what is sent (no-tools mode)?",
@@ -242,7 +253,7 @@ pub fn configure() -> Result<(), String> {
     )?;
     let pull_requests = yes("Map conversations to pull requests (experimental)?", false)?;
     let jobs = loop {
-        match ask("How many labeling calls at once?", "a whole number", "32")?.parse::<usize>() {
+        match ask("How many labeling calls at once?", "", "32")?.parse::<usize>() {
             Ok(jobs) if jobs > 0 => break jobs,
             _ => println!(
                 "  {}",
@@ -302,13 +313,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn warns_only_when_another_providers_conversations_are_sent() {
+    fn notices_only_when_another_providers_conversations_are_sent() {
         let both = [Client::Claude, Client::Codex];
-        let warning = provider_warning(&both, Client::Claude).unwrap();
-        assert!(warning.contains("Codex/ChatGPT conversations will be sent to Anthropic"));
-        let warning = provider_warning(&both, Client::Codex).unwrap();
-        assert!(warning.contains("Claude Code conversations will be sent to OpenAI"));
-        assert_eq!(provider_warning(&[Client::Claude], Client::Claude), None);
+        let notice = provider_notice(&both, Client::Claude).unwrap();
+        assert!(notice.contains("Codex/ChatGPT conversations will be sent to Anthropic"));
+        let notice = provider_notice(&both, Client::Codex).unwrap();
+        assert!(notice.contains("Claude Code conversations will be sent to OpenAI"));
+        assert_eq!(provider_notice(&[Client::Claude], Client::Claude), None);
         assert_eq!(provider_model(Client::Claude), "anthropic/claude-haiku-5-5");
         assert_eq!(provider_model(Client::Codex), "openai/gpt-6-luna");
     }
