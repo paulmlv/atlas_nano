@@ -16,9 +16,9 @@ curl -fsSL https://github.com/paulmlv/atlas_nano/releases/latest/download/instal
 ```
 
 The [script](install.sh) downloads the latest release's binary, checks its SHA-256, and puts it in
-`~/.local/bin`. Set `ATLAS_NANO_INSTALL_DIR` for another folder, or `ATLAS_NANO_VERSION=v0.1.0`
-for a given release. A failed download in the command above still exits 0; in a script, download
-first with `curl -fsSLO <url> && sh install.sh`.
+`~/.local/bin`. Set `ATLAS_NANO_INSTALL_DIR` for another folder, or `ATLAS_NANO_VERSION=v0.1.0` for
+a given release. A failed download in the command above still exits 0; in a script, download first
+with `curl -fsSLO <url> && sh install.sh`.
 
 To remove it, delete the binary, the settings in `~/.config/atlas-nano/`, and the label cache in
 `~/.cache/atlas-nano/`.
