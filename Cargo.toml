@@ -1,6 +1,6 @@
 [package]
 name = "atlas-nano"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.99"
 description = "Atlas Nano labels and accounts for all local Claude Code and Codex conversations to give insight into AI spend."
