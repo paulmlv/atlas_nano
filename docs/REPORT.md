@@ -25,22 +25,23 @@ By type of work    Convs  Conv%  Subagents  Turns  Working  Wall  Tokens    Spen
 
 By topic             (same columns, topics under their domains)
 
-By client / model          Requests  Tokens    Spend  Spend%
-  claude / claude-opus-5-5     3210    250M  $301.20     73%
+By client / model (top 10)  Requests  Tokens    Spend  Spend%
+  claude / claude-opus-5-5       3210    250M  $301.20     73%
   ...
+  (3 others)                       52    1.2M    $0.40      0%
 
-By project           (same columns as the category tables)
-By repo              (same columns)
+By project (top 10)  (same columns as the category tables)
+By repo (top 10)     (same columns)
 
 By day
   2026-11-09     $51.20  ██████████████
   2026-11-10    $110.42  ██████████████████████████████
 
-Top 5 conversations by spend, subagents included
+Top 10 conversations by spend, subagents included
     Conversation               Started     Project    Spend
     Fix the failing export     2026-11-10  app/api   $48.10
 
-Pull requests (~ marks an amount split across several)
+Top 10 pull requests by spend (~ marks an amount split across several)
     Pull request                             Sessions    Spend
     https://github.com/owner/repo/pull/7            3  ~$31.07
 
@@ -52,6 +53,12 @@ Prices checked 2026-11-03
 - **Category tables:** labels are listed under their group or domain, largest spend first. Sessions
   without a label are in an `Unlabeled` row, and Codex safety reviews in an `Automatic reviews` row.
   The `Subagents` column counts subagents and reviews.
+- **Ranked tables:** By client / model, By project, By repo, the conversations, and the pull
+  requests show their 10 largest rows by spend, and put the rest in one `(N others)` row, so the
+  rows still sum to the total. The title says `top 10`. `configure` sets the count: 10, 20, 50, or
+  `all`, which shows every row and drops `top` from the titles. The category tables are not
+  limited. The pull requests' `(N others)` row leaves Sessions empty, since one session can work
+  on several.
 - **By client / model** counts model requests, since one session can use several models. A model
   without a price shows `no price`.
 - **By project and By repo:** a chat's place is the folder it started in, and its subagents and
@@ -66,10 +73,10 @@ Prices checked 2026-11-03
   name. The home folder itself is never a repository.
 - **By day** puts each request's spend on the local day of the request, using the time zone's offset
   at that moment.
-- **Top 5** adds to each chat the spend of the subagents and reviews it started. A subagent whose
-  chat was not loaded is not ranked. A conversation is shown by its title, else by the first line of
-  its first request. Control characters and text-direction marks in titles and folder names are
-  shown as `�`.
+- **Top conversations** adds to each chat the spend of the subagents and reviews it started. A
+  subagent whose chat was not loaded is not ranked. A conversation is shown by its title, else by
+  the first line of its first request. Control characters and text-direction marks in titles and
+  folder names are shown as `�`.
 - With `--no-label` the category tables and the labeling summary are left out.
 - The pull request section appears only with pull request mapping on.
 
