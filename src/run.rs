@@ -38,9 +38,12 @@ fn name(period: Period) -> &'static str {
 }
 
 pub fn run(args: &RunArgs) -> Result<(), String> {
-    let Some(config) = Config::load()? else {
+    let Some(mut config) = Config::load()? else {
         return Err("no saved configuration; run `atlas-nano configure` first".to_string());
     };
+    if let Some(retries) = args.retries {
+        config.labeler.retries = retries;
+    }
     let now = Utc::now();
     let home = config::home()?;
     let loaded = ingest::load(&home, &config.coverage);
