@@ -166,9 +166,9 @@ fn cells(paint: Paint, strong: bool, name: &str, totals: &Totals, all: &Totals) 
     ]
 }
 
-/// Whether a row has no conversations and no spend; such rows are left out.
+/// Whether a row has no conversations and no tokens, so no spend; such rows are left out.
 fn empty(totals: &Totals) -> bool {
-    totals.conversations == 0 && totals.spend.is_zero()
+    totals.conversations == 0 && totals.tokens.total() == 0
 }
 
 /// A ranked table's title, saying how many rows it shows when they are limited.
@@ -190,7 +190,7 @@ fn shown(len: usize, top: Option<usize>) -> usize {
 }
 
 /// Print a table of groups, largest spend first, each followed by its members when it has names.
-/// Rows with no conversations and no spend are left out. With `top`, the groups past it share one
+/// Rows with no conversations and no tokens are left out. With `top`, the groups past it share one
 /// row.
 fn grouped(
     out: &mut String,
@@ -308,9 +308,10 @@ pub fn title(session: &Session) -> String {
 
 /// Split each session's spend evenly among the pull requests it worked on.
 ///
-/// Returns each pull request's sessions, its spend, and whether any of that spend was split.
+/// Returns each pull request's sessions, its spend, and whether any of that spend was split. A pull
+/// request whose sessions used no tokens is left out.
 fn pull_requests(rows: &[Row]) -> Vec<(String, u64, Decimal, bool)> {
-    let mut found: BTreeMap<&str, (u64, Decimal, bool)> = BTreeMap::new();
+    let mut found: BTreeMap<&str, (u64, Decimal, bool, u64)> = BTreeMap::new();
     for row in rows {
         let worked: Vec<&str> = row
             .label
@@ -324,11 +325,13 @@ fn pull_requests(rows: &[Row]) -> Vec<(String, u64, Decimal, bool)> {
             entry.0 += 1;
             entry.1 += row.cost.spend / Decimal::from(worked.len());
             entry.2 |= worked.len() > 1;
+            entry.3 += row.cost.tokens.total();
         }
     }
     let mut listed: Vec<_> = found
         .into_iter()
-        .map(|(url, (n, spend, split))| (url.to_string(), n, spend, split))
+        .filter(|(_, (_, _, _, tokens))| *tokens > 0)
+        .map(|(url, (n, spend, split, _))| (url.to_string(), n, spend, split))
         .collect();
     listed.sort_by(|a, b| b.2.cmp(&a.2).then(a.0.cmp(&b.0)));
     listed
@@ -524,7 +527,11 @@ impl Report<'_> {
                 }
             }
         }
-        let mut listed: Vec<_> = models.into_iter().collect();
+        // A model whose requests used no tokens is left out.
+        let mut listed: Vec<_> = models
+            .into_iter()
+            .filter(|(_, (_, tokens, _, _))| *tokens > 0)
+            .collect();
         listed.sort_by(|a, b| b.1.2.cmp(&a.1.2).then(a.0.cmp(&b.0)));
         let shown = shown(listed.len(), self.top);
         let rest = listed.split_off(shown);
@@ -598,14 +605,20 @@ impl Report<'_> {
 
     /// The chats that cost the most, each with the sessions it started.
     fn top(&self, out: &mut String) {
-        let mut spend: HashMap<usize, Decimal> = HashMap::new();
+        let mut found: HashMap<usize, (Decimal, u64)> = HashMap::new();
         for row in &self.rows {
-            *spend.entry(row.root).or_default() += row.cost.spend;
+            let entry = found.entry(row.root).or_default();
+            entry.0 += row.cost.spend;
+            entry.1 += row.cost.tokens.total();
         }
-        // A subagent whose chat was not loaded is its own root, but it is not a conversation.
-        let mut chats: Vec<(usize, Decimal)> = spend
+        // A subagent whose chat was not loaded is its own root, but it is not a conversation. A
+        // chat that, with its subagents, used no tokens is left out.
+        let mut chats: Vec<(usize, Decimal)> = found
             .into_iter()
-            .filter(|&(root, _)| self.rows[root].session.kind == Kind::Primary)
+            .filter(|&(root, (_, tokens))| {
+                self.rows[root].session.kind == Kind::Primary && tokens > 0
+            })
+            .map(|(root, (spend, _))| (root, spend))
             .collect();
         chats.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         let p = self.paint;
@@ -837,9 +850,13 @@ mod tests {
     }
 
     #[test]
-    fn leaves_out_rows_with_no_conversations_and_no_spend() {
-        let row = |conversations: u64, cents: i64| Totals {
+    fn leaves_out_rows_with_no_conversations_and_no_tokens() {
+        let row = |conversations: u64, output: u64, cents: i64| Totals {
             conversations,
+            tokens: Tokens {
+                output,
+                ..Tokens::default()
+            },
             spend: Decimal::new(cents, 2),
             ..Totals::default()
         };
@@ -847,15 +864,17 @@ mod tests {
             (
                 "Software".to_string(),
                 vec![
-                    ("Writing code".to_string(), row(100, 100_000)),
-                    ("Learning".to_string(), row(1, 0)),
-                    ("Testing".to_string(), row(0, 1)),
-                    ("Brainstorming".to_string(), row(0, 0)),
+                    ("Writing code".to_string(), row(100, 1_000_000, 100_000)),
+                    ("Learning".to_string(), row(1, 0, 0)),
+                    ("Testing".to_string(), row(0, 10, 1)),
+                    // Tokens on a model with no price: no spend, but not empty.
+                    ("Debugging".to_string(), row(0, 10, 0)),
+                    ("Brainstorming".to_string(), row(0, 0, 0)),
                 ],
             ),
             (
                 "Design".to_string(),
-                vec![("Naming".to_string(), row(0, 0))],
+                vec![("Naming".to_string(), row(0, 0, 0))],
             ),
         ];
         let mut all = Totals::default();
@@ -866,7 +885,7 @@ mod tests {
         }
         let mut out = String::new();
         grouped(&mut out, Paint::OFF, "By type of work", &groups, &all, None);
-        for kept in ["Writing code", "Learning", "Testing"] {
+        for kept in ["Writing code", "Learning", "Testing", "Debugging"] {
             assert!(out.contains(kept), "{kept} missing:\n{out}");
         }
         for dropped in ["Brainstorming", "Design", "Naming"] {
@@ -891,6 +910,65 @@ mod tests {
         assert_eq!(money(Decimal::new(125, 3)), "$0.13");
         assert_eq!(money(Decimal::new(1_234_565, 3)), "$1,234.57");
         assert_eq!(share(Decimal::new(25, 1), Decimal::from(100)), "3%");
+    }
+
+    #[test]
+    fn leaves_out_models_chats_and_pull_requests_with_no_tokens() {
+        use crate::account::{cost, tests::session};
+        use crate::model::{PrRole, PullRequest};
+
+        let mut used = session("used", Kind::Primary, None, 1);
+        used.title = Some("Busy chat".to_string());
+        let mut idle = session("idle", Kind::Primary, None, 3);
+        idle.title = Some("Idle chat".to_string());
+        idle.usage.truncate(1);
+        idle.usage[0].model = "idle-model".to_string();
+        idle.usage[0].input = 0;
+        idle.usage[0].output = 0;
+        let label = |url: &str| Label {
+            work: "Writing code".to_string(),
+            topic: "Backend and APIs".to_string(),
+            prs: vec![PullRequest {
+                url: url.to_string(),
+                role: PrRole::ContributedTo,
+            }],
+            model: "test".to_string(),
+            from_cache: false,
+        };
+        let (busy_pr, idle_pr) = (label("https://pr/busy"), label("https://pr/idle"));
+        let prices = PriceTable::built_in();
+        let place = Place {
+            project: "app".to_string(),
+            repo: "app".to_string(),
+        };
+        let rows = [(&used, &busy_pr), (&idle, &idle_pr)]
+            .into_iter()
+            .enumerate()
+            .map(|(root, (session, label))| Row {
+                session,
+                cost: cost(session, &prices),
+                label: Some(label),
+                root,
+                place: &place,
+            })
+            .collect();
+        let report = Report {
+            period: "test",
+            rows,
+            taxonomy: None,
+            labeling: None,
+            pull_requests: true,
+            top: Some(10),
+            prices: &prices,
+            paint: Paint::OFF,
+        };
+        let out = report.render();
+        for kept in ["claude-haiku-5-5", "Busy chat", "https://pr/busy"] {
+            assert!(out.contains(kept), "{kept} missing:\n{out}");
+        }
+        for dropped in ["idle-model", "Idle chat", "https://pr/idle"] {
+            assert!(!out.contains(dropped), "{dropped} shown:\n{out}");
+        }
     }
 
     #[test]
