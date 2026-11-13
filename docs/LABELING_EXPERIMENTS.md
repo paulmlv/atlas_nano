@@ -51,9 +51,9 @@ Opus is the reference. Agreement with Opus is not correctness: nobody checked Op
 - Labeling the same 100 again, Opus keeps 94 of its types of work and 90 of its topics, and Haiku 89
   and 88. Differences of a few points between models may be noise.
 - At least three of the four models agree on 86 conversations for type of work and 82 for topic.
-- Most disagreements are between neighbouring labels: Version control against the change it
-  delivers (Writing code, Refactoring and maintenance, Reviewing code), and Backend and APIs against
-  Data storage and pipelines, Developer tooling and CI, or Architecture and code quality.
+- Most disagreements are between neighbouring labels: Version control against the change it delivers
+  (Writing code, Refactoring and maintenance, Reviewing code), and Backend and APIs against Data
+  storage and pipelines, Developer tooling and CI, or Architecture and code quality.
 
 ## Effect on a report
 
@@ -84,8 +84,8 @@ conversations hold 43% of it. Five conversations have no usage record and count 
 | GPT-6 Astra | $17.33                               | 8.6                     |
 | GPT-6 Luna  | $0.17                                | 6.3                     |
 
-- Claude Code reports its cost. Codex reports none, so its cost is priced from the token counts
-  with the built-in price table.
+- Claude Code reports its cost. Codex reports none, so its cost is priced from the token counts with
+  the built-in price table.
 - Content came to about 2.4 characters per token on Claude and 3.7 on Codex, not the 4 often
   assumed, because tool input tokenizes poorly.
 - Claude Code writes each prompt to a one-hour cache at twice the input price, so Haiku came to
@@ -100,9 +100,9 @@ and about 890 with the required flags. Through Codex it takes about 22,600 with 
 configuration loaded and 5,400 with the required flags. Neither figure includes the labeling
 instructions.
 
-- With the required flags Claude Code still sends the user's email and an environment block with
-  the working directory, platform and date, and no instruction files, memory or skills. What
-  Codex's remaining tokens hold is not identified.
+- With the required flags Claude Code still sends the user's email and an environment block with the
+  working directory, platform and date, and no instruction files, memory or skills. What Codex's
+  remaining tokens hold is not identified.
 - `claude -p --no-session-persistence` and `codex exec --ephemeral` wrote no session file across the
   900 labeling calls of these measurements.
 - `claude --bare` answers "Not logged in" on a subscription, so it cannot replace the required flags
@@ -115,9 +115,9 @@ GPT-6 Astra in one call that also returned the pull requests. No call failed.
 
 - Each model found a pull request in 57 conversations: Opus returned 162 pull requests, Haiku 168
   and Astra 172.
-- The models agree. Haiku and Opus return the same set in 96 conversations and give the same role
-  to 148 of the 161 pull requests they share. Haiku and Astra return the same set in 96, Opus and
-  Astra in 95.
+- The models agree. Haiku and Opus return the same set in 96 conversations and give the same role to
+  148 of the 161 pull requests they share. Haiku and Astra return the same set in 96, Opus and Astra
+  in 95.
 - Every pull request that only one model returns, compared with another, is Mentioned only.
 - Of the pull requests that receive cost, Haiku and Opus share 60; Haiku alone has 7 and Opus
   alone 3.

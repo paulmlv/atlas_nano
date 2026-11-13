@@ -53,8 +53,8 @@ Prices checked 2026-11-03
 - **Category tables:** labels are listed under their group or domain, largest spend first. Sessions
   without a label are in an `Unlabeled` row, and Codex safety reviews in an `Automatic reviews` row.
   The `Subagents` column counts subagents and reviews. A row that rounds to 0% of both conversations
-  and spend is left out, here and in By project and By repo, so the shown rows can sum to less
-  than the total.
+  and spend is left out, here and in By project and By repo, so the shown rows can sum to less than
+  the total.
 - **Ranked tables:** By client / model, By project, By repo, the conversations, and the pull
   requests show their 10 largest rows by spend, and put the rest in one `(N others)` row, so the
   rows still sum to the total, apart from the 0% rows By project and By repo leave out, which are

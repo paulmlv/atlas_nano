@@ -15,8 +15,8 @@ with records the longest lacks would lose them silently.
 ## A Codex child belongs to the latest version of its parent thread
 
 Each edit of a Codex chat is a new rollout in the same thread. A subagent or Guardian review that
-records only the parent thread is assigned to the latest rollout of that thread created at or
-before the child, by the rollouts' own creation times. A recorded rollout link takes precedence.
+records only the parent thread is assigned to the latest rollout of that thread created at or before
+the child, by the rollouts' own creation times. A recorded rollout link takes precedence.
 
 **Risk:** if an older rollout of the thread was still active and spawned the child, the child and
 its spend land with the newer version, possibly in the wrong period.
