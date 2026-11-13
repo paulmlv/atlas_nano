@@ -2,13 +2,14 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::{self, Write as _};
+use std::io::{self, IsTerminal as _, Write as _};
 
 use chrono::{Duration, Utc};
 
 use crate::account;
 use crate::cli::{Period, RunArgs};
-use crate::config::{self, Config};
+use crate::config::{self, Config, Output};
+use crate::dashboard;
 use crate::ingest;
 use crate::label;
 use crate::model::{Client, Session};
@@ -37,10 +38,21 @@ fn name(period: Period) -> &'static str {
     }
 }
 
+/// Whether to show the interactive view: `--output` when given, else the saved setting. Without a
+/// terminal the saved setting prints, and `--output tui` is an error.
+fn shows_view(flag: Option<Output>, saved: Output, terminal: bool) -> Result<bool, String> {
+    match (flag, terminal) {
+        (Some(Output::Tui), false) => Err("--output tui needs a terminal".to_string()),
+        _ => Ok(terminal && flag.unwrap_or(saved) == Output::Tui),
+    }
+}
+
 pub fn run(args: &RunArgs) -> Result<(), String> {
     let Some(mut config) = Config::load()? else {
         return Err("no saved configuration; run `atlas-nano configure` first".to_string());
     };
+    // Decided first, so no labeling is spent on a view that cannot be shown.
+    let view = shows_view(args.output, config.output, io::stdout().is_terminal())?;
     if let Some(retries) = args.retries {
         config.labeler.retries = retries;
     }
@@ -137,8 +149,30 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
     if let Some(path) = &args.json {
         write(path, report.json())?;
     }
+    if view {
+        return dashboard::show(&report);
+    }
     match io::stdout().lock().write_all(report.render().as_bytes()) {
         Err(error) if error.kind() != io::ErrorKind::BrokenPipe => Err(error.to_string()),
         _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_flag_wins_and_only_a_terminal_shows_the_view() {
+        use Output::{Print, Tui};
+        // On a terminal: the flag when given, else the saved setting.
+        assert_eq!(shows_view(None, Tui, true), Ok(true));
+        assert_eq!(shows_view(None, Print, true), Ok(false));
+        assert_eq!(shows_view(Some(Tui), Print, true), Ok(true));
+        assert_eq!(shows_view(Some(Print), Tui, true), Ok(false));
+        // To a file or a pipe: the saved setting prints, and only an asked-for view fails.
+        assert_eq!(shows_view(None, Tui, false), Ok(false));
+        assert_eq!(shows_view(Some(Print), Tui, false), Ok(false));
+        assert!(shows_view(Some(Tui), Print, false).is_err());
     }
 }

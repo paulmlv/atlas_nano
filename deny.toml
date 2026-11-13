@@ -10,10 +10,10 @@ version = 2
 yanked = "deny"
 
 # Only permissive licenses that let Atlas Nano ship under MIT. BSD-3-Clause is zstd's;
-# Unicode-3.0 is unicode-ident's data tables.
+# Unicode-3.0 is unicode-ident's data tables; Zlib is foldhash's, through ratatui.
 [licenses]
 version = 2
-allow = ["Apache-2.0", "BSD-3-Clause", "MIT", "Unicode-3.0"]
+allow = ["Apache-2.0", "BSD-3-Clause", "MIT", "Unicode-3.0", "Zlib"]
 
 # Warn when two versions of one crate are built; refuse wildcard version requirements.
 [bans]

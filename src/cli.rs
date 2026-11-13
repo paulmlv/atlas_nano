@@ -4,6 +4,8 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
+use crate::config::Output;
+
 /// Atlas Nano labels and accounts for local Claude Code and Codex conversations.
 #[derive(Debug, Parser)]
 #[command(name = "atlas-nano", version)]
@@ -49,6 +51,10 @@ pub struct RunArgs {
     /// Try a failed labeling call this many more times, instead of the saved setting.
     #[arg(long, value_name = "N")]
     pub retries: Option<usize>,
+
+    /// How to show the report, instead of the saved setting.
+    #[arg(long, value_enum, value_name = "MODE")]
+    pub output: Option<Output>,
 }
 
 /// Which sessions a run covers, by when their conversation started.
@@ -90,6 +96,7 @@ mod tests {
         assert_eq!(run.csv, None);
         assert_eq!(run.json, None);
         assert_eq!(run.retries, None);
+        assert_eq!(run.output, None);
     }
 
     #[test]
@@ -106,7 +113,10 @@ mod tests {
             "--confirm",
             "--retries",
             "0",
+            "--output",
+            "print",
         ]);
+        assert_eq!(run.output, Some(Output::Print));
         assert_eq!(run.period, Period::Days30);
         assert!(run.no_cache);
         assert!(run.no_label);
