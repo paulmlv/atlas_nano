@@ -13,12 +13,13 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
 ```
 
-Markdown is wrapped at 100 characters by [Prettier](.prettierrc.json), checked in CI. The prompts in
-[prompts/](prompts/) are left as written, since they are sent to the model as is:
+Markdown is wrapped at 100 characters by [Prettier](.prettierrc.json), checked in CI:
 
 ```sh
 npx prettier@3.9.9 --write $(git ls-files '*.md')
 ```
+
+The prompts in [prompts/](prompts/) are left as written, since they are sent to the model as is.
 
 [rust-toolchain.toml](rust-toolchain.toml) pins the Rust version; rustup installs it on first use.
 Add dependencies with `cargo add` and commit `Cargo.toml` and `Cargo.lock` together. Tests use
