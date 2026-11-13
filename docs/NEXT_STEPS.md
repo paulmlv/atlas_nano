@@ -1,14 +1,8 @@
 # Next steps
 
-What is left to build, test, and decide for Atlas Nano. The [command line](CLI.md),
+What is left to test and decide for Atlas Nano. The [command line](CLI.md),
 [report](REPORT.md), [labeling](LABELING.md), and [taxonomy](TAXONOMY.md) pages describe what is
 built.
-
-## To build
-
-- An install script fetched with `curl`, and prebuilt binaries for macOS (Apple silicon and Intel)
-  and Linux, published from the project's own public repository.
-- A release workflow that builds every target when a version tag is pushed.
 
 ## To decide
 
