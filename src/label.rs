@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, IsTerminal as _, Read as _, Seek as _, SeekFrom, Write as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::config::{self, Config};
-use crate::labeler::{self, Answer, Call, Failure, Labeler};
+use crate::labeler::{self, Answer, Call, Failure, Labeler, Spent};
 use crate::model::{Client, Kind, Label, PrRole, PullRequest, Session, Usage};
 use crate::paint::{self, Paint, Tone};
 use crate::prices::PriceTable;
@@ -170,10 +170,17 @@ impl Store {
     /// Open the cache file for appending, creating it if needed.
     fn open(path: &Path) -> Store {
         match OpenOptions::new().create(true).append(true).open(path) {
-            Ok(file) => Store {
-                file: Some(file),
-                error: None,
-            },
+            Ok(mut file) => {
+                // A line cut short by an interrupted run is ended, so the next record starts its
+                // own line.
+                if ends_mid_line(path) {
+                    let _ = file.write_all(b"\n");
+                }
+                Store {
+                    file: Some(file),
+                    error: None,
+                }
+            }
             Err(error) => Store {
                 file: None,
                 error: Some(error),
@@ -364,37 +371,67 @@ pub struct Labeling {
     pub cost: Option<Decimal>,
 }
 
+impl Labeling {
+    /// Count one call's tokens and cost. Claude Code reports each call's cost; Codex reports
+    /// tokens, priced call by call so one call's size sets its own rate.
+    fn add(&mut self, spent: &Spent, client: Client, prices: &PriceTable) {
+        self.input_tokens += spent.input_tokens;
+        self.output_tokens += spent.output_tokens;
+        let priced = match client {
+            Client::Claude => Some(spent.cost.unwrap_or_default()),
+            Client::Codex => price(
+                prices,
+                client,
+                &self.model,
+                spent.input_tokens,
+                spent.cached_tokens,
+                spent.output_tokens,
+            ),
+        };
+        self.cost = self.cost.zip(priced).map(|(sum, call)| sum + call);
+    }
+}
+
 /// What labeling returns: each labeled session's label by key, and the run's summary.
 pub struct Outcome {
     pub labels: HashMap<String, Label>,
     pub summary: Labeling,
 }
 
-/// Label `sessions`, reusing stored labels unless `no_cache`, and asking first with `confirm`.
-pub fn label(
-    sessions: &[&Session],
+/// The repository a session's prompt names, or `unknown`. Codex records it; for Claude Code it is
+/// the `origin` remote of the session's folder, looked up only for the pull request mapping.
+fn remote(session: &Session, pull_requests: bool, known: &mut HashMap<String, String>) -> String {
+    let url = match session.client {
+        Client::Codex => session.repository.clone(),
+        Client::Claude if pull_requests => session
+            .cwd
+            .as_deref()
+            .map(|cwd| repository(cwd, known))
+            .filter(|url| !url.is_empty()),
+        Client::Claude => None,
+    };
+    url.map_or("unknown".to_string(), |url| without_credentials(&url))
+}
+
+/// Plan each session's calls: render and chunk it, and build its prompts and its cache key.
+/// Safety reviews are left out, and a session that renders to no text counts as unlabeled.
+fn plan<'a>(
+    sessions: &[&'a Session],
     config: &Config,
-    taxonomy: &Taxonomy,
-    prices: &PriceTable,
-    no_cache: bool,
-    confirm: bool,
-) -> Result<Outcome, String> {
+    prompt: &Prompt,
+    schema: &str,
+    summary: &mut Labeling,
+) -> Vec<Plan<'a>> {
     let settings = &config.labeler;
-    let client = settings.client;
-    let prompt = Prompt::new(taxonomy, settings.pull_requests);
-    let schema = labeler::schema(taxonomy, settings.pull_requests);
     // Claude Code caps its window at 200K when this is set to anything but 0 or false.
     let capped = std::env::var("CLAUDE_CODE_DISABLE_1M_CONTEXT")
         .is_ok_and(|value| !["", "0", "false"].contains(&value.trim().to_lowercase().as_str()));
-    let budget = budget(client, &settings.model, &prompt.instructions, capped);
-    let schema_text = schema.to_string();
-
-    // A run with nothing to call costs nothing.
-    let mut summary = Labeling {
-        model: settings.model.clone(),
-        cost: Some(Decimal::ZERO),
-        ..Labeling::default()
-    };
+    let budget = budget(
+        settings.client,
+        &settings.model,
+        &prompt.instructions,
+        capped,
+    );
     let mut remotes = HashMap::new();
     let mut plans = Vec::new();
     for &session in sessions
@@ -406,16 +443,7 @@ pub fn label(
             summary.unlabeled += 1;
             continue;
         }
-        let url = match session.client {
-            Client::Codex => session.repository.clone(),
-            Client::Claude if settings.pull_requests => session
-                .cwd
-                .as_deref()
-                .map(|cwd| repository(cwd, &mut remotes))
-                .filter(|url| !url.is_empty()),
-            Client::Claude => None,
-        };
-        let url = url.map_or("unknown".to_string(), |url| without_credentials(&url));
+        let url = remote(session, settings.pull_requests, &mut remotes);
         let branch = session.branch.as_deref().unwrap_or("unknown");
         let prompts: Vec<String> = chunks
             .iter()
@@ -427,9 +455,9 @@ pub fn label(
         let mut parts = vec![
             env!("CARGO_PKG_VERSION"),
             prompt.instructions.as_str(),
-            schema_text.as_str(),
+            schema,
             prompt.codex_system.as_str(),
-            client.name(),
+            settings.client.name(),
             settings.model.as_str(),
             labeler::EFFORT,
             config.unit.as_str(),
@@ -441,15 +469,27 @@ pub fn label(
             prompts,
         });
     }
+    plans
+}
 
-    let cache_folder = config::cache_folder()?;
-    fs::create_dir_all(&cache_folder)
-        .map_err(|error| format!("{}: {error}", cache_folder.display()))?;
-    let cache_path = cache_folder.join("labels.jsonl");
+/// The file the labels are stored in, its folder created if needed.
+fn cache_path() -> Result<PathBuf, String> {
+    let folder = config::cache_folder()?;
+    fs::create_dir_all(&folder).map_err(|error| format!("{}: {error}", folder.display()))?;
+    Ok(folder.join("labels.jsonl"))
+}
+
+/// Split the plans into the labels already stored, by session key, and the plans still to call.
+fn lookup<'a>(
+    plans: Vec<Plan<'a>>,
+    cache_path: &Path,
+    no_cache: bool,
+    summary: &mut Labeling,
+) -> (HashMap<String, Label>, Vec<Plan<'a>>) {
     let cached = if no_cache {
         HashMap::new()
     } else {
-        read_cache(&cache_path)
+        read_cache(cache_path)
     };
     let mut labels = HashMap::new();
     let mut pending = Vec::new();
@@ -462,8 +502,19 @@ pub fn label(
             None => pending.push(plan),
         }
     }
+    (labels, pending)
+}
 
-    // The estimate: what will be sent, before anything is.
+/// Print the estimate: what will be sent, before anything is.
+fn estimate(
+    pending: &[Plan<'_>],
+    summary: &Labeling,
+    settings: &config::Labeler,
+    prompt: &Prompt,
+    prices: &PriceTable,
+    paint: Paint,
+) {
+    let client = settings.client;
     let calls: usize = pending.iter().map(|plan| plan.prompts.len()).sum();
     // Each call sends the instructions, the conversation, and the client's own context.
     let per_call = |characters: usize| -> u64 {
@@ -479,14 +530,13 @@ pub fn label(
     let sizes: Vec<u64> = pending
         .iter()
         .flat_map(|plan| &plan.prompts)
-        .map(|prompt| per_call(prompt.len()))
+        .map(|conversation| per_call(conversation.len()))
         .collect();
     let tokens: u64 = sizes.iter().sum();
     let estimate: Option<Decimal> = sizes
         .iter()
         .map(|&size| price(prices, client, &settings.model, size, 0, 200))
         .sum();
-    let paint = Paint::stderr(config.theme);
     eprintln!(
         "{} {}",
         paint.tone(
@@ -512,142 +562,168 @@ pub fn label(
     if !pending.is_empty() {
         eprintln!("  {}", billing_note(paint, &[client]));
     }
-    if confirm && !pending.is_empty() {
-        eprint!("{} {} ", paint.bold("Proceed?"), paint.dim("(y / n) [n]"));
-        io::stderr().flush().ok();
-        let mut reply = String::new();
-        io::stdin()
-            .read_line(&mut reply)
-            .map_err(|error| error.to_string())?;
-        if !matches!(reply.trim().to_lowercase().as_str(), "y" | "yes") {
-            return Err("stopped before labeling".to_string());
-        }
-    }
+}
 
-    if !pending.is_empty() {
-        let folder = config::call_folder()?;
-        let labeler = Labeler {
-            client,
-            model: &settings.model,
-            prompt: &prompt,
-            schema,
-            folder: &folder,
-        };
-        let tasks: Vec<(usize, &str)> = pending
-            .iter()
-            .enumerate()
-            .flat_map(|(n, plan)| plan.prompts.iter().map(move |prompt| (n, prompt.as_str())))
-            .collect();
-        let mut cache_file = Store::open(&cache_path);
-        // A line cut short by an interrupted run is ended, so the next record starts its own line.
-        if ends_mid_line(&cache_path)
-            && let Some(file) = cache_file.file.as_mut()
-        {
-            let _ = file.write_all(b"\n");
-        }
-        let cache_file = Mutex::new(cache_file);
+/// Ask whether to proceed. Any reply but yes stops the run.
+fn confirmed(paint: Paint) -> Result<(), String> {
+    eprint!("{} {} ", paint.bold("Proceed?"), paint.dim("(y / n) [n]"));
+    io::stderr().flush().ok();
+    let mut reply = String::new();
+    io::stdin()
+        .read_line(&mut reply)
+        .map_err(|error| error.to_string())?;
+    if matches!(reply.trim().to_lowercase().as_str(), "y" | "yes") {
+        Ok(())
+    } else {
+        Err("stopped before labeling".to_string())
+    }
+}
+
+/// One call to make: a prompt, and the plan it is a chunk of.
+#[derive(Clone, Copy)]
+struct Task<'a> {
+    plan: &'a Plan<'a>,
+    prompt: &'a str,
+}
+
+/// What every pass of calls shares.
+struct Passes<'a> {
+    labeler: &'a Labeler<'a>,
+    pool: rayon::ThreadPool,
+    cache: &'a Mutex<Store>,
+    paint: Paint,
+}
+
+impl Passes<'_> {
+    /// Make the calls of `tasks` in parallel, with a progress bar: each task's call, in order.
+    fn run(&self, tasks: &[Task<'_>]) -> Vec<Call> {
         let progress = io::stderr().is_terminal();
+        let done = AtomicUsize::new(0);
+        let started = Instant::now();
         // Each line is redrawn over the last with a carriage return and padded to the widest so far,
         // so no escape code is needed to clear what a longer line left.
         let widest = AtomicUsize::new(0);
-        let redraw = |line: String| {
+        let draw = |done: usize| {
+            if !progress {
+                return;
+            }
+            let line = bar(self.paint, done, tasks.len(), started.elapsed());
             let width = paint::width(&line);
             let pad = widest
                 .fetch_max(width, Ordering::Relaxed)
                 .saturating_sub(width);
             eprint!("\r{line}{}", " ".repeat(pad));
         };
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(settings.jobs.min(tasks.len()))
-            .build()
-            .map_err(|error| error.to_string())?;
-        // One pass over the given tasks, with its own progress bar.
-        let pass = |todo: &[usize]| -> Vec<Call> {
-            let done = AtomicUsize::new(0);
-            let started = Instant::now();
-            widest.store(0, Ordering::Relaxed);
-            if progress {
-                redraw(bar(paint, 0, todo.len(), started.elapsed()));
-            }
-            // One call per task, so an idle thread can always take the next one.
-            let results = pool.install(|| {
-                todo.par_iter()
-                    .with_max_len(1)
-                    .map(|&task| {
-                        let (plan, prompt) = tasks[task];
-                        let result = labeler.call(prompt);
-                        // A session with one call is stored at once, so an interrupted run keeps it.
-                        if let Ok(answer) = &result.answer
-                            && pending[plan].prompts.len() == 1
-                        {
-                            let label = combine(std::slice::from_ref(answer), &settings.model);
-                            store(&cache_file, &pending[plan].key, &label);
-                        }
-                        let finished = done.fetch_add(1, Ordering::Relaxed) + 1;
-                        if progress {
-                            redraw(bar(paint, finished, todo.len(), started.elapsed()));
-                        }
-                        result
-                    })
-                    .collect()
-            });
-            if progress {
-                eprintln!();
-            }
-            results
-        };
-
-        // A failed call is tried again, up to `retries` more times, each time once every call of
-        // the pass before has finished. Every call counts, failed or not. Claude Code reports each
-        // call's cost; Codex reports tokens, priced call by call so one call's size sets its own
-        // rate.
-        let mut outcomes: Vec<Option<Result<Answer, Failure>>> =
-            tasks.iter().map(|_| None).collect();
-        let mut todo: Vec<usize> = (0..tasks.len()).collect();
-        for attempt in 0..=settings.retries {
-            if todo.is_empty() {
-                break;
-            }
-            if attempt > 0 {
-                eprintln!(
-                    "{}",
-                    paint.tone(
-                        Tone::Heading,
-                        &format!("Retrying {} failed calls", todo.len())
-                    )
-                );
-            }
-            for (&task, Call { answer, spent }) in todo.iter().zip(pass(&todo)) {
-                summary.input_tokens += spent.input_tokens;
-                summary.output_tokens += spent.output_tokens;
-                let priced = match client {
-                    Client::Claude => Some(spent.cost.unwrap_or_default()),
-                    Client::Codex => price(
-                        prices,
-                        client,
-                        &settings.model,
-                        spent.input_tokens,
-                        spent.cached_tokens,
-                        spent.output_tokens,
-                    ),
-                };
-                summary.cost = summary.cost.zip(priced).map(|(sum, call)| sum + call);
-                outcomes[task] = Some(answer);
-            }
-            todo.retain(|&task| matches!(outcomes[task], Some(Err(_))));
+        draw(0);
+        // One call per task, so an idle thread can always take the next one.
+        let calls = self.pool.install(|| {
+            tasks
+                .par_iter()
+                .with_max_len(1)
+                .map(|task| {
+                    let call = self.labeler.call(task.prompt);
+                    // A session with one call is stored at once, so an interrupted run keeps it.
+                    if let Ok(answer) = &call.answer
+                        && task.plan.prompts.len() == 1
+                    {
+                        let label = combine(std::slice::from_ref(answer), self.labeler.model);
+                        store(self.cache, &task.plan.key, &label);
+                    }
+                    draw(done.fetch_add(1, Ordering::Relaxed) + 1);
+                    call
+                })
+                .collect()
+        });
+        if progress {
+            eprintln!();
         }
-        let _ = fs::remove_dir_all(&folder);
+        calls
+    }
+}
 
-        let mut answers: Vec<Vec<Answer>> = pending.iter().map(|_| Vec::new()).collect();
-        let mut failures: Vec<Option<Failure>> = pending.iter().map(|_| None).collect();
-        for ((plan, _), outcome) in tasks.iter().zip(outcomes) {
-            match outcome.expect("every task was called") {
-                Ok(answer) => answers[*plan].push(answer),
-                Err(failure) => failures[*plan] = failures[*plan].take().or(Some(failure)),
-            }
+/// Call the labeler for every prompt of `pending`. A failed call is tried again, up to `retries`
+/// more times, each time once every call of the pass before has finished. Every call counts in
+/// the summary, failed or not.
+///
+/// Returns each call's last result, in the order of the plans and of each plan's prompts.
+fn call(
+    pending: &[Plan<'_>],
+    labeler: &Labeler<'_>,
+    cache: &Mutex<Store>,
+    settings: &config::Labeler,
+    prices: &PriceTable,
+    paint: Paint,
+    summary: &mut Labeling,
+) -> Result<Vec<Result<Answer, Failure>>, String> {
+    let tasks: Vec<Task> = pending
+        .iter()
+        .flat_map(|plan| plan.prompts.iter().map(move |prompt| Task { plan, prompt }))
+        .collect();
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(settings.jobs.min(tasks.len()))
+        .build()
+        .map_err(|error| error.to_string())?;
+    let passes = Passes {
+        labeler,
+        pool,
+        cache,
+        paint,
+    };
+    // One pass over the given tasks: each one's result, its tokens and cost counted.
+    let mut pass = |todo: &[Task<'_>]| -> Vec<Result<Answer, Failure>> {
+        let calls = passes.run(todo);
+        calls
+            .into_iter()
+            .map(|Call { answer, spent }| {
+                summary.add(&spent, labeler.client, prices);
+                answer
+            })
+            .collect()
+    };
+
+    let mut results = pass(&tasks);
+    for _ in 0..settings.retries {
+        let failed: Vec<usize> = (0..tasks.len())
+            .filter(|&task| results[task].is_err())
+            .collect();
+        if failed.is_empty() {
+            break;
         }
-        for ((plan, answers), failure) in pending.iter().zip(answers).zip(failures) {
-            if let Some(failure) = failure {
+        eprintln!(
+            "{}",
+            paint.tone(
+                Tone::Heading,
+                &format!("Retrying {} failed calls", failed.len())
+            )
+        );
+        let again: Vec<Task> = failed.iter().map(|&task| tasks[task]).collect();
+        for (task, result) in failed.into_iter().zip(pass(&again)) {
+            results[task] = result;
+        }
+    }
+    Ok(results)
+}
+
+/// Turn the results of the calls into each session's label, by session key. `results` holds the
+/// calls of each plan of `pending` in turn.
+///
+/// A session is unlabeled when any of its calls failed. A label combined from several chunks is
+/// stored here; a single call's label was stored when the call returned.
+fn collect(
+    pending: &[Plan<'_>],
+    results: Vec<Result<Answer, Failure>>,
+    cache: &Mutex<Store>,
+    paint: Paint,
+    summary: &mut Labeling,
+) -> HashMap<String, Label> {
+    let mut labels = HashMap::new();
+    let mut results = results.into_iter();
+    for plan in pending {
+        // All of the plan's results are taken first, so the next plan starts at its own.
+        let calls: Vec<_> = results.by_ref().take(plan.prompts.len()).collect();
+        // The first failure, or every answer.
+        match calls.into_iter().collect::<Result<Vec<Answer>, Failure>>() {
+            Err(failure) => {
                 eprintln!(
                     "{} {} is unlabeled: {}",
                     paint.tone(Tone::Warning, "warning:"),
@@ -655,18 +731,69 @@ pub fn label(
                     paint.tone(Tone::Plain, failure.message())
                 );
                 summary.unlabeled += 1;
-                continue;
             }
-            let label = combine(&answers, &settings.model);
-            if plan.prompts.len() > 1 {
-                store(&cache_file, &plan.key, &label);
+            Ok(answers) => {
+                let label = combine(&answers, &summary.model);
+                if plan.prompts.len() > 1 {
+                    store(cache, &plan.key, &label);
+                }
+                summary.labeled += 1;
+                labels.insert(plan.session.key(), label);
             }
-            summary.labeled += 1;
-            labels.insert(plan.session.key(), label);
         }
-        let stored = cache_file
-            .into_inner()
-            .expect("the cache lock is not poisoned");
+    }
+    labels
+}
+
+/// Label `sessions`, reusing stored labels unless `no_cache`, and asking first with `confirm`.
+pub fn label(
+    sessions: &[&Session],
+    config: &Config,
+    taxonomy: &Taxonomy,
+    prices: &PriceTable,
+    no_cache: bool,
+    confirm: bool,
+) -> Result<Outcome, String> {
+    let settings = &config.labeler;
+    let prompt = Prompt::new(taxonomy, settings.pull_requests);
+    let schema = labeler::schema(taxonomy, settings.pull_requests);
+    // A run with nothing to call costs nothing.
+    let mut summary = Labeling {
+        model: settings.model.clone(),
+        cost: Some(Decimal::ZERO),
+        ..Labeling::default()
+    };
+
+    let plans = plan(sessions, config, &prompt, &schema.to_string(), &mut summary);
+    let cache_path = cache_path()?;
+    let (mut labels, pending) = lookup(plans, &cache_path, no_cache, &mut summary);
+    let paint = Paint::stderr(config.theme);
+    estimate(&pending, &summary, settings, &prompt, prices, paint);
+    if !pending.is_empty() {
+        if confirm {
+            confirmed(paint)?;
+        }
+        let folder = config::call_folder()?;
+        let labeler = Labeler {
+            client: settings.client,
+            model: &settings.model,
+            prompt: &prompt,
+            schema,
+            folder: &folder,
+        };
+        let cache = Mutex::new(Store::open(&cache_path));
+        let results = call(
+            &pending,
+            &labeler,
+            &cache,
+            settings,
+            prices,
+            paint,
+            &mut summary,
+        )?;
+        let _ = fs::remove_dir_all(&folder);
+        labels.extend(collect(&pending, results, &cache, paint, &mut summary));
+        let stored = cache.into_inner().expect("the cache lock is not poisoned");
         if let Some(error) = stored.error {
             // Shown like the other paths, with any control character in it as data.
             eprintln!(
