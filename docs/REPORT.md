@@ -4,9 +4,10 @@ What `atlas-nano run` prints, what its CSV holds, and how each number is defined
 
 ## Printed report
 
-The command prints its tables and exits, unless `--tui` asks for the
-[interactive view](#interactive-view). Every category is shown both by conversation count and by
-spend, each with its share. Numbers below are invented.
+`--output`, or without it the saved `output`, says how the report is shown: `print` prints the
+tables and exits, and `tui` shows the [interactive view](#interactive-view). With output sent to a
+file or a pipe, a saved `tui` prints instead, and `--output tui` stops with an error. Every category
+is shown both by conversation count and by spend, each with its share. Numbers below are invented.
 
 ```text
 atlas-nano · last 7 days · 142 conversations · 31 subagents · 12 reviews
@@ -87,8 +88,9 @@ Prices checked 2026-11-03
 
 ## Interactive view
 
-`--tui` shows the report's tables in the terminal until `q`. It needs a terminal; with output sent
-to a file or a pipe the run stops before labeling. A `--csv` file is still written first.
+The default output, `tui`, shows the report's tables in the terminal until `q`. With output sent to
+a file or a pipe, the saved setting prints instead, and `--output tui` stops the run before
+labeling. A `--csv` file is still written first.
 
 - **Header:** the period, spend, counts, time, and tokens of the totals block, with its notes on
   requests without a price and turns with no recorded completion.

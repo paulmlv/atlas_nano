@@ -140,7 +140,7 @@ fn a_failed_call_is_retried_unless_retries_are_off() {
     sandbox.session("flaky", "A FLAKY request", 1);
     assert!(
         sandbox
-            .answer(&["configure"], "\n\n\n\n\n")
+            .answer(&["configure"], "\n\n\n\n\n\n")
             .status
             .success()
     );
@@ -174,7 +174,7 @@ fn more_calls_at_once_than_the_computer_runs_are_lowered() {
     sandbox.session("plain", "A plain request", 1);
     assert!(
         sandbox
-            .answer(&["configure"], "\n\n\n\n\n")
+            .answer(&["configure"], "\n\n\n\n\n\n")
             .status
             .success()
     );
@@ -208,8 +208,9 @@ fn configure_then_run_labels_reports_and_reuses_the_cache() {
     assert!(!sandbox.root.join("config/atlas-nano/config.toml").exists());
 
     // Blank answers take the defaults: tool calls kept, pull requests mapped, once 0 is refused the
-    // most calls at once this computer runs, 10 rows in the ranked tables, and the minimal theme.
-    let configured = sandbox.answer(&["configure"], "\n\n0\n\n\n\n");
+    // most calls at once this computer runs, 10 rows in the ranked tables, the interactive view, and
+    // the minimal theme.
+    let configured = sandbox.answer(&["configure"], "\n\n0\n\n\n\n\n");
     let said = text(&configured.stdout);
     assert!(
         configured.status.success(),
@@ -222,6 +223,11 @@ fn configure_then_run_labels_reports_and_reuses_the_cache() {
         said.contains("Include tool calls for labeling (more accurate, costs more)? (y / n) [y]")
     );
     assert!(said.contains("please answer a whole number of at least 1"));
+    assert!(
+        said.contains(
+            "Show the report in an interactive view (tui) or print it? (tui / print) [tui]"
+        )
+    );
     assert!(said.contains("We label conversations with your signed-in account"));
     assert!(said.contains("anthropic/claude-haiku-5-5 labels, through the only client installed"));
     assert!(said.contains("test call with claude-haiku-5-5: Writing code / Frontend and UI"));
@@ -236,6 +242,13 @@ fn configure_then_run_labels_reports_and_reuses_the_cache() {
     assert!(saved.contains("pull_requests = true"));
     assert!(saved.contains(&format!("jobs = {}", atlas_nano::label::jobs_limit())));
     assert!(saved.contains("retries = 1"));
+    assert!(saved.contains("output = \"tui\""));
+    assert_eq!(sandbox.calls(), 1);
+
+    // The view needs a terminal: asked for here, it stops before labeling; saved, it prints.
+    let piped = sandbox.run(&["run", "--output", "tui"]);
+    assert!(!piped.status.success());
+    assert!(text(&piped.stderr).contains("--output tui needs a terminal"));
     assert_eq!(sandbox.calls(), 1);
 
     let csv = sandbox.root.join("out.csv");
