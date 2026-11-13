@@ -3,7 +3,8 @@
 Atlas Nano gives each conversation one type of work and one topic, chosen by a labeling model from
 fixed lists. This page describes how labeling works and the pull request mapping. The lists and
 their definitions are in [prompts/labels.md](../prompts/labels.md), and the rules the model follows
-are in the [labeling prompt](../prompts/label.md). The labels have not been checked by hand.
+are in the [labeling prompt](../prompts/label.md). The labels have not been checked by hand; the
+[labeling experiments](LABELING_EXPERIMENTS.md) measure how often models agree on them.
 
 ## How labeling works
 

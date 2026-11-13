@@ -37,9 +37,10 @@ not asked. `codex` covers Codex and ChatGPT desktop sessions, and `claude` Claud
   [required flags](LABELING.md#required-flags). Configuration fails if the chosen labeler's call is
   rejected, as when its client is not signed in; another client's rejected call is a warning. A
   missing or invalid answer does not fail configuration.
-- **Provider warning:** when the chosen labeler would send one client's conversations to the other
-  provider, configuration prints a warning right after the labeler is chosen, before any call or
-  save. This arises when both clients are covered, since one labeler reads everything.
+- **Provider confirmation:** when the chosen labeler would send one client's conversations to the
+  other provider, configuration says so right after the labeler is chosen and asks to continue,
+  yes by default, before any call or save. A no stops it with nothing saved. This arises when both
+  clients are covered, since one labeler reads everything.
 
 ## `atlas-nano run`
 
