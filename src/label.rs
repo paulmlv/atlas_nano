@@ -446,11 +446,7 @@ pub fn label(
 
     // The estimate: what will be sent, before anything is.
     let calls: usize = pending.iter().map(|plan| plan.prompts.len()).sum();
-    let characters: usize = pending
-        .iter()
-        .flat_map(|plan| &plan.prompts)
-        .map(String::len)
-        .sum();
+    // Each call sends the instructions, the conversation, and the client's own context.
     let per_call = |characters: usize| -> u64 {
         #[allow(
             clippy::cast_possible_truncation,
@@ -497,14 +493,10 @@ pub fn label(
         ))
     );
     let cost = estimate.map_or("no price for this model".to_string(), |cost| {
-        paint.tone(
-            Tone::Money,
-            &format!("about ${} API-equivalent", rough(cost)),
-        )
+        paint.tone(Tone::Money, &format!("${}", rough(cost)))
     });
     eprintln!(
-        "  about {} characters to send, roughly {} tokens, {cost}",
-        rough_count(characters as u64),
+        "  Estimated tokens: {} · API-equivalent: {cost}",
         rough_count(tokens)
     );
     if !pending.is_empty() {
