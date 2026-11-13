@@ -61,12 +61,16 @@ fn money(amount: Decimal) -> String {
     format!("${grouped}.{fraction:0<2}")
 }
 
+/// A whole percentage; `0%` only for none, and `<1%` for a part too small to round to 1%.
 fn share(part: Decimal, whole: Decimal) -> String {
     if whole.is_zero() {
         return "-".to_string();
     }
-    let percent = part * Decimal::from(100) / whole;
-    format!("{}%", percent.round_dp_with_strategy(0, HALF_UP))
+    let percent = (part * Decimal::from(100) / whole).round_dp_with_strategy(0, HALF_UP);
+    if percent.is_zero() && !part.is_zero() {
+        return "<1%".to_string();
+    }
+    format!("{percent}%")
 }
 
 fn count(tokens: u64) -> String {
@@ -162,11 +166,9 @@ fn cells(paint: Paint, strong: bool, name: &str, totals: &Totals, all: &Totals) 
     ]
 }
 
-/// Whether a row shows 0% of both conversations and spend; such rows are left out.
-fn negligible(totals: &Totals, all: &Totals) -> bool {
-    let zero = "0%";
-    share(totals.conversations.into(), all.conversations.into()) == zero
-        && share(totals.spend, all.spend) == zero
+/// Whether a row has no conversations and no spend; such rows are left out.
+fn empty(totals: &Totals) -> bool {
+    totals.conversations == 0 && totals.spend.is_zero()
 }
 
 /// A ranked table's title, saying how many rows it shows when they are limited.
@@ -188,8 +190,8 @@ fn shown(len: usize, top: Option<usize>) -> usize {
 }
 
 /// Print a table of groups, largest spend first, each followed by its members when it has names.
-/// Rows that show 0% of both conversations and spend are left out. With `top`, the groups past
-/// it share one row.
+/// Rows with no conversations and no spend are left out. With `top`, the groups past it share one
+/// row.
 fn grouped(
     out: &mut String,
     paint: Paint,
@@ -216,7 +218,7 @@ fn grouped(
     let flat = |members: &[(String, Totals)]| members.len() == 1 && members[0].0.is_empty();
     // Groups are bold only when some have members under them.
     let nested = ordered.iter().any(|(_, _, members)| !flat(members));
-    ordered.retain(|(_, sum, _)| !negligible(sum, all));
+    ordered.retain(|(_, sum, _)| !empty(sum));
     let shown = shown(ordered.len(), top);
     let mut rest = Totals::default();
     for (_, sum, _) in &ordered[shown..] {
@@ -229,7 +231,7 @@ fn grouped(
         if !flat(members) {
             let mut members: Vec<&(String, Totals)> = members
                 .iter()
-                .filter(|(_, totals)| !negligible(totals, all))
+                .filter(|(_, totals)| !empty(totals))
                 .collect();
             members.sort_by(|a, b| b.1.spend.cmp(&a.1.spend).then(a.0.cmp(&b.0)));
             rows.extend(
@@ -835,7 +837,7 @@ mod tests {
     }
 
     #[test]
-    fn leaves_out_rows_at_zero_percent_of_both() {
+    fn leaves_out_rows_with_no_conversations_and_no_spend() {
         let row = |conversations: u64, cents: i64| Totals {
             conversations,
             spend: Decimal::new(cents, 2),
@@ -846,14 +848,14 @@ mod tests {
                 "Software".to_string(),
                 vec![
                     ("Writing code".to_string(), row(100, 100_000)),
-                    ("Learning".to_string(), row(10, 100)),
-                    ("Testing".to_string(), row(0, 1_000)),
-                    ("Brainstorming".to_string(), row(0, 1)),
+                    ("Learning".to_string(), row(1, 0)),
+                    ("Testing".to_string(), row(0, 1)),
+                    ("Brainstorming".to_string(), row(0, 0)),
                 ],
             ),
             (
                 "Design".to_string(),
-                vec![("Naming".to_string(), row(0, 1))],
+                vec![("Naming".to_string(), row(0, 0))],
             ),
         ];
         let mut all = Totals::default();
@@ -871,7 +873,7 @@ mod tests {
             assert!(!out.contains(dropped), "{dropped} shown:\n{out}");
         }
 
-        // A group left out at 0% is not counted in the row past the limit.
+        // A group left out is not counted in the row past the limit.
         let mut out = String::new();
         grouped(
             &mut out,
@@ -889,5 +891,15 @@ mod tests {
         assert_eq!(money(Decimal::new(125, 3)), "$0.13");
         assert_eq!(money(Decimal::new(1_234_565, 3)), "$1,234.57");
         assert_eq!(share(Decimal::new(25, 1), Decimal::from(100)), "3%");
+    }
+
+    #[test]
+    fn shows_zero_only_for_none() {
+        let whole = Decimal::from(1000);
+        assert_eq!(share(Decimal::ZERO, whole), "0%");
+        assert_eq!(share(Decimal::new(1, 2), whole), "<1%");
+        assert_eq!(share(Decimal::from(4), whole), "<1%");
+        assert_eq!(share(Decimal::from(5), whole), "1%");
+        assert_eq!(share(Decimal::ONE, Decimal::ZERO), "-");
     }
 }
