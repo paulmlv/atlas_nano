@@ -10,6 +10,10 @@ use atlas_nano::paint::{Paint, Tone};
 use atlas_nano::{configure, run};
 
 fn main() -> ExitCode {
+    // Each labeling call holds a few pipes, and macOS terminals allow 256 open files by default,
+    // so raise the limit as far as the system allows. Best effort: on failure, calls past the
+    // limit fail and their sessions stay unlabeled.
+    rlimit::increase_nofile_limit(u64::MAX).ok();
     let result = match Cli::parse().command {
         Command::Configure => configure::configure(),
         Command::Run(args) => run::run(&args),
