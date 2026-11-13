@@ -74,7 +74,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      # install.sh ships with each release, so the script and the binaries always match.
+      # install.sh ships with each release, so the latest link serves it with that release's binaries.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
