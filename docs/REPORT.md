@@ -90,7 +90,7 @@ Prices checked 2026-11-03
 
 The default output, `tui`, shows the report's tables in the terminal until `q`. With output sent to
 a file or a pipe, the saved setting prints instead, and `--output tui` stops the run before
-labeling. A `--csv` file is still written first.
+labeling. A `--csv` or `--json` file is still written first.
 
 - **Header:** the period, spend, counts, time, and tokens of the totals block, with its notes on
   requests without a price and turns with no recorded completion.
