@@ -1,6 +1,6 @@
 //! Accounting: which sessions a run covers and what each one cost.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ops::AddAssign;
 
 use chrono::{DateTime, Duration, Utc};
@@ -117,26 +117,44 @@ impl AddAssign<&Totals> for Totals {
 /// Map each session to the chat the user started that it descends from, itself if it is one.
 ///
 /// A session whose parent was not loaded is its own root. A loop of parents, which valid records
-/// never form, ends at the first session it repeats.
+/// never form, is rooted at the session where the walk first met it. Each session is walked once.
 pub fn roots(sessions: &[Session]) -> Vec<usize> {
     let index: HashMap<SessionRef, usize> = sessions
         .iter()
         .enumerate()
         .map(|(n, session)| (session.reference(), n))
         .collect();
-    (0..sessions.len())
-        .map(|mut n| {
-            let mut seen = HashSet::new();
-            while seen.insert(n) {
-                let session = &sessions[n];
-                let parent = session.parent.as_ref().and_then(|parent| index.get(parent));
-                match parent {
-                    Some(&parent) if session.kind != Kind::Primary => n = parent,
-                    _ => break,
-                }
+    let parent = |n: usize| {
+        let session = &sessions[n];
+        let parent = session.parent.as_ref()?;
+        (session.kind != Kind::Primary).then(|| index.get(parent).copied())?
+    };
+    let mut roots: Vec<Option<usize>> = vec![None; sessions.len()];
+    let mut walking = vec![false; sessions.len()];
+    for start in 0..sessions.len() {
+        let mut path = Vec::new();
+        let mut n = start;
+        let root = loop {
+            if let Some(root) = roots[n] {
+                break root;
             }
-            n
-        })
+            if walking[n] {
+                break n;
+            }
+            walking[n] = true;
+            path.push(n);
+            match parent(n) {
+                Some(next) => n = next,
+                None => break n,
+            }
+        };
+        for n in path {
+            roots[n] = Some(root);
+        }
+    }
+    roots
+        .into_iter()
+        .map(|root| root.expect("every session was walked"))
         .collect()
 }
 
@@ -266,7 +284,7 @@ pub mod tests {
         sessions.push(session("b", Kind::Subagent, Some("a"), 1));
         let roots = roots(&sessions);
         assert!(roots[..100].iter().all(|&root| root == 0));
-        assert_eq!(roots[100..], [100, 101]);
+        assert_eq!(roots[100..], [100, 100]);
     }
 
     #[test]

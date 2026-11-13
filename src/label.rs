@@ -143,7 +143,8 @@ fn ends_mid_line(path: &Path) -> bool {
 }
 
 fn stored(entry: &Value) -> Option<Label> {
-    let prs = entry["prs"].as_array()?.iter().filter_map(|pr| {
+    // An unreadable pull request makes the whole entry a miss, so the session is labeled again.
+    let prs = entry["prs"].as_array()?.iter().map(|pr| {
         Some(PullRequest {
             url: pr["url"].as_str()?.to_string(),
             role: PrRole::from_name(pr["role"].as_str()?)?,
@@ -152,7 +153,7 @@ fn stored(entry: &Value) -> Option<Label> {
     Some(Label {
         work: entry["work"].as_str()?.to_string(),
         topic: entry["topic"].as_str()?.to_string(),
-        prs: prs.collect(),
+        prs: prs.collect::<Option<_>>()?,
         model: entry["model"].as_str()?.to_string(),
         from_cache: true,
     })
