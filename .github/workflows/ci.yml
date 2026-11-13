@@ -51,5 +51,5 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # Checks prose is wrapped at 100 characters, per .prettierrc.json; .prettierignore skips prompts/.
+      # Checks the 100-character wrap in .prettierrc.json; .prettierignore skips prompts/.
       - run: npx --yes prettier@3.9.9 --check $(git ls-files '*.md')
