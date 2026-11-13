@@ -36,6 +36,43 @@ fn default_retries() -> usize {
     DEFAULT_RETRIES
 }
 
+/// How many rows the ranked report tables show before the rest go into one row.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Top {
+    #[default]
+    #[serde(rename = "10")]
+    Ten,
+    #[serde(rename = "20")]
+    Twenty,
+    #[serde(rename = "50")]
+    Fifty,
+    #[serde(rename = "all")]
+    All,
+}
+
+impl Top {
+    pub const ALL: [Top; 4] = [Top::Ten, Top::Twenty, Top::Fifty, Top::All];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Top::Ten => "10",
+            Top::Twenty => "20",
+            Top::Fifty => "50",
+            Top::All => "all",
+        }
+    }
+
+    /// The most rows shown; None shows them all.
+    pub fn limit(self) -> Option<usize> {
+        match self {
+            Top::Ten => Some(10),
+            Top::Twenty => Some(20),
+            Top::Fifty => Some(50),
+            Top::All => None,
+        }
+    }
+}
+
 /// What `atlas-nano configure` saves.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -46,6 +83,9 @@ pub struct Config {
     pub coverage: Vec<Client>,
     /// The color theme of the output.
     pub theme: Theme,
+    /// How many rows the ranked tables show. A file saved before this setting existed gets 10.
+    #[serde(default)]
+    pub top: Top,
     pub labeler: Labeler,
 }
 
@@ -174,6 +214,7 @@ pub mod tests {
             unit: "conversation".to_string(),
             coverage: vec![Client::Claude, Client::Codex],
             theme: Theme::Soft,
+            top: Top::Twenty,
             labeler: Labeler {
                 client: Client::Claude,
                 model: "claude-haiku-5-5".to_string(),
@@ -230,6 +271,16 @@ pub mod tests {
         let none = Config::decode(&saved.replace("retries = 1", "retries = 0")).unwrap();
         assert_eq!(none.labeler.retries, 0);
         assert!(Config::decode(&saved.replace("\"soft\"", "\"neon\"")).is_err());
+        // A file saved before top existed shows 10 rows; only the offered counts are accepted.
+        let old = Config::decode(&saved.replace("top = \"20\"\n", "")).unwrap();
+        assert_eq!(old.top, Top::Ten);
+        assert_eq!(
+            Config::decode(&saved.replace("\"20\"", "\"all\""))
+                .unwrap()
+                .top,
+            Top::All
+        );
+        assert!(Config::decode(&saved.replace("\"20\"", "\"15\"")).is_err());
         // Each client labels with one model: Haiku through Claude Code, Luna through Codex.
         assert!(Config::decode(&saved.replace("claude-haiku-5-5", "claude-opus-5-5")).is_err());
         let luna = saved.replace("claude-haiku-5-5", "gpt-6-luna");
