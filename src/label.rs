@@ -159,7 +159,30 @@ fn stored(entry: &Value) -> Option<Label> {
     })
 }
 
-fn store(file: &Mutex<Option<fs::File>>, key: &str, label: &Label) {
+/// The cache file labels are appended to, until an error: then nothing more is stored, and the
+/// first error is kept so the run can warn once.
+struct Store {
+    file: Option<fs::File>,
+    error: Option<io::Error>,
+}
+
+impl Store {
+    /// Open the cache file for appending, creating it if needed.
+    fn open(path: &Path) -> Store {
+        match OpenOptions::new().create(true).append(true).open(path) {
+            Ok(file) => Store {
+                file: Some(file),
+                error: None,
+            },
+            Err(error) => Store {
+                file: None,
+                error: Some(error),
+            },
+        }
+    }
+}
+
+fn store(cache: &Mutex<Store>, key: &str, label: &Label) {
     let prs: Vec<Value> = label
         .prs
         .iter()
@@ -172,12 +195,12 @@ fn store(file: &Mutex<Option<fs::File>>, key: &str, label: &Label) {
     // One write of the whole line to a file opened for appending, so a record written by another
     // run at the same time lands before or after this one, not inside it.
     let line = format!("{entry}\n");
-    if let Some(file) = file
-        .lock()
-        .expect("the cache lock is not poisoned")
-        .as_mut()
+    let mut cache = cache.lock().expect("the cache lock is not poisoned");
+    if let Some(file) = cache.file.as_mut()
+        && let Err(error) = file.write_all(line.as_bytes())
     {
-        let _ = file.write_all(line.as_bytes());
+        cache.file = None;
+        cache.error = Some(error);
     }
 }
 
@@ -451,24 +474,15 @@ pub fn label(
             ((characters + prompt.instructions.len()) as f64 / chars_per_token(client)) as u64;
         tokens + fixed_tokens(client)
     };
-    let tokens: u64 = pending
+    let sizes: Vec<u64> = pending
         .iter()
         .flat_map(|plan| &plan.prompts)
         .map(|prompt| per_call(prompt.len()))
-        .sum();
-    let estimate: Option<Decimal> = pending
+        .collect();
+    let tokens: u64 = sizes.iter().sum();
+    let estimate: Option<Decimal> = sizes
         .iter()
-        .flat_map(|plan| &plan.prompts)
-        .map(|prompt| {
-            price(
-                prices,
-                client,
-                &settings.model,
-                per_call(prompt.len()),
-                0,
-                200,
-            )
-        })
+        .map(|&size| price(prices, client, &settings.model, size, 0, 200))
         .sum();
     let paint = Paint::stderr(config.theme);
     eprintln!(
@@ -509,8 +523,7 @@ pub fn label(
     }
 
     if !pending.is_empty() {
-        let folder = cache_folder.join(format!("calls-{}", std::process::id()));
-        fs::create_dir_all(&folder).map_err(|error| format!("{}: {error}", folder.display()))?;
+        let folder = config::call_folder()?;
         let labeler = Labeler {
             client,
             model: &settings.model,
@@ -523,22 +536,14 @@ pub fn label(
             .enumerate()
             .flat_map(|(n, plan)| plan.prompts.iter().map(move |prompt| (n, prompt.as_str())))
             .collect();
-        let cache_file = Mutex::new(
-            OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&cache_path)
-                .ok(),
-        );
+        let mut cache_file = Store::open(&cache_path);
         // A line cut short by an interrupted run is ended, so the next record starts its own line.
         if ends_mid_line(&cache_path)
-            && let Some(file) = cache_file
-                .lock()
-                .expect("the cache lock is not poisoned")
-                .as_mut()
+            && let Some(file) = cache_file.file.as_mut()
         {
             let _ = file.write_all(b"\n");
         }
+        let cache_file = Mutex::new(cache_file);
         let progress = io::stderr().is_terminal();
         // Each line is redrawn over the last with a carriage return and padded to the widest so far,
         // so no escape code is needed to clear what a longer line left.
@@ -597,7 +602,6 @@ pub fn label(
         let mut outcomes: Vec<Option<Result<Answer, Failure>>> =
             tasks.iter().map(|_| None).collect();
         let mut todo: Vec<usize> = (0..tasks.len()).collect();
-        let mut cost = Some(Decimal::ZERO);
         for attempt in 0..=settings.retries {
             if todo.is_empty() {
                 break;
@@ -625,7 +629,7 @@ pub fn label(
                         spent.output_tokens,
                     ),
                 };
-                cost = cost.zip(priced).map(|(sum, call)| sum + call);
+                summary.cost = summary.cost.zip(priced).map(|(sum, call)| sum + call);
                 outcomes[task] = Some(answer);
             }
             todo.retain(|&task| matches!(outcomes[task], Some(Err(_))));
@@ -640,7 +644,6 @@ pub fn label(
                 Err(failure) => failures[*plan] = failures[*plan].take().or(Some(failure)),
             }
         }
-        summary.cost = cost;
         for ((plan, answers), failure) in pending.iter().zip(answers).zip(failures) {
             if let Some(failure) = failure {
                 eprintln!(
@@ -658,6 +661,17 @@ pub fn label(
             }
             summary.labeled += 1;
             labels.insert(plan.session.key(), label);
+        }
+        let stored = cache_file
+            .into_inner()
+            .expect("the cache lock is not poisoned");
+        if let Some(error) = stored.error {
+            eprintln!(
+                "{} could not store labels in {:?}: {error}; the next run labels these sessions \
+                 again",
+                paint.tone(Tone::Warning, "warning:"),
+                cache_path
+            );
         }
     }
     if summary.unlabeled > 0 {
@@ -792,18 +806,21 @@ mod tests {
         let folder = std::env::temp_dir().join(format!("atlas-nano-cache-{}", std::process::id()));
         fs::create_dir_all(&folder).unwrap();
         let path = folder.join("labels.jsonl");
-        let file = Mutex::new(
-            OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-                .ok(),
-        );
+        let file = Mutex::new(Store::open(&path));
         let label = combine(
             &[answer("Debugging", "Security", Some(("u1", "Reviewed")))],
             "model",
         );
         store(&file, "key-1", &label);
+        assert!(file.lock().unwrap().error.is_none());
+        // A write that fails stops the storing and keeps the error for the run's warning.
+        let read_only = Mutex::new(Store {
+            file: fs::File::open(&path).ok(),
+            error: None,
+        });
+        store(&read_only, "key-2", &label);
+        let stopped = read_only.into_inner().unwrap();
+        assert!(stopped.file.is_none() && stopped.error.is_some());
         fs::OpenOptions::new()
             .append(true)
             .open(&path)

@@ -126,8 +126,11 @@ pub fn roots(sessions: &[Session]) -> Vec<usize> {
         .collect();
     let parent = |n: usize| {
         let session = &sessions[n];
-        let parent = session.parent.as_ref()?;
-        (session.kind != Kind::Primary).then(|| index.get(parent).copied())?
+        // A chat the user started is a root, even when it was forked or edited from another.
+        if session.kind == Kind::Primary {
+            return None;
+        }
+        index.get(session.parent.as_ref()?).copied()
     };
     let mut roots: Vec<Option<usize>> = vec![None; sessions.len()];
     let mut walking = vec![false; sessions.len()];

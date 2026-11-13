@@ -153,7 +153,7 @@ fn pull_request_url(url: &str) -> Option<String> {
 }
 
 /// Check an answer against the schema's labels and read it.
-fn answer(value: &Value, schema: &Value) -> Result<(String, String, Vec<PullRequest>), Failure> {
+fn answer(value: &Value, schema: &Value) -> Result<Answer, Failure> {
     let label = |name: &str| -> Result<String, Failure> {
         let allowed = schema["properties"][name]["enum"].as_array();
         match value[name].as_str() {
@@ -193,7 +193,11 @@ fn answer(value: &Value, schema: &Value) -> Result<(String, String, Vec<PullRequ
     } else {
         Vec::new()
     };
-    Ok((label("work")?, label("topic")?, prs))
+    Ok(Answer {
+        work: label("work")?,
+        topic: label("topic")?,
+        prs,
+    })
 }
 
 /// How long one labeling call may run before it is stopped and its session left unlabeled.
@@ -313,18 +317,13 @@ impl Labeler<'_> {
                 .unwrap_or_else(|| last_line(&stderr));
             return Err(Failure::Rejected(format!("claude: {reason}")));
         }
-        let (work, topic, prs) = answer(&result["structured_output"], &self.schema)?;
-        Ok(Answer { work, topic, prs })
+        answer(&result["structured_output"], &self.schema)
     }
 
     fn codex(&self, prompt: &str, spent: &mut Spent) -> Result<Answer, Failure> {
         // Each call has its own files, so parallel calls never read a file another is writing.
         static CALLS: AtomicU64 = AtomicU64::new(0);
-        let unique = format!(
-            "{}-{}",
-            std::process::id(),
-            CALLS.fetch_add(1, Ordering::Relaxed)
-        );
+        let unique = CALLS.fetch_add(1, Ordering::Relaxed);
         let answer_path = self.folder.join(format!("answer-{unique}.json"));
         let schema_path = self.folder.join(format!("schema-{unique}.json"));
         let instructions_path = self.folder.join(format!("instructions-{unique}.md"));
@@ -334,7 +333,6 @@ impl Labeler<'_> {
         };
         write(&schema_path, &self.schema.to_string())?;
         write(&instructions_path, &self.prompt.codex_system)?;
-        let _ = fs::remove_file(&answer_path);
         let mut command = Command::new("codex");
         command
             .current_dir(self.folder)
@@ -400,8 +398,7 @@ impl Labeler<'_> {
         let text = written.ok_or(Failure::Invalid("codex wrote no answer".to_string()))?;
         let value: Value = serde_json::from_str(text.trim())
             .map_err(|error| Failure::Invalid(format!("codex's answer is not JSON: {error}")))?;
-        let (work, topic, prs) = answer(&value, &self.schema)?;
-        Ok(Answer { work, topic, prs })
+        answer(&value, &self.schema)
     }
 }
 
@@ -480,9 +477,8 @@ mod tests {
             {"url": "7", "role": "Reviewed"},
             {"url": "https://github.com/o/r/pull/7", "role": "Reviewed"},
             {"url": "https://github.com/o/r/pull/7#discussion_r1", "role": "Reviewed"}]});
-        let (_, _, prs) = answer(&value, &schema).unwrap();
         assert_eq!(
-            prs,
+            answer(&value, &schema).unwrap().prs,
             [PullRequest {
                 url: "https://github.com/o/r/pull/7".into(),
                 role: PrRole::Reviewed
@@ -495,14 +491,16 @@ mod tests {
         let schema = schema(&Taxonomy::built_in(), true);
         let good = json!({"work": "Debugging", "topic": "Security", "prs": [
             {"url": "https://github.com/o/r/pull/1", "role": "Reviewed"}]});
-        let (work, topic, prs) = answer(&good, &schema).unwrap();
-        assert_eq!((work.as_str(), topic.as_str()), ("Debugging", "Security"));
         assert_eq!(
-            prs,
-            [PullRequest {
-                url: "https://github.com/o/r/pull/1".into(),
-                role: PrRole::Reviewed
-            }]
+            answer(&good, &schema).unwrap(),
+            Answer {
+                work: "Debugging".into(),
+                topic: "Security".into(),
+                prs: vec![PullRequest {
+                    url: "https://github.com/o/r/pull/1".into(),
+                    role: PrRole::Reviewed
+                }]
+            }
         );
         // With mapping on, a missing list or an unlisted role makes the whole answer invalid.
         let invented = json!({"work": "Debugging", "topic": "Security", "prs": [
@@ -517,7 +515,7 @@ mod tests {
             Err(Failure::Invalid(_))
         ));
         let without = super::schema(&Taxonomy::built_in(), false);
-        assert_eq!(answer(&missing, &without).unwrap().2, []);
+        assert_eq!(answer(&missing, &without).unwrap().prs, []);
         let bad = json!({"work": "Debugging", "topic": "Astrology", "prs": []});
         assert!(matches!(answer(&bad, &schema), Err(Failure::Invalid(_))));
         assert!(matches!(

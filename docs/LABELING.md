@@ -190,6 +190,8 @@ codex exec -m <model> -c model_reasoning_effort='"medium"' --ephemeral \
   --output-schema <answer schema file> -o <answer file> --json -
 ```
 
-Both run from an empty working directory with the conversation on standard input.
+Both run from an empty working directory with the conversation on standard input: a new folder
+under the system's temporary folder, private to the user and removed when the calls end. The system
+cleans up one that an interrupted run left behind.
 `CLAUDE_CODE_DISABLE_ATTACHMENTS=1` stops Claude Code from attaching a file named by an `@path` in
 the conversation.

@@ -92,4 +92,5 @@ Labels are stored in `~/.cache/atlas-nano/labels.jsonl`, or under `$XDG_CACHE_HO
 set. A stored label is reused only when everything sent to the labeler (the instructions, the label
 lists, the answer schema, and the conversation's text) and the labeler, its effort and the unit are unchanged, so a
 conversation that grew, or any change to the prompt, labels it again. A
-session whose call failed is not stored, so the next run tries it again.
+session whose call failed is not stored, so the next run tries it again. When the file cannot be
+written, the run warns once and its new labels are not stored.
