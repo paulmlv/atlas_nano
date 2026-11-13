@@ -7,6 +7,7 @@ use std::io::{Read, Write as _};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -318,8 +319,12 @@ impl Labeler<'_> {
 
     fn codex(&self, prompt: &str, spent: &mut Spent) -> Result<Answer, Failure> {
         // Each call has its own files, so parallel calls never read a file another is writing.
-        let unique = format!("{:?}-{}", thread::current().id(), std::process::id())
-            .replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', "");
+        static CALLS: AtomicU64 = AtomicU64::new(0);
+        let unique = format!(
+            "{}-{}",
+            std::process::id(),
+            CALLS.fetch_add(1, Ordering::Relaxed)
+        );
         let answer_path = self.folder.join(format!("answer-{unique}.json"));
         let schema_path = self.folder.join(format!("schema-{unique}.json"));
         let instructions_path = self.folder.join(format!("instructions-{unique}.md"));
