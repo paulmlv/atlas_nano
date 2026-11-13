@@ -4,10 +4,10 @@ What `atlas-nano run` prints, what its CSV holds, and how each number is defined
 
 ## Printed report
 
-With `output = "print"` saved, or `--output print`, the command prints its tables and exits.
-Otherwise it shows the [interactive view](#interactive-view), except when its output goes to a file
-or a pipe, where it prints. Every category is shown both by conversation count and by spend, each
-with its share. Numbers below are invented.
+`--output`, or without it the saved `output`, says how the report is shown: `print` prints the
+tables and exits, and `tui` shows the [interactive view](#interactive-view). With output sent to a
+file or a pipe, a saved `tui` prints instead, and `--output tui` stops with an error. Every category
+is shown both by conversation count and by spend, each with its share. Numbers below are invented.
 
 ```text
 atlas-nano · last 7 days · 142 conversations · 31 subagents · 12 reviews

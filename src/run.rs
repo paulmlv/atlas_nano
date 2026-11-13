@@ -38,15 +38,21 @@ fn name(period: Period) -> &'static str {
     }
 }
 
-pub fn run(args: &RunArgs) -> Result<(), String> {
-    // Checked first, so no labeling is spent on a view that cannot be shown.
-    let terminal = io::stdout().is_terminal();
-    if args.output == Some(Output::Tui) && !terminal {
-        return Err("--output tui needs a terminal".to_string());
+/// Whether to show the interactive view: `--output` when given, else the saved setting. Without a
+/// terminal the saved setting prints, and `--output tui` is an error.
+fn shows_view(flag: Option<Output>, saved: Output, terminal: bool) -> Result<bool, String> {
+    match (flag, terminal) {
+        (Some(Output::Tui), false) => Err("--output tui needs a terminal".to_string()),
+        _ => Ok(terminal && flag.unwrap_or(saved) == Output::Tui),
     }
+}
+
+pub fn run(args: &RunArgs) -> Result<(), String> {
     let Some(mut config) = Config::load()? else {
         return Err("no saved configuration; run `atlas-nano configure` first".to_string());
     };
+    // Decided first, so no labeling is spent on a view that cannot be shown.
+    let view = shows_view(args.output, config.output, io::stdout().is_terminal())?;
     if let Some(retries) = args.retries {
         config.labeler.retries = retries;
     }
@@ -135,12 +141,30 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
         fs::write(path, report.csv()).map_err(|error| format!("{}: {error}", path.display()))?;
         eprintln!("{} {}", errors.tone(Tone::Done, "wrote"), path.display());
     }
-    // The saved setting prints when the output goes to a file or a pipe.
-    if args.output.unwrap_or(config.output) == Output::Tui && terminal {
+    if view {
         return dashboard::show(&report);
     }
     match io::stdout().lock().write_all(report.render().as_bytes()) {
         Err(error) if error.kind() != io::ErrorKind::BrokenPipe => Err(error.to_string()),
         _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_flag_wins_and_only_a_terminal_shows_the_view() {
+        use Output::{Print, Tui};
+        // On a terminal: the flag when given, else the saved setting.
+        assert_eq!(shows_view(None, Tui, true), Ok(true));
+        assert_eq!(shows_view(None, Print, true), Ok(false));
+        assert_eq!(shows_view(Some(Tui), Print, true), Ok(true));
+        assert_eq!(shows_view(Some(Print), Tui, true), Ok(false));
+        // To a file or a pipe: the saved setting prints, and only an asked-for view fails.
+        assert_eq!(shows_view(None, Tui, false), Ok(false));
+        assert_eq!(shows_view(Some(Print), Tui, false), Ok(false));
+        assert!(shows_view(Some(Tui), Print, false).is_err());
     }
 }
