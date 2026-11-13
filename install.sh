@@ -1,7 +1,7 @@
 #!/bin/sh
 # Install atlas-nano from its GitHub Releases.
 #
-#   curl -fsSL https://raw.githubusercontent.com/paulmlv/atlas_nano/main/install.sh | sh
+#   curl -fsSL https://github.com/paulmlv/atlas_nano/releases/latest/download/install.sh | sh
 #
 # ATLAS_NANO_VERSION picks a release, such as v0.1.0; the default is the latest.
 # ATLAS_NANO_INSTALL_DIR picks the folder; the default is ~/.local/bin.
