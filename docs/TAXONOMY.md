@@ -1,10 +1,9 @@
 # Taxonomy
 
 Atlas Nano gives each conversation one type of work and one topic, chosen by a labeling model from
-fixed lists. This page describes how labeling works and the experimental pull request mapping. The
-lists and their definitions are in [prompts/labels.md](../prompts/labels.md), and the rules the
-model follows are in the [labeling prompt](../prompts/label.md). The labels have not been checked by
-hand.
+fixed lists. This page describes how labeling works and the pull request mapping. The lists and
+their definitions are in [prompts/labels.md](../prompts/labels.md), and the rules the model follows
+are in the [labeling prompt](../prompts/label.md). The labels have not been checked by hand.
 
 ## How labeling works
 
@@ -23,10 +22,9 @@ hand.
   metadata.
 - A conversation is labeled as a whole. There is no per-turn label and no split across labels.
 
-## Pull request mapping (experimental)
+## Pull request mapping
 
-- Off by default, behind an experimental flag set during configuration, and labeled experimental in
-  the output.
+- On by default; configuration asks whether to turn it off.
 - Local files only, and no code searches for pull requests. The same model call that assigns the
   type of work and topic also returns every pull request mentioned in the conversation, with its
   role. The model's answer is used as returned, with no check against the text.

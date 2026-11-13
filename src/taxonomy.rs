@@ -114,7 +114,7 @@ mod tests {
         let page = "\n## Rules\n\n- One rule.\n\n## Type of work (1 labels)\n\n\
             | Group | Label | Definition |\n| --- | --- | --- |\n| G | L | First |\n\n\
             ## Topic (1 topics)\n\n| Domain | Topic | Definition |\n| --- | --- | --- |\n| D | T | X |\n\n\
-            ## Pull request mapping (experimental)\n\n- Rule.\n";
+            ## Pull request mapping\n\n- Rule.\n";
         let taxonomy = Taxonomy::decode(page).unwrap();
         assert_eq!(taxonomy.work[0].label, "L");
         assert_eq!(taxonomy.work[0].definition, "First");

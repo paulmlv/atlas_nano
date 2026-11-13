@@ -404,7 +404,7 @@ impl Report<'_> {
                 out,
                 "{} {}",
                 p.tone(Tone::Heading, "Pull requests"),
-                p.dim("(experimental; ~ marks an amount split across several)")
+                p.dim("(~ marks an amount split across several)")
             )
             .unwrap();
             let rows: Vec<Vec<String>> = listed

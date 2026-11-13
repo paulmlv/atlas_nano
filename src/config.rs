@@ -17,7 +17,7 @@ pub struct Labeler {
     pub model: String,
     /// Whether tool calls are sent; false is the no-tools mode.
     pub tools: bool,
-    /// The experimental pull request mapping.
+    /// The pull request mapping.
     pub pull_requests: bool,
     /// How many labeling calls run at once.
     pub jobs: usize,

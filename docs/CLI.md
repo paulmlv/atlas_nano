@@ -25,7 +25,7 @@ not asked. `codex` covers Codex and ChatGPT desktop sessions, and `claude` Claud
   installed, or whose version lacks its no-save flag, is skipped. With neither usable, configuration
   fails.
 - **Settings:** the unit (conversation), the coverage (Claude Code, Codex, or both), the labeling
-  model, the no-tools mode, the experimental pull request mapping, how many labeling calls run at
+  model, the no-tools mode, the pull request mapping (on by default), how many labeling calls run at
   once (32 by default; asked again until it is a whole number of at least 1), and the color theme.
 - **Theme:** `minimal` (the default) uses bold, dim, and the terminal's own colors, so it suits any
   background. `soft` has muted blue headings and sage money; `warm` has amber headings and bars.

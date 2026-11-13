@@ -10,17 +10,19 @@ use chrono::{Duration, Utc};
 use serde_json::json;
 
 /// A stand-in for Claude Code: it answers `--help`, logs each call, rejects a conversation that
-/// says REJECT, and labels the rest by whether they mention a bug.
+/// says REJECT, and labels the rest by whether they mention a bug; a bug comes with a pull request.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 case "$*" in *--help*) echo "  --no-session-persistence"; exit 0 ;; esac
 input=$(cat)
 echo call >> "$FAKE_LOG"
+prs=""
 case "$input" in
   *REJECT*) echo '{"is_error": true, "result": "Not logged in"}'; exit 1 ;;
-  *bug*) work="Debugging"; topic="Backend and APIs" ;;
+  *bug*) work="Debugging"; topic="Backend and APIs"
+    prs='{"url": "https://github.com/owner/repo/pull/7", "role": "Contributed to"}' ;;
   *) work="Writing code"; topic="Frontend and UI" ;;
 esac
-echo "{\"is_error\": false, \"structured_output\": {\"work\": \"$work\", \"topic\": \"$topic\"},
+echo "{\"is_error\": false, \"structured_output\": {\"work\": \"$work\", \"topic\": \"$topic\", \"prs\": [$prs]},
   \"usage\": {\"input_tokens\": 100, \"output_tokens\": 5}, \"total_cost_usd\": 0.01}"
 "#;
 
@@ -141,8 +143,8 @@ fn configure_then_run_labels_reports_and_reuses_the_cache() {
     assert!(text(&cancelled.stderr).contains("nothing was saved"));
     assert!(!sandbox.root.join("config/atlas-nano/config.toml").exists());
 
-    // Blank answers take the defaults: tool calls kept, no pull requests, once 0 is refused 32 calls
-    // at once, and the minimal theme.
+    // Blank answers take the defaults: tool calls kept, pull requests mapped, once 0 is refused 32
+    // calls at once, and the minimal theme.
     let configured = sandbox.answer(&["configure"], "\n\n0\n\n\n");
     let said = text(&configured.stdout);
     assert!(
@@ -164,6 +166,7 @@ fn configure_then_run_labels_reports_and_reuses_the_cache() {
     let saved = fs::read_to_string(sandbox.root.join("config/atlas-nano/config.toml")).unwrap();
     assert!(saved.contains("coverage = [\"claude\"]"));
     assert!(saved.contains("theme = \"minimal\""));
+    assert!(saved.contains("pull_requests = true"));
     assert!(saved.contains("jobs = 32"));
     assert_eq!(sandbox.calls(), 1);
 
@@ -190,6 +193,8 @@ fn configure_then_run_labels_reports_and_reuses_the_cache() {
         "in 200 · out 10 tokens · API-equivalent $0.02",
         // Three sessions of 1,000 input and 1,000,000 output Haiku tokens each.
         "Spend (API-equivalent)  $1.50",
+        "Pull requests (~ marks an amount split across several)",
+        "https://github.com/owner/repo/pull/7",
     ] {
         assert!(
             report.contains(expected),
