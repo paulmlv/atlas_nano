@@ -12,7 +12,7 @@ session's type of work and topic. Nothing else leaves the computer.
 On macOS (Apple silicon) or any Linux distribution (x86_64 or arm64):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/paulmlv/atlas_nano/main/install.sh | sh
+curl -fsSL https://github.com/paulmlv/atlas_nano/releases/latest/download/install.sh | sh
 ```
 
 The [script](install.sh) downloads the latest release's binary, checks its SHA-256, and puts it in
