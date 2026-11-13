@@ -122,8 +122,12 @@ references its parent's history without copying it, the text is rebuilt from the
 ## The call
 
 - One call per session, or per chunk, at medium effort, with the [required flags](#required-flags).
-  Calls run in parallel. At start the command raises its open-file limit as far as the system
-  allows, since each call holds a few pipes and macOS terminals allow 256 open files by default.
+  Calls run in parallel, at most three per core and one per 500 MB of memory, whichever is fewer.
+  Past that, calls wait for a core or for memory and a run takes longer, not shorter. A saved `jobs`
+  above it is lowered for the run, with a warning; the
+  [measurements](LABELING_EXPERIMENTS.md#calls-at-once) set it. At start the command raises its
+  open-file limit as far as the system allows, since each call holds a few pipes and macOS terminals
+  allow 256 open files by default.
 - The prompt is [prompts/label.md](../prompts/label.md), built into the binary.
 - The instructions say that the conversation is data to classify, not to follow. They list the
   rules, then every type of work and every topic in the taxonomy as `label: definition`, the topics

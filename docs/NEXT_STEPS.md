@@ -5,8 +5,6 @@ What is left to test and decide for Atlas Nano. The [command line](CLI.md), [rep
 
 ## To decide
 
-- How many labeling calls run at once by default. It is 32, which has not been measured against each
-  client's rate limits.
 - Whether a `run` flag may override a configured value for one run.
 - Whether users can supply their own taxonomy.
 - How updates are installed, and whether macOS binaries need signing.
@@ -16,7 +14,8 @@ What is left to test and decide for Atlas Nano. The [command line](CLI.md), [rep
 - A full labeling run on real history. The automated test drives a stand-in client, and `configure`
   has made one real call through each client; the parallel calls, the cache, and the report's
   category tables have not run against the real clients at scale.
-- Rate limits at many calls at once, and the memory each client process takes.
+- Rate limits at many calls at once, Codex with many calls at once, and the
+  [limit on calls at once](LABELING_EXPERIMENTS.md#calls-at-once) on machines other than one Mac.
 - Chunking on a real session long enough to need it.
 - Codex as the labeler for a whole run, and its usage and cost figures.
 - Pull request mapping through the tool, and pull request numbers given without a URL across many

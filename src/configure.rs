@@ -254,8 +254,9 @@ pub fn configure() -> Result<(), String> {
         true,
     )?;
     let pull_requests = yes("Include PRs (costs more)?", true)?;
+    let most = label::jobs_limit().to_string();
     let jobs = loop {
-        match ask("How many labeling calls at once?", "", "32")?.parse::<usize>() {
+        match ask("How many labeling calls at once?", "", &most)?.parse::<usize>() {
             Ok(jobs) if jobs > 0 => break jobs,
             _ => println!(
                 "  {}",
