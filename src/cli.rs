@@ -45,6 +45,10 @@ pub struct RunArgs {
     /// Try a failed labeling call this many more times, instead of the saved setting.
     #[arg(long, value_name = "N")]
     pub retries: Option<usize>,
+
+    /// Show the report as an interactive view instead of printing it.
+    #[arg(long)]
+    pub tui: bool,
 }
 
 /// Which sessions a run covers, by when their conversation started.
@@ -85,6 +89,7 @@ mod tests {
         assert!(!run.confirm);
         assert_eq!(run.csv, None);
         assert_eq!(run.retries, None);
+        assert!(!run.tui);
     }
 
     #[test]
@@ -99,7 +104,9 @@ mod tests {
             "--confirm",
             "--retries",
             "0",
+            "--tui",
         ]);
+        assert!(run.tui);
         assert_eq!(run.period, Period::Days30);
         assert!(run.no_cache);
         assert!(run.no_label);

@@ -5,6 +5,7 @@ pub mod account;
 pub mod cli;
 pub mod config;
 pub mod configure;
+pub mod dashboard;
 pub mod ingest;
 pub mod label;
 pub mod labeler;

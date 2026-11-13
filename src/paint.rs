@@ -4,6 +4,7 @@
 use std::io;
 
 use anstream::{AutoStream, ColorChoice};
+use ratatui::style::{Color, Modifier, Style};
 use serde::{Deserialize, Serialize};
 
 /// How a piece of text is shown.
@@ -127,19 +128,33 @@ impl Paint {
     /// `text` in `tone`, made bold when `strong`, with its control characters shown as data.
     pub fn styled(self, tone: Tone, strong: bool, text: &str) -> String {
         let text = &printable(text);
+        let code = self.code(tone, strong);
+        if !self.on || code.is_empty() || text.is_empty() {
+            return text.to_string();
+        }
+        format!("\x1b[{code}m{text}\x1b[0m")
+    }
+
+    /// The SGR parameters for `tone` in this theme, made bold when `strong`.
+    fn code(self, tone: Tone, strong: bool) -> String {
         let base = self.theme.code(tone);
-        let code = if !strong || base.starts_with("1;") || base == "1" {
+        if !strong || base.starts_with("1;") || base == "1" {
             base.to_string()
         } else if base.is_empty() || tone == Tone::Dim {
             // Bold and dim cancel out in most terminals, so a strong dim cell is just bold.
             "1".to_string()
         } else {
             format!("1;{base}")
-        };
-        if !self.on || code.is_empty() || text.is_empty() {
-            return text.to_string();
         }
-        format!("\x1b[{code}m{text}\x1b[0m")
+    }
+
+    /// The interactive view's style for `tone`, made bold when `strong`: the colors `styled` uses,
+    /// and no style when colors are off.
+    pub fn style(self, tone: Tone, strong: bool) -> Style {
+        if !self.on {
+            return Style::new();
+        }
+        read_code(&self.code(tone, strong)).expect("every theme code is one the view reads")
     }
 
     pub fn tone(self, tone: Tone, text: &str) -> String {
@@ -174,7 +189,7 @@ impl Paint {
 /// Text from a transcript or folder name, with control characters, such as terminal escape codes,
 /// and text-direction marks replaced so they show as data and cannot act on the terminal or reorder
 /// what it shows.
-fn printable(text: &str) -> String {
+pub(crate) fn printable(text: &str) -> String {
     text.chars()
         .map(|c| {
             if c.is_control() || reorders(c) {
@@ -184,6 +199,25 @@ fn printable(text: &str) -> String {
             }
         })
         .collect()
+}
+
+/// Read SGR parameters into a style; None for a parameter the themes do not use.
+fn read_code(code: &str) -> Option<Style> {
+    let mut style = Style::new();
+    let mut parts = code.split(';').filter(|part| !part.is_empty());
+    while let Some(part) = parts.next() {
+        style = match part {
+            "1" => style.add_modifier(Modifier::BOLD),
+            "2" => style.add_modifier(Modifier::DIM),
+            "31" => style.fg(Color::Red),
+            "33" => style.fg(Color::Yellow),
+            "38" if parts.next() == Some("5") => {
+                style.fg(Color::Indexed(parts.next()?.parse().ok()?))
+            }
+            _ => return None,
+        };
+    }
+    Some(style)
 }
 
 /// The marks that change the direction text shows in: embeddings, overrides, and isolates.
@@ -237,6 +271,46 @@ mod tests {
         assert_eq!(warm.tone(Tone::Money, "$1"), "$1");
         assert_eq!(warm.styled(Tone::Money, true, "$1"), "\x1b[1m$1\x1b[0m");
         assert_eq!(width(&soft.styled(Tone::Money, true, "$1.00")), 5);
+    }
+
+    #[test]
+    fn the_view_reads_every_theme_color() {
+        let tones = [
+            Tone::Plain,
+            Tone::Dim,
+            Tone::Heading,
+            Tone::Money,
+            Tone::Accent,
+            Tone::Warning,
+            Tone::Error,
+            Tone::Done,
+        ];
+        for theme in Theme::ALL {
+            for tone in tones {
+                for strong in [false, true] {
+                    let code = Paint::colored(theme).code(tone, strong);
+                    assert!(read_code(&code).is_some(), "{theme:?} {tone:?}: {code}");
+                }
+            }
+        }
+        let soft = Paint::colored(Theme::Soft);
+        assert_eq!(
+            soft.style(Tone::Money, false),
+            Style::new().fg(Color::Indexed(108))
+        );
+        assert_eq!(
+            soft.style(Tone::Heading, false),
+            Style::new()
+                .add_modifier(Modifier::BOLD)
+                .fg(Color::Indexed(110))
+        );
+        let minimal = Paint::colored(Theme::Minimal);
+        assert_eq!(
+            minimal.style(Tone::Warning, false),
+            Style::new().fg(Color::Yellow)
+        );
+        assert_eq!(minimal.style(Tone::Plain, false), Style::new());
+        assert_eq!(Paint::OFF.style(Tone::Heading, true), Style::new());
     }
 
     #[test]

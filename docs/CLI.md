@@ -57,6 +57,7 @@ Requires a saved configuration; without one it stops and says to run `configure`
 | `--no-label`    | label     | Accounting only, with no model calls                               |
 | `--confirm`     | no prompt | Ask before labeling, after the estimate is printed                 |
 | `--retries <N>` | saved     | Try a [failed call](LABELING.md#the-call) N more times; `0` is off |
+| `--tui`         | print     | Show the [interactive view](REPORT.md#interactive-view) instead    |
 
 ### Period
 

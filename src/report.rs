@@ -19,7 +19,7 @@ use crate::taxonomy::{Entry, Taxonomy};
 
 const UNLABELED: &str = "Unlabeled";
 const REVIEWS: &str = "Automatic reviews";
-const NO_REPO: &str = "(no repo)";
+pub(crate) const NO_REPO: &str = "(no repo)";
 /// One session in the report, with its cost, its label, and the chat it descends from.
 pub struct Row<'a> {
     pub session: &'a Session,
@@ -48,7 +48,7 @@ pub struct Report<'a> {
 /// Halves round up, as people expect of a price: $0.125 is $0.13, not $0.12.
 const HALF_UP: RoundingStrategy = RoundingStrategy::MidpointAwayFromZero;
 
-fn money(amount: Decimal) -> String {
+pub(crate) fn money(amount: Decimal) -> String {
     let cents = amount.round_dp_with_strategy(2, HALF_UP).to_string();
     let (whole, fraction) = cents.split_once('.').unwrap_or((&cents, "00"));
     let mut grouped = String::new();
@@ -62,7 +62,7 @@ fn money(amount: Decimal) -> String {
 }
 
 /// A whole percentage; `0%` only for none, and `<1%` for a part too small to round to 1%.
-fn share(part: Decimal, whole: Decimal) -> String {
+pub(crate) fn share(part: Decimal, whole: Decimal) -> String {
     if whole.is_zero() {
         return "-".to_string();
     }
@@ -75,7 +75,7 @@ fn share(part: Decimal, whole: Decimal) -> String {
 
 /// A token count in a short form. Each range ends where its form would round up into the next
 /// one, so 999,999 is `1.0M`, not `1000k`.
-fn count(tokens: u64) -> String {
+pub(crate) fn count(tokens: u64) -> String {
     let value = tokens as f64;
     match tokens {
         0..1_000 => tokens.to_string(),
@@ -87,7 +87,7 @@ fn count(tokens: u64) -> String {
 }
 
 /// A length of time in a short form. One decimal of hours ends at 9.95 hours, which is `10h`.
-fn span(duration: Duration) -> String {
+pub(crate) fn span(duration: Duration) -> String {
     let seconds = duration.num_seconds();
     let hours = seconds as f64 / 3600.0;
     match seconds {
@@ -137,7 +137,7 @@ fn table(out: &mut String, paint: Paint, header: &[&str], rows: &[Vec<String>]) 
     }
 }
 
-const COLUMNS: [&str; 9] = [
+pub(crate) const COLUMNS: [&str; 9] = [
     "Convs",
     "Conv%",
     "Subagents",
@@ -280,7 +280,11 @@ fn buckets<'a>(
 }
 
 /// The `(group, label)` of a row on one axis; reviews and unlabeled sessions get their own rows.
-fn category(row: &Row, entries: &[Entry], pick: impl Fn(&Label) -> &str) -> (String, String) {
+pub(crate) fn category(
+    row: &Row,
+    entries: &[Entry],
+    pick: impl Fn(&Label) -> &str,
+) -> (String, String) {
     if row.session.kind == Kind::Review {
         return (REVIEWS.to_string(), String::new());
     }
@@ -294,9 +298,12 @@ fn category(row: &Row, entries: &[Entry], pick: impl Fn(&Label) -> &str) -> (Str
     }
 }
 
-/// A session's title, else the first line of its first user message, as one short line.
+/// A session's title, else the first line of its first user message, else of the task an agent gave
+/// it, as one short line.
 pub fn title(session: &Session) -> String {
-    let first = session.items.iter().find(|item| item.role == Role::User);
+    let first = [Role::User, Role::Agent]
+        .into_iter()
+        .find_map(|role| session.items.iter().find(|item| item.role == role));
     let text = match &session.title {
         Some(title) => title.as_str(),
         None => first.map_or("", |item| item.text.lines().next().unwrap_or_default()),
@@ -310,21 +317,22 @@ pub fn title(session: &Session) -> String {
 }
 
 /// One pull request's sessions and its share of their spend.
-struct PrSpend {
-    url: String,
-    sessions: u64,
-    spend: Decimal,
+pub(crate) struct PrSpend {
+    pub(crate) url: String,
+    /// The rows of the sessions that worked on it.
+    pub(crate) rows: Vec<usize>,
+    pub(crate) spend: Decimal,
     /// Whether any of the spend comes from a session that worked on several pull requests.
-    split: bool,
+    pub(crate) split: bool,
     /// The tokens of those sessions; a pull request with none is left out.
     tokens: u64,
 }
 
 /// Split each session's spend evenly among the pull requests it worked on, largest spend first.
 /// A pull request whose sessions used no tokens is left out.
-fn pull_requests(rows: &[Row]) -> Vec<PrSpend> {
+pub(crate) fn pull_requests(rows: &[Row]) -> Vec<PrSpend> {
     let mut found: BTreeMap<&str, PrSpend> = BTreeMap::new();
-    for row in rows {
+    for (n, row) in rows.iter().enumerate() {
         let worked: Vec<&str> = row
             .label
             .iter()
@@ -335,12 +343,12 @@ fn pull_requests(rows: &[Row]) -> Vec<PrSpend> {
         for url in &worked {
             let pr = found.entry(url).or_insert_with(|| PrSpend {
                 url: url.to_string(),
-                sessions: 0,
+                rows: Vec::new(),
                 spend: Decimal::ZERO,
                 split: false,
                 tokens: 0,
             });
-            pr.sessions += 1;
+            pr.rows.push(n);
             pr.spend += row.cost.spend / Decimal::from(worked.len());
             pr.split |= worked.len() > 1;
             pr.tokens += row.cost.tokens.total();
@@ -673,7 +681,7 @@ impl Report<'_> {
             .iter()
             .map(|pr| {
                 let name = format!("  {}", pr.url);
-                line(&name, pr.sessions.to_string(), pr.spend, pr.split)
+                line(&name, pr.rows.len().to_string(), pr.spend, pr.split)
             })
             .collect();
         // A session can work on several of the rest, so their sessions are not added up.
@@ -792,7 +800,7 @@ impl Report<'_> {
 
 /// The local date of a moment, with the time zone's offset at that moment, so daylight saving time
 /// moves no request to the wrong day.
-fn local_day(at: DateTime<Utc>) -> String {
+pub(crate) fn local_day(at: DateTime<Utc>) -> String {
     at.with_timezone(&Local).format("%Y-%m-%d").to_string()
 }
 

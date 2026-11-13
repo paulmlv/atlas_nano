@@ -2,13 +2,14 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::{self, Write as _};
+use std::io::{self, IsTerminal as _, Write as _};
 
 use chrono::{Duration, Utc};
 
 use crate::account;
 use crate::cli::{Period, RunArgs};
 use crate::config::{self, Config};
+use crate::dashboard;
 use crate::ingest;
 use crate::label;
 use crate::model::{Client, Session};
@@ -38,6 +39,10 @@ fn name(period: Period) -> &'static str {
 }
 
 pub fn run(args: &RunArgs) -> Result<(), String> {
+    // Checked first, so no labeling is spent on a view that cannot be shown.
+    if args.tui && !io::stdout().is_terminal() {
+        return Err("--tui needs a terminal".to_string());
+    }
     let Some(mut config) = Config::load()? else {
         return Err("no saved configuration; run `atlas-nano configure` first".to_string());
     };
@@ -128,6 +133,9 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
     if let Some(path) = &args.csv {
         fs::write(path, report.csv()).map_err(|error| format!("{}: {error}", path.display()))?;
         eprintln!("{} {}", errors.tone(Tone::Done, "wrote"), path.display());
+    }
+    if args.tui {
+        return dashboard::show(&report);
     }
     match io::stdout().lock().write_all(report.render().as_bytes()) {
         Err(error) if error.kind() != io::ErrorKind::BrokenPipe => Err(error.to_string()),
