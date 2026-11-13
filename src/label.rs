@@ -745,11 +745,12 @@ fn collect(
     }
     let stored = cache.into_inner().expect("the cache lock is not poisoned");
     if let Some(error) = stored.error {
+        // Shown like the other paths, with any control character in it as data.
         eprintln!(
-            "{} could not store labels in {:?}: {error}; the next run labels these sessions \
+            "{} could not store labels in {}: {error}; the next run labels these sessions \
              again",
             paint.tone(Tone::Warning, "warning:"),
-            cache_path
+            paint.tone(Tone::Plain, &cache_path.display().to_string())
         );
     }
     labels
