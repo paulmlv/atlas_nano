@@ -3,8 +3,11 @@
 use std::fs;
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::ExitStatusExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::thread;
+use std::time::{Duration as WallDuration, Instant};
 
 use chrono::{Duration, Utc};
 use serde_json::json;
@@ -72,17 +75,8 @@ impl Sandbox {
 
     /// Run the binary with `input` typed on its standard input, then closed.
     fn answer(&self, arguments: &[&str], input: &str) -> Output {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_atlas-nano"))
-            .args(arguments)
-            .env_clear()
-            .env("HOME", self.root.join("home"))
-            .env("XDG_CONFIG_HOME", self.root.join("config"))
-            .env("XDG_CACHE_HOME", self.root.join("cache"))
-            .env(
-                "PATH",
-                format!("{}:/usr/bin:/bin", self.root.join("bin").display()),
-            )
-            .env("FAKE_LOG", self.root.join("calls.log"))
+        let mut child = self
+            .command(arguments)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -95,6 +89,22 @@ impl Sandbox {
             .write_all(input.as_bytes())
             .unwrap();
         child.wait_with_output().unwrap()
+    }
+
+    fn command(&self, arguments: &[&str]) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_atlas-nano"));
+        command
+            .args(arguments)
+            .env_clear()
+            .env("HOME", self.root.join("home"))
+            .env("XDG_CONFIG_HOME", self.root.join("config"))
+            .env("XDG_CACHE_HOME", self.root.join("cache"))
+            .env(
+                "PATH",
+                format!("{}:/usr/bin:/bin", self.root.join("bin").display()),
+            )
+            .env("FAKE_LOG", self.root.join("calls.log"));
+        command
     }
 
     fn calls(&self) -> usize {
@@ -132,6 +142,147 @@ fn run_needs_a_configuration() {
     let output = sandbox.run(&["run"]);
     assert!(!output.status.success());
     assert!(text(&output.stderr).contains("run `atlas-nano configure` first"));
+}
+
+#[test]
+fn interrupting_atlas_stops_all_active_labelers_and_their_helpers() {
+    use rustix::process::{Pid, Signal, kill_process};
+
+    for signal in [Signal::INT, Signal::TERM] {
+        let sandbox = Sandbox::new(&format!("interrupted-{}", signal.as_raw()));
+        sandbox.session("first", "First request", 1);
+        sandbox.session("second", "Second request", 1);
+        let configured = sandbox.answer(&["configure"], "\n\n2\n\n\n\n");
+        assert!(
+            configured.status.success(),
+            "{}\n{}",
+            text(&configured.stdout),
+            text(&configured.stderr)
+        );
+        fs::write(
+            sandbox.root.join("bin/claude"),
+            r#"#!/bin/sh
+cat >/dev/null
+echo $$ >> "$FAKE_LOG.active"
+sleep 30 &
+echo $! >> "$FAKE_LOG.helpers"
+wait
+"#,
+        )
+        .unwrap();
+        let mut child = sandbox
+            .command(&["run", "--no-cache"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let ready = Instant::now() + WallDuration::from_secs(5);
+        while fs::read_to_string(sandbox.root.join("calls.log.helpers"))
+            .map_or(0, |text| text.lines().count())
+            < 2
+        {
+            if Instant::now() >= ready || child.try_wait().unwrap().is_some() {
+                let _ = kill_process(Pid::from_child(&child), Signal::TERM);
+                let _ = child.wait();
+                panic!("both fake labelers did not start");
+            }
+            thread::sleep(WallDuration::from_millis(10));
+        }
+        kill_process(Pid::from_child(&child), signal).unwrap();
+        let until = Instant::now() + WallDuration::from_secs(5);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() >= until {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("Atlas did not terminate on {signal:?}");
+            }
+            thread::sleep(WallDuration::from_millis(10));
+        };
+        assert_eq!(status.signal(), Some(signal.as_raw()));
+        for file in ["calls.log.active", "calls.log.helpers"] {
+            for pid in fs::read_to_string(sandbox.root.join(file)).unwrap().lines() {
+                let until = Instant::now() + WallDuration::from_secs(2);
+                loop {
+                    let state = Command::new("ps")
+                        .args(["-p", pid, "-o", "stat="])
+                        .output()
+                        .unwrap();
+                    let state = text(&state.stdout);
+                    if state.trim().is_empty() || state.trim().starts_with('Z') {
+                        break;
+                    }
+                    assert!(
+                        Instant::now() < until,
+                        "fake process {pid} survived {signal:?}: {state}"
+                    );
+                    thread::sleep(WallDuration::from_millis(10));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn codex_collects_its_answer_and_rejects_oversized_or_special_files() {
+    let sandbox = Sandbox::new("codex-answer");
+    sandbox.session("plain", "A plain request", 1);
+    assert!(
+        sandbox
+            .answer(&["configure"], "\n\n\n\n\n\n")
+            .status
+            .success()
+    );
+    let config = sandbox.root.join("config/atlas-nano/config.toml");
+    let mut saved =
+        atlas_nano::config::Config::decode(&fs::read_to_string(&config).unwrap()).unwrap();
+    saved.labeler.client = atlas_nano::model::Client::Codex;
+    saved.labeler.model = "gpt-6-luna".into();
+    fs::write(config, saved.encode()).unwrap();
+    let fake = sandbox.root.join("bin/codex");
+    fs::write(
+        &fake,
+        r#"#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then shift; answer=$1; fi
+  shift
+done
+cat >/dev/null
+case "$FAKE_MODE" in
+  oversized) dd if=/dev/zero of="$answer" bs=1048576 count=9 2>/dev/null ;;
+  fifo) mkfifo "$answer" ;;
+  *) echo '{"work":"Debugging","topic":"Security","prs":[]}' > "$answer" ;;
+esac
+echo '{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":5}}'
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+    for (mode, expected) in [
+        ("ok", "1 labeled, 0 from cache, 0 unlabeled"),
+        ("oversized", "0 labeled, 0 from cache, 1 unlabeled"),
+        ("fifo", "0 labeled, 0 from cache, 1 unlabeled"),
+    ] {
+        let output = sandbox
+            .command(&["run", "--no-cache", "--retries", "0"])
+            .env("FAKE_MODE", mode)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", text(&output.stderr));
+        assert!(
+            text(&output.stdout).contains(expected),
+            "{}",
+            text(&output.stdout)
+        );
+        if mode == "oversized" {
+            assert!(text(&output.stderr).contains("answer file exceeded"));
+        } else if mode == "fifo" {
+            assert!(text(&output.stderr).contains("regular file"));
+        }
+    }
 }
 
 #[test]

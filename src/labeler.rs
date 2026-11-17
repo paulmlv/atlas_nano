@@ -2,14 +2,14 @@
 //!
 //! The command lines are the required flags in `docs/LABELING.md`.
 
+mod process;
+
+use std::collections::HashSet;
 use std::fs;
-use std::io::{Read, Write as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::thread;
-use std::time::{Duration, Instant};
 
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 use crate::model::{Client, PrRole, PullRequest};
 use crate::prompt::Prompt;
 use crate::taxonomy::Taxonomy;
+use process::{Budget, read_answer, run};
 
 /// The reasoning effort of every labeling call. It is part of the label cache key.
 pub const EFFORT: &str = "medium";
@@ -153,7 +154,8 @@ fn pull_request_url(url: &str) -> Option<String> {
 }
 
 /// Check an answer against the schema's labels and read it.
-fn answer(value: &Value, schema: &Value) -> Result<Answer, Failure> {
+fn answer(value: &Value, schema: &Value, budget: &Budget) -> Result<Answer, Failure> {
+    budget.check_total()?;
     let label = |name: &str| -> Result<String, Failure> {
         let allowed = schema["properties"][name]["enum"].as_array();
         match value[name].as_str() {
@@ -170,21 +172,18 @@ fn answer(value: &Value, schema: &Value) -> Result<Answer, Failure> {
         let invalid =
             || Failure::Invalid("the answer's `prs` is not a list of pull requests".into());
         let listed = value["prs"].as_array().ok_or_else(invalid)?;
-        let entries = listed
-            .iter()
-            .map(|pr| {
-                let role = pr["role"].as_str().and_then(PrRole::from_name);
-                match (pr["url"].as_str(), role) {
-                    (Some(url), Some(role)) => Ok((url, role)),
-                    _ => Err(invalid()),
-                }
-            })
-            .collect::<Result<Vec<_>, _>>()?;
         // An entry that names no pull request is dropped; the rest are kept once each.
-        let mut prs: Vec<PullRequest> = Vec::new();
-        for (url, role) in entries {
+        let mut prs = Vec::new();
+        let mut seen = HashSet::new();
+        for pr in listed {
+            budget.check_total()?;
+            let role = pr["role"].as_str().and_then(PrRole::from_name);
+            let (url, role) = match (pr["url"].as_str(), role) {
+                (Some(url), Some(role)) => (url, role),
+                _ => return Err(invalid()),
+            };
             if let Some(url) = pull_request_url(url)
-                && !prs.iter().any(|seen| seen.url == url)
+                && seen.insert(url.clone())
             {
                 prs.push(PullRequest { url, role });
             }
@@ -193,65 +192,24 @@ fn answer(value: &Value, schema: &Value) -> Result<Answer, Failure> {
     } else {
         Vec::new()
     };
-    Ok(Answer {
+    let answer = Answer {
         work: label("work")?,
         topic: label("topic")?,
         prs,
-    })
+    };
+    budget.check_total()?;
+    Ok(answer)
 }
 
-/// How long one labeling call may run before it is stopped and its session left unlabeled.
-const TIMEOUT: Duration = Duration::from_secs(600);
+/// Per-call files are removed on every return path, including a spawn failure or timeout.
+struct CallFiles([PathBuf; 3]);
 
-/// Run a client with the conversation on standard input and return its output and whether it
-/// succeeded. A call still running after `TIMEOUT` is stopped.
-fn run(mut command: Command, input: &str) -> Result<(bool, String, String), Failure> {
-    let program = command.get_program().to_string_lossy().into_owned();
-    let mut child = command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| Failure::Rejected(format!("could not run `{program}`: {error}")))?;
-    let mut stdin = child.stdin.take().expect("standard input is piped");
-    let text = input.to_string();
-    // Pipes are written and read on their own threads, so a full pipe cannot block the call.
-    let writer = thread::spawn(move || stdin.write_all(text.as_bytes()));
-    let read = |mut pipe: Box<dyn Read + Send>| {
-        thread::spawn(move || {
-            let mut bytes = Vec::new();
-            let _ = pipe.read_to_end(&mut bytes);
-            String::from_utf8_lossy(&bytes).into_owned()
-        })
-    };
-    let stdout = read(Box::new(
-        child.stdout.take().expect("standard output is piped"),
-    ));
-    let stderr = read(Box::new(
-        child.stderr.take().expect("standard error is piped"),
-    ));
-    let started = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if started.elapsed() < TIMEOUT => thread::sleep(Duration::from_millis(50)),
-            Ok(None) => {
-                // The client stays in this process's group, so Ctrl-C still reaches it and the
-                // processes it started.
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(Failure::Rejected(format!(
-                    "`{program}` was stopped after {} minutes",
-                    TIMEOUT.as_secs() / 60
-                )));
-            }
-            Err(error) => return Err(Failure::Rejected(format!("`{program}` failed: {error}"))),
+impl Drop for CallFiles {
+    fn drop(&mut self) {
+        for path in &self.0 {
+            let _ = fs::remove_file(path);
         }
-    };
-    let _ = writer.join();
-    let stdout = stdout.join().unwrap_or_default();
-    let stderr = stderr.join().unwrap_or_default();
-    Ok((status.success(), stdout, stderr))
+    }
 }
 
 /// The last non-empty line of a client's error output, for a short message.
@@ -266,15 +224,17 @@ fn last_line(text: &str) -> &str {
 impl Labeler<'_> {
     /// Label one conversation, already rendered and wrapped as the prompt.
     pub fn call(&self, prompt: &str) -> Call {
+        let budget = Budget::new();
         let mut spent = Spent::default();
         let answer = match self.client {
-            Client::Claude => self.claude(prompt, &mut spent),
-            Client::Codex => self.codex(prompt, &mut spent),
+            Client::Claude => self.claude(prompt, &mut spent, &budget),
+            Client::Codex => self.codex(prompt, &mut spent, &budget),
         };
+        let answer = budget.check_total().and(answer);
         Call { answer, spent }
     }
 
-    fn claude(&self, prompt: &str, spent: &mut Spent) -> Result<Answer, Failure> {
+    fn claude(&self, prompt: &str, spent: &mut Spent, budget: &Budget) -> Result<Answer, Failure> {
         let mut command = Command::new("claude");
         // Without this, an `@path` in the conversation makes Claude Code attach that file.
         command.env("CLAUDE_CODE_DISABLE_ATTACHMENTS", "1");
@@ -298,8 +258,10 @@ impl Labeler<'_> {
             "--json-schema",
             &self.schema.to_string(),
         ]);
-        let (succeeded, stdout, stderr) = run(command, prompt)?;
+        let (succeeded, stdout, stderr) = run(command, prompt, budget)?;
+        budget.check_total()?;
         let result: Value = serde_json::from_str(stdout.trim()).unwrap_or(Value::Null);
+        budget.check_total()?;
         let usage = &result["usage"];
         let count = |name: &str| usage[name].as_u64().unwrap_or(0);
         let cached = count("cache_read_input_tokens");
@@ -317,22 +279,25 @@ impl Labeler<'_> {
                 .unwrap_or_else(|| last_line(&stderr));
             return Err(Failure::Rejected(format!("claude: {reason}")));
         }
-        answer(&result["structured_output"], &self.schema)
+        answer(&result["structured_output"], &self.schema, budget)
     }
 
-    fn codex(&self, prompt: &str, spent: &mut Spent) -> Result<Answer, Failure> {
+    fn codex(&self, prompt: &str, spent: &mut Spent, budget: &Budget) -> Result<Answer, Failure> {
         // Each call has its own files, so parallel calls never read a file another is writing.
         static CALLS: AtomicU64 = AtomicU64::new(0);
         let unique = CALLS.fetch_add(1, Ordering::Relaxed);
-        let answer_path = self.folder.join(format!("answer-{unique}.json"));
-        let schema_path = self.folder.join(format!("schema-{unique}.json"));
-        let instructions_path = self.folder.join(format!("instructions-{unique}.md"));
+        let files = CallFiles([
+            self.folder.join(format!("answer-{unique}.json")),
+            self.folder.join(format!("schema-{unique}.json")),
+            self.folder.join(format!("instructions-{unique}.md")),
+        ]);
+        let [answer_path, schema_path, instructions_path] = &files.0;
         let write = |path: &Path, text: &str| {
             fs::write(path, text)
                 .map_err(|error| Failure::Rejected(format!("{}: {error}", path.display())))
         };
-        write(&schema_path, &self.schema.to_string())?;
-        write(&instructions_path, &self.prompt.codex_system)?;
+        write(schema_path, &self.schema.to_string())?;
+        write(instructions_path, &self.prompt.codex_system)?;
         let mut command = Command::new("codex");
         command
             .current_dir(self.folder)
@@ -362,18 +327,27 @@ impl Labeler<'_> {
         }
         command
             .arg("--output-schema")
-            .arg(&schema_path)
+            .arg(schema_path)
             .arg("-o")
-            .arg(&answer_path);
+            .arg(answer_path);
         command.args(["--json", "-"]);
         let input = format!("{}\n{prompt}", self.prompt.instructions);
-        let (succeeded, stdout, stderr) = run(command, &input)?;
-        let events: Vec<Value> = stdout
-            .lines()
-            .filter_map(|line| serde_json::from_str(line).ok())
-            .collect();
-        let event = |name: &str| events.iter().rev().find(|event| event["type"] == name);
-        let usage = event("turn.completed").map_or(&Value::Null, |event| &event["usage"]);
+        let (succeeded, stdout, stderr) = run(command, &input, budget)?;
+        // Read the file before parsing events: it shares the response-collection deadline.
+        let written = read_answer(answer_path, budget);
+        let (mut completed, mut failed) = (Value::Null, Value::Null);
+        for line in stdout.lines() {
+            budget.check_total()?;
+            if let Ok(event) = serde_json::from_str::<Value>(line) {
+                match event["type"].as_str() {
+                    Some("turn.completed") => completed = event,
+                    Some("turn.failed") => failed = event,
+                    _ => {}
+                }
+            }
+        }
+        budget.check_total()?;
+        let usage = &completed["usage"];
         let count = |name: &str| usage[name].as_u64().unwrap_or(0);
         *spent = Spent {
             input_tokens: count("input_tokens"),
@@ -381,12 +355,8 @@ impl Labeler<'_> {
             output_tokens: count("output_tokens"),
             cost: None,
         };
-        let written = fs::read_to_string(&answer_path).ok();
-        for path in [&answer_path, &schema_path, &instructions_path] {
-            let _ = fs::remove_file(path);
-        }
         // A `Reconnecting...` error event is a retry: only a failed turn or no answer is a failure.
-        if let Some(failed) = event("turn.failed") {
+        if !failed.is_null() {
             let reason = failed["error"]["message"]
                 .as_str()
                 .unwrap_or("the turn failed");
@@ -395,10 +365,11 @@ impl Labeler<'_> {
         if !succeeded {
             return Err(Failure::Rejected(format!("codex: {}", last_line(&stderr))));
         }
-        let text = written.ok_or(Failure::Invalid("codex wrote no answer".to_string()))?;
+        let text = written?;
         let value: Value = serde_json::from_str(text.trim())
             .map_err(|error| Failure::Invalid(format!("codex's answer is not JSON: {error}")))?;
-        answer(&value, &self.schema)
+        budget.check_total()?;
+        answer(&value, &self.schema, budget)
     }
 }
 
@@ -424,6 +395,22 @@ pub fn no_save_support(client: Client) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn validation_uses_the_total_deadline_after_the_response_deadline() {
+        let schema = schema(&Taxonomy::built_in(), false);
+        let value = json!({"work": "Debugging", "topic": "Security"});
+        let reading_done = Budget::with_limits(Duration::ZERO, Duration::from_secs(1));
+        assert!(answer(&value, &schema, &reading_done).is_ok());
+        let expired = Budget::with_limits(Duration::ZERO, Duration::ZERO);
+        assert!(
+            answer(&value, &schema, &expired)
+                .unwrap_err()
+                .message()
+                .contains("15-minute")
+        );
+    }
 
     #[test]
     fn the_schema_lists_the_labels_and_adds_pull_requests_on_request() {
@@ -478,7 +465,7 @@ mod tests {
             {"url": "https://github.com/o/r/pull/7", "role": "Reviewed"},
             {"url": "https://github.com/o/r/pull/7#discussion_r1", "role": "Reviewed"}]});
         assert_eq!(
-            answer(&value, &schema).unwrap().prs,
+            answer(&value, &schema, &Budget::new()).unwrap().prs,
             [PullRequest {
                 url: "https://github.com/o/r/pull/7".into(),
                 role: PrRole::Reviewed
@@ -492,7 +479,7 @@ mod tests {
         let good = json!({"work": "Debugging", "topic": "Security", "prs": [
             {"url": "https://github.com/o/r/pull/1", "role": "Reviewed"}]});
         assert_eq!(
-            answer(&good, &schema).unwrap(),
+            answer(&good, &schema, &Budget::new()).unwrap(),
             Answer {
                 work: "Debugging".into(),
                 topic: "Security".into(),
@@ -506,20 +493,23 @@ mod tests {
         let invented = json!({"work": "Debugging", "topic": "Security", "prs": [
             {"url": "https://github.com/o/r/pull/2", "role": "Invented"}]});
         assert!(matches!(
-            answer(&invented, &schema),
+            answer(&invented, &schema, &Budget::new()),
             Err(Failure::Invalid(_))
         ));
         let missing = json!({"work": "Debugging", "topic": "Security"});
         assert!(matches!(
-            answer(&missing, &schema),
+            answer(&missing, &schema, &Budget::new()),
             Err(Failure::Invalid(_))
         ));
         let without = super::schema(&Taxonomy::built_in(), false);
-        assert_eq!(answer(&missing, &without).unwrap().prs, []);
+        assert_eq!(answer(&missing, &without, &Budget::new()).unwrap().prs, []);
         let bad = json!({"work": "Debugging", "topic": "Astrology", "prs": []});
-        assert!(matches!(answer(&bad, &schema), Err(Failure::Invalid(_))));
         assert!(matches!(
-            answer(&Value::Null, &schema),
+            answer(&bad, &schema, &Budget::new()),
+            Err(Failure::Invalid(_))
+        ));
+        assert!(matches!(
+            answer(&Value::Null, &schema, &Budget::new()),
             Err(Failure::Invalid(_))
         ));
     }
