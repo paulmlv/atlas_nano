@@ -17,7 +17,7 @@ What is left to test and decide for Atlas Nano. The [command line](CLI.md), [rep
   category tables have not run against the real clients at scale.
 - Rate limits at many calls at once, Codex with many calls at once, and the
   [limit on calls at once](LABELING_EXPERIMENTS.md#calls-at-once) on machines other than one Mac.
-- Chunking on a real session long enough to need it.
+- Chunking end to end in `atlas-nano run`.
 - Codex as the labeler for a whole run, and its usage and cost figures.
 - Pull request mapping through the tool, and pull request numbers given without a URL across many
   repositories.
@@ -26,16 +26,8 @@ What is left to test and decide for Atlas Nano. The [command line](CLI.md), [rep
 - Run-to-run variation of Astra and Luna, and of Opus and Haiku on more than the one
   [measurement](LABELING_EXPERIMENTS.md#model-comparison) so far.
 - Moving the labeling instructions into the Codex instructions file.
-
-## Manual review
-
-No label has been checked by a person; every [measurement](LABELING_EXPERIMENTS.md) so far is
-agreement between models. Before the label lists are frozen, a person reviews a labeled sample of
-their own conversations. That review also settles:
-
-- whether to keep the reworded type-of-work definitions, which did not raise agreement;
-- the split between Backend and APIs and Data storage and pipelines;
-- the Translating and Creative work labels, which have not been tried on real conversations.
+- Before the label lists are frozen, a person's check of the split between Backend and APIs and Data
+  storage and pipelines, and of Translating and Creative work.
 
 ## Known limits
 
