@@ -4,8 +4,9 @@ Atlas Nano labels and accounts for all local Claude Code and Codex conversations
 into AI spend.
 
 It reads the sessions both clients keep on this computer, prices every model request at API list
-prices, and asks a small model, through your own Claude Code or Codex subscription, for each
-session's type of work and topic. Nothing else leaves the computer.
+prices, and sends [selected conversation text](docs/LABELING.md#what-is-sent) through your installed
+Claude Code or Codex client to label each session's type of work and topic. Conversation data is
+never sent to Atlas servers. See [privacy](docs/PRIVACY.md) for accounts, providers, and logging.
 
 ## Install
 
@@ -40,6 +41,7 @@ atlas-nano run --confirm    # print the labeling estimate and ask first
 ## Documents
 
 - [Command line](docs/CLI.md): the commands, their flags, and the configuration.
+- [Privacy](docs/PRIVACY.md): what leaves the computer, which account is used, and what stays local.
 - [Report](docs/REPORT.md): the printed report, the CSV and JSON, and how each number is defined.
 - [Labeling](docs/LABELING.md): what is sent to the labeling model and how the call is made.
 - [Taxonomy](docs/TAXONOMY.md): how conversations are labeled, and the pull request mapping.

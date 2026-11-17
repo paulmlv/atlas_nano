@@ -7,6 +7,9 @@ call. The [taxonomy](TAXONOMY.md) describes the labels and the default models, a
 [labeling experiments](LABELING_EXPERIMENTS.md) measure what is sent, the fixed context per call,
 and how much the choice of model changes the labels.
 
+The [privacy page](PRIVACY.md) explains which account receives the text, cross-provider labeling,
+and the distinction between local session saving and provider retention.
+
 ## Which sessions are labeled
 
 - Every session is labeled on its own, including subagent sessions, which do not take their parent's
@@ -167,8 +170,8 @@ references its parent's history without copying it, the text is rebuilt from the
   try's tokens and cost count in the labeling summary, so retries can cost more than the estimate.
 - A call that still fails after its last try is logged, its session counts as unlabeled, and the run
   continues. A session split into chunks is unlabeled when any of its calls fails.
-- Labeling calls are never saved as sessions. The no-save flags are the only mechanism, and client
-  versions without them are not supported.
+- Labeling calls are not saved as local sessions. The no-save flags are the only mechanism, and
+  client versions without them are not supported. They do not set the provider's retention policy.
 
 ## Required flags
 

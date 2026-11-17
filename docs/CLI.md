@@ -5,7 +5,8 @@ makes no network request of its own. Labeling goes through the installed Claude 
 the user is signed in to: on a subscription it counts against the plan's usage limits and is not
 billed as API calls, and every dollar figure is what the API would cost, not a charge. The exception
 is an exported `ANTHROPIC_API_KEY`: Claude Code bills that key, and its dollar figures are charges.
-Both commands say which applies before any call.
+Both commands say which applies before any call. The [privacy page](PRIVACY.md) explains what is
+sent and how the client's current authentication, routing, and logging apply.
 
 Output to a terminal is in color, in the theme chosen in `configure`. Output to a file or a pipe is
 plain text, and so is any output when `NO_COLOR` is set to a non-empty value, `CLICOLOR` is `0`, or
