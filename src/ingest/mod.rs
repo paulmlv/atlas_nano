@@ -90,7 +90,7 @@ fn read_jsonl(path: &Path) -> io::Result<(Vec<Value>, Vec<LineIssue>)> {
             Err(_) => {
                 issues.push(LineIssue {
                     line: records.len() + 1,
-                    reason: "could not finish reading the transcript",
+                    reason: LineProblem::ReadError,
                 });
                 break;
             }
@@ -100,11 +100,11 @@ fn read_jsonl(path: &Path) -> io::Result<(Vec<Value>, Vec<LineIssue>)> {
         } else {
             match serde_json::from_slice::<Value>(&line) {
                 Ok(value) if value.is_object() => Ok(value),
-                Ok(_) => Err("expected a JSON object"),
+                Ok(_) => Err(LineProblem::NonObject),
                 Err(error) if !compressed && !line.ends_with(b"\n") && error.is_eof() => {
-                    Err("unfinished final record; the client may still be writing it")
+                    Err(LineProblem::Unfinished)
                 }
-                Err(_) => Err("malformed JSON record"),
+                Err(_) => Err(LineProblem::Malformed),
             }
         };
         let record = parsed.unwrap_or_else(|reason| {
@@ -169,7 +169,27 @@ pub struct FileIssues {
 
 pub struct LineIssue {
     pub line: usize,
-    pub reason: &'static str,
+    pub reason: LineProblem,
+}
+
+pub enum LineProblem {
+    ReadError,
+    NonObject,
+    Unfinished,
+    Malformed,
+    MissingUsage,
+}
+
+impl std::fmt::Display for LineProblem {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        out.write_str(match self {
+            Self::ReadError => "could not finish reading the transcript",
+            Self::NonObject => "expected a JSON object",
+            Self::Unfinished => "unfinished final record; the client may still be writing it",
+            Self::Malformed => "malformed JSON record",
+            Self::MissingUsage => "missing or unreadable token usage",
+        })
+    }
 }
 
 struct Parsed {
@@ -182,12 +202,8 @@ struct Parsed {
 }
 
 impl Parsed {
-    fn quality(&self) -> (usize, Reverse<usize>, usize) {
-        (
-            self.valid,
-            Reverse(self.issues.len()),
-            self.session.usage.len(),
-        )
+    fn quality(&self) -> (usize, Reverse<usize>) {
+        (self.valid, Reverse(self.issues.len()))
     }
 }
 
@@ -229,30 +245,20 @@ pub fn load(home: &Path, clients: &[Client]) -> Loaded {
         .collect();
     let mut indices = HashMap::new();
     let mut chosen: Vec<Parsed> = Vec::new();
-    let mut duplicate_usage = Vec::new();
     for ((_, path), result) in files.iter().zip(parsed) {
         match result {
             Err(error) => unreadable.push((path.clone(), error.to_string())),
-            Ok(mut copy) => {
+            Ok(copy) => {
                 let index = *indices
                     .entry(copy.session.reference())
                     .or_insert(chosen.len());
                 if index == chosen.len() {
                     chosen.push(copy);
-                } else {
-                    if copy.quality() > chosen[index].quality() {
-                        std::mem::swap(&mut chosen[index], &mut copy);
-                    }
-                    duplicate_usage.push((index, copy.session.usage));
+                } else if copy.quality() > chosen[index].quality() {
+                    chosen[index] = copy;
                 }
             }
         }
-    }
-    for (index, readings) in duplicate_usage {
-        let entry = &mut chosen[index];
-        entry
-            .evidence
-            .recover_from_copy(&mut entry.session, readings);
     }
     let mut sessions = Vec::with_capacity(chosen.len());
     let mut versions = Vec::with_capacity(chosen.len());
@@ -271,11 +277,13 @@ pub fn load(home: &Path, clients: &[Client]) -> Loaded {
         if let Some(line) = line {
             records.push(LineIssue {
                 line,
-                reason: "missing or unreadable token usage",
+                reason: LineProblem::MissingUsage,
             });
         }
         if !records.is_empty() {
-            sessions[n].usage_missing = true;
+            sessions[n].usage_missing = records
+                .iter()
+                .any(|issue| !matches!(issue.reason, LineProblem::Unfinished));
             issues.push(FileIssues {
                 session: n,
                 path,
@@ -617,7 +625,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_copies_recover_identified_responses_once_with_or_without_legacy_totals() {
+    fn codex_duplicates_only_count_usage_from_the_selected_copy() {
         let home = home("codex-complementary-copies");
         let sessions = home.join(".codex/sessions");
         let archive = home.join(".codex/archived_sessions");
@@ -656,19 +664,29 @@ mod tests {
             );
         }
         let loaded = load(&home, &[Client::Codex]);
-        fs::remove_dir_all(home).unwrap();
         assert_eq!(loaded.sessions.len(), 2);
         for session in loaded.sessions {
-            assert_eq!(session.usage.len(), 1, "{}", session.id);
-            let usage = &session.usage[0];
-            assert_eq!(usage.id, session.id);
-            assert_eq!((usage.input, usage.output), (100, 7));
-            assert!(!session.usage_missing, "{}", session.id);
+            assert!(session.usage_missing);
+            if session.id == "mixed" {
+                assert_eq!(session.usage.len(), 1);
+                assert_eq!((session.usage[0].input, session.usage[0].output), (100, 7));
+            } else {
+                assert!(session.usage.is_empty());
+            }
         }
+        // A separate rollout with the very same response ID supplies a real fork measurement.
+        fs::rename(archive.join("mixed.jsonl"), archive.join("fork.jsonl")).unwrap();
+        let loaded = load(&home, &[Client::Codex]);
+        let by_id = |id| loaded.sessions.iter().find(|s| s.id == id).unwrap();
+        assert!(by_id("mixed").usage.is_empty());
+        assert!(!by_id("mixed").usage_missing);
+        assert_eq!(by_id("fork").usage.len(), 1);
+        assert_eq!(by_id("fork").usage[0].id, "mixed");
+        fs::remove_dir_all(home).unwrap();
     }
 
     #[test]
-    fn a_shorter_copy_only_recovers_measurements_for_matching_responses() {
+    fn a_shorter_copy_does_not_add_spend_to_the_selected_transcript() {
         let home = home("complementary-copies");
         let folder = home.join(".claude/projects");
         let mut broken = reply("m2", 2);
@@ -684,14 +702,14 @@ mod tests {
             false,
         );
         let loaded = load(&home, &[Client::Claude]);
-        assert!(loaded.issues.is_empty());
+        assert!(loaded.sessions[0].usage_missing);
         let mut ids: Vec<_> = loaded.sessions[0]
             .usage
             .iter()
             .map(|u| u.id.as_str())
             .collect();
         ids.sort_unstable();
-        assert_eq!(ids, ["m1", "m2", "m3"]);
+        assert_eq!(ids, ["m1", "m3"]);
         fs::remove_dir_all(home).unwrap();
     }
 
@@ -1011,18 +1029,11 @@ mod tests {
 
         let loaded = load(&home, &[Client::Claude]);
         assert!(loaded.issues.is_empty());
-        let parent = loaded.sessions.iter().find(|s| s.id == "parent").unwrap();
-        assert_eq!(parent.usage.len(), 2);
-        assert!(parent.usage.iter().any(|u| u.id == "copied"));
-        assert!(
-            loaded
-                .sessions
-                .iter()
-                .find(|s| s.id == "fork")
-                .unwrap()
-                .usage
-                .is_empty()
-        );
+        let by_id = |id| loaded.sessions.iter().find(|s| s.id == id).unwrap();
+        assert_eq!(by_id("parent").usage.len(), 1);
+        assert_eq!(by_id("parent").usage[0].id, "stream");
+        assert_eq!(by_id("fork").usage.len(), 1);
+        assert_eq!(by_id("fork").usage[0].id, "copied");
         fs::remove_dir_all(home).unwrap();
     }
 

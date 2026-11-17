@@ -189,9 +189,9 @@ recorded. `spend_usd` is rounded to six decimals when known. When `usage_status`
   subscription charges.
 - **Prices:** the price table is built into the binary, and the report prints the date it was
   checked. Nothing is fetched from the network.
-- **Each request counts once:** a model request copied into several sessions, as a fork copies its
-  parent's history, counts only in the session that started first. Fork A into B after $10 and spend
-  $2 more in B: A shows $10 and B shows $2.
+- **Each request counts once.** A request copied across sessions is charged to its recorded owner
+  when that session holds a readable measurement, or to the earliest session holding one. If only a
+  fork records the measurement, the spend stays with the fork.
 - **Working time:** for each user request, the time from the request to the model's recorded
   completion, summed per session. It is unknown, not zero, for a turn with no recorded completion,
   an interrupted turn, a turn with work recorded after its completion, and a turn the user steered

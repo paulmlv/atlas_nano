@@ -89,8 +89,8 @@ individual responses a measurement covers. A recorded zero is valid usage.
 
 Warnings on standard error identify the file and line of malformed records and the first unresolved
 usage gap in each affected session. An unfinished final JSON record is identified separately because
-the client may still be writing it. A file with an unreadable start date can produce a warning even
-when Atlas cannot place it in the selected period.
+the client may still be writing it. That warning alone leaves usage complete. A file with an
+unreadable start date can produce a warning even when Atlas cannot place it in the selected period.
 
 ### Labeling cost
 

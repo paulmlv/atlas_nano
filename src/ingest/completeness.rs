@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::model::{Client, Session, Usage};
+use crate::model::{Client, Session};
 use time::UtcDateTime;
 
 #[derive(Debug, Hash, Eq, PartialEq)]
@@ -39,32 +39,6 @@ impl Evidence {
                 .collect(),
             totals,
         });
-    }
-
-    /// Use a shorter copy only for responses that appear in the chosen transcript.
-    pub fn recover_from_copy(&self, session: &mut Session, other: Vec<Usage>) {
-        if (self.gaps.is_empty() && self.legacy.is_empty()) || other.is_empty() {
-            return;
-        }
-        let mut wanted: HashSet<&str> = self
-            .gaps
-            .iter()
-            .filter_map(|gap| match &gap.key {
-                Some(Key::Response(id)) => Some(id.as_str()),
-                _ => None,
-            })
-            .chain(
-                self.legacy
-                    .iter()
-                    .flat_map(|turn| turn.responses.iter().map(|(id, _)| id.as_str())),
-            )
-            .collect();
-        for usage in &session.usage {
-            wanted.remove(usage.id.as_str());
-        }
-        session
-            .usage
-            .extend(other.into_iter().filter(|u| wanted.remove(u.id.as_str())));
     }
 
     pub fn missing_response(&mut self, id: Option<&str>, owner: Option<&str>, line: usize) {
@@ -123,7 +97,7 @@ pub(super) fn count_requests_once(
         }
     }
     prefer_response_records(evidence, &mut owners);
-    let lines = resolve_gaps(sessions, evidence, &mut owners);
+    let lines = resolve_gaps(sessions, evidence, &owners);
     for (index, session) in sessions.iter_mut().enumerate() {
         let owner = &owners[&session.client];
         let mut seen = HashSet::new();
@@ -135,7 +109,7 @@ pub(super) fn count_requests_once(
     lines
 }
 
-/// A response ID ties a recovered measurement to a legacy fallback. Turn names alone can repeat
+/// A response ID ties a fork's per-response measurement to a legacy fallback. Turn names alone can repeat
 /// in unrelated rollouts.
 fn prefer_response_records(evidence: &mut [Evidence], requests: &mut Owners) {
     let Some(readings) = requests.get_mut(&Client::Codex) else {
@@ -162,9 +136,9 @@ fn prefer_response_records(evidence: &mut [Evidence], requests: &mut Owners) {
 /// Return the first unresolved usage gap in each session. Streaming blocks, resumed sessions,
 /// and forks can supply a measurement, or repeat the same gap, in another record.
 fn resolve_gaps(
-    sessions: &mut [Session],
+    sessions: &[Session],
     evidence: &[Evidence],
-    requests: &mut Owners,
+    requests: &Owners,
 ) -> Vec<Option<usize>> {
     let mut lines = vec![None; sessions.len()];
     if evidence.iter().all(|source| source.gaps.is_empty()) {
@@ -182,6 +156,13 @@ fn resolve_gaps(
                 flag(n, gap.line);
                 continue;
             };
+            let measured = match key {
+                Key::Turn(id) => turns.contains(id),
+                Key::Response(id) => requests[&session.client].contains_key(id),
+            };
+            if measured {
+                continue;
+            }
             let held = owners.entry((session.client, key)).or_insert((n, gap));
             if ownership_rank(session, gap.owner.as_deref())
                 < ownership_rank(&sessions[held.0], held.1.owner.as_deref())
@@ -190,34 +171,8 @@ fn resolve_gaps(
             }
         }
     }
-    let mut recovered = Vec::new();
-    for ((client, key), (n, gap)) in owners {
-        match key {
-            Key::Turn(id) if turns.contains(id) => {}
-            Key::Response(id) if let Some(&(source, index)) = requests[&client].get(id) => {
-                // A fork can have the only readable copy of the original session's request.
-                // Restore it to the better-ranked holder before request deduplication.
-                let usage = &sessions[source].usage[index];
-                let recorded = gap.owner.as_deref().or(usage.owner.as_deref());
-                if ownership_rank(&sessions[n], recorded)
-                    < ownership_rank(&sessions[source], recorded)
-                {
-                    let mut copy = usage.clone();
-                    copy.owner = recorded.map(str::to_owned);
-                    recovered.push((n, gap.line, copy));
-                }
-            }
-            _ => flag(n, gap.line),
-        }
-    }
-    recovered.sort_unstable_by_key(|(n, line, _)| (*n, *line));
-    for (n, _, usage) in recovered {
-        let session = &mut sessions[n];
-        requests
-            .get_mut(&session.client)
-            .expect("each client has owners")
-            .insert(usage.id.clone(), (n, session.usage.len()));
-        session.usage.push(usage);
+    for (n, gap) in owners.into_values() {
+        flag(n, gap.line);
     }
     lines
 }

@@ -163,7 +163,15 @@ fn partial_spend_keeps_the_recorded_subtotal_and_reports_damaged_lines() {
     let timestamp = UtcDateTime::now().format(&Rfc3339).unwrap();
     let unmeasured = json!({"type":"assistant","timestamp":timestamp,"message":{
         "id":"second","model":"claude-haiku-5-5","content":[{"type":"thinking"}]}});
-    write!(file, "\n{unmeasured}\nbad record\n{{\"type\":").unwrap();
+    write!(file, "\n{{\"type\":").unwrap();
+    file.flush().unwrap();
+    let live = run();
+    assert!(live.status.success());
+    assert_eq!(row(), before);
+    assert!(text(&live.stderr).contains("line 3: unfinished final record"));
+    assert!(!text(&live.stdout).contains("Incomplete usage"));
+
+    write!(file, "\"notice\"}}\n{unmeasured}\nbad record\n{{\"type\":").unwrap();
     drop(file);
     let output = run();
     assert!(output.status.success());
@@ -173,9 +181,9 @@ fn partial_spend_keeps_the_recorded_subtotal_and_reports_damaged_lines() {
     assert_eq!(after["tokens"], before["tokens"]);
     let warnings = text(&output.stderr);
     for message in [
-        "line 3: missing or unreadable token usage",
-        "line 4: malformed JSON record",
-        "line 5: unfinished final record",
+        "line 4: missing or unreadable token usage",
+        "line 5: malformed JSON record",
+        "line 6: unfinished final record",
     ] {
         assert!(
             warnings.contains(&format!("{transcript:?}, {message}")),
