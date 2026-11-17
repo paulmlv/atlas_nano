@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use chrono::{DateTime, Utc};
+use time::UtcDateTime;
 
 use crate::model::Turn;
 
@@ -23,7 +23,7 @@ pub enum Signal {
 #[derive(Debug, Clone)]
 pub struct Event {
     pub signal: Signal,
-    pub at: Option<DateTime<Utc>>,
+    pub at: Option<UtcDateTime>,
     pub run: Option<String>,
 }
 
@@ -84,18 +84,14 @@ pub fn turns(events: &[Event]) -> Vec<Turn> {
 
 #[cfg(test)]
 mod tests {
-    use chrono::{Duration, TimeZone};
+    use time::SignedDuration;
 
     use super::*;
 
-    fn at(second: u32) -> Option<DateTime<Utc>> {
-        Some(Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, second).unwrap())
-    }
-
-    fn event(signal: Signal, second: u32) -> Event {
+    fn event(signal: Signal, second: i64) -> Event {
         Event {
             signal,
-            at: at(second),
+            at: Some(UtcDateTime::UNIX_EPOCH + SignedDuration::seconds(second)),
             run: None,
         }
     }
@@ -111,7 +107,7 @@ mod tests {
             event(REQUEST, 30),
         ];
         let turns = turns(&events);
-        assert_eq!(turns[0].working, Some(Duration::seconds(9)));
+        assert_eq!(turns[0].working, Some(SignedDuration::seconds(9)));
         assert_eq!(turns[1].working, None);
     }
 
