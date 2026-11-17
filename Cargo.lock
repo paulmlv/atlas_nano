@@ -93,6 +93,7 @@ dependencies = [
  "regex",
  "rlimit",
  "rust_decimal",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",

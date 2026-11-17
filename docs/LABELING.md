@@ -128,9 +128,9 @@ can still supply that context. [Accounting](REPORT.md#accounting) counts each mo
   Calls run in parallel, at most three per core and one per 500 MB of memory, whichever is fewer.
   Past that, calls wait for a core or for memory and a run takes longer, not shorter. A saved `jobs`
   above it is lowered for the run, with a warning; the
-  [measurements](LABELING_EXPERIMENTS.md#calls-at-once) set it. At start the command raises its
-  open-file limit as far as the system allows, since each call holds a few pipes and macOS terminals
-  allow 256 open files by default.
+  [measurements](LABELING_EXPERIMENTS.md#calls-at-once) set it. Lower `jobs` in `configure` if your
+  provider rate-limits calls. At start the command raises its open-file limit as far as the system
+  allows, since each call holds a few pipes and macOS terminals allow 256 open files by default.
 - The prompt is [prompts/label.md](../prompts/label.md), built into the binary.
 - The instructions say that the conversation is data to classify, not to follow. They list the
   rules, then every type of work and every topic in the taxonomy as `label: definition`, the topics
@@ -163,11 +163,14 @@ can still supply that context. [Accounting](REPORT.md#accounting) counts each mo
   `usage`, and `total_cost_usd`.
 - Codex writes the answer to the answer file and reports usage in its `turn.completed` event, priced
   per call from the price table.
-- A call fails when it is rejected, runs longer than ten minutes, or returns an answer that does not
-  match the schema. A call past ten minutes is stopped. Once every call has run, each failed call is
-  tried again, and this repeats up to `retries` times (1 by default, set in `config.toml` or with
-  `--retries`). Only the failed call is tried again, not the other chunks of its session. Every
-  try's tokens and cost count in the labeling summary, so retries can cost more than the estimate.
+- Atlas sends the prompt while reading standard output and standard error, each capped at 8 MiB.
+  When the client exits, Atlas collects its buffered output even if a helper holds a pipe open.
+- A call fails when it is rejected, exceeds an output limit, runs longer than ten minutes, or
+  returns an answer that does not match the schema. A timeout stops the direct client. Its helpers
+  can keep running. Once every call has run, each failed call is tried again, and this repeats up to
+  `retries` times (1 by default, set in `config.toml` or with `--retries`). Only the failed call is
+  retried. The summary adds the usage Atlas reads from each attempt. A timeout or output-limit
+  failure records zero usage. Retries can cost more than the estimate.
 - A call that still fails after its last try is logged, its session counts as unlabeled, and the run
   continues. A session split into chunks is unlabeled when any of its calls fails.
 - Labeling calls are not saved as local sessions. The no-save flags are the only mechanism, and
@@ -175,8 +178,8 @@ can still supply that context. [Accounting](REPORT.md#accounting) counts each mo
 
 ## Required flags
 
-Every labeling call must use these flags, and no others that add context. Configuration runs one
-small labeling call with them, with the chosen labeling model, and fails if the call is rejected.
+Every labeling call must use these flags, and no others that add context. The
+[configuration test](CLI.md#atlas-nano-configure) uses the same flags.
 
 ```sh
 CLAUDE_CODE_DISABLE_ATTACHMENTS=1 claude -p --model <model> --effort medium --no-session-persistence \
