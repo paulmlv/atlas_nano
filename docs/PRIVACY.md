@@ -23,9 +23,9 @@ report then excludes the other client's sessions and spend. To include both clie
 making model calls, cover both and pass `--no-label` on every `run`. A plain `run` uses the saved
 labeler without asking again.
 
-Calls use the client's current authentication and routing. If Claude Code now uses a company
-gateway, it sends older Claude Code conversations there too. Atlas Nano does not verify that the
-account or provider matches the original conversation.
+Calls use the client's current authentication and inherited environment. For example, if you export
+`ANTHROPIC_BASE_URL` with your company's gateway URL, Claude Code can send older sessions there for
+labeling. Atlas Nano does not verify that the account or provider matches the original conversation.
 
 Labeling can use a different configuration from your interactive sessions because the
 [required flags](LABELING.md#required-flags) skip the client's regular settings files. Environment
