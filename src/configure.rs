@@ -112,16 +112,16 @@ pub fn provider_notice(coverage: &[Client], labeler: Client) -> Option<String> {
     ))
 }
 
-/// Run one small labeling call with the required flags; only a rejected call is an error.
-fn test_call(paint: Paint, client: Client, model: &str) -> Result<(), String> {
+/// Check that the chosen labeler can return a usable label with the selected settings.
+fn test_call(paint: Paint, client: Client, model: &str, pull_requests: bool) -> Result<(), String> {
     let folder = config::call_folder()?;
     let taxonomy = Taxonomy::built_in();
-    let prompt = Prompt::new(&taxonomy, false);
+    let prompt = Prompt::new(&taxonomy, pull_requests);
     let labeler = Labeler {
         client,
         model,
         prompt: &prompt,
-        schema: labeler::schema(&taxonomy, false),
+        schema: labeler::schema(&taxonomy, pull_requests),
         folder: &folder,
     };
     let text = "[user] What is the capital of France?\n\n[assistant] Paris.";
@@ -137,12 +137,10 @@ fn test_call(paint: Paint, client: Client, model: &str) -> Result<(), String> {
             );
             Ok(())
         }
-        Err(Failure::Invalid(reason)) => {
-            let note =
-                format!("test call with {model} ran, but its answer was not usable: {reason}");
-            println!("  {}", paint.tone(Tone::Warning, &note));
-            Ok(())
-        }
+        Err(Failure::Invalid(reason)) => Err(format!(
+            "the test call with {model} returned no usable label ({reason}). \
+             Run `atlas-nano configure` to try again"
+        )),
         Err(Failure::Rejected(reason)) => {
             Err(format!("the test call with {model} was rejected: {reason}"))
         }
@@ -302,7 +300,7 @@ pub fn configure() -> Result<(), String> {
 
     // Only the chosen labeler is tested: another client's call would cost and change nothing.
     println!("{}", paint.dim("testing a labeling call"));
-    test_call(paint, client, labeling_model(client))?;
+    test_call(paint, client, labeling_model(client), pull_requests)?;
     let config = Config {
         unit: "conversation".to_string(),
         coverage: covered,
