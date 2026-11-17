@@ -6,8 +6,9 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-use chrono::{Duration, Utc};
 use serde_json::json;
+use time::format_description::well_known::Rfc3339;
+use time::{SignedDuration, UtcDateTime};
 
 /// A stand-in for Claude Code: it answers `--help`, logs each call, rejects a conversation that
 /// says REJECT, rejects one that says FLAKY only the first time, and labels the rest by whether
@@ -50,8 +51,11 @@ impl Sandbox {
 
     /// Write a Claude Code session of one request and one reply, started `hours_ago`.
     fn session(&self, id: &str, request: &str, hours_ago: i64) {
-        let at = |minutes: i64| {
-            (Utc::now() - Duration::hours(hours_ago) + Duration::minutes(minutes)).to_rfc3339()
+        let start = UtcDateTime::now() - SignedDuration::hours(hours_ago);
+        let at = |minutes| {
+            (start + SignedDuration::minutes(minutes))
+                .format(&Rfc3339)
+                .unwrap()
         };
         let records = [
             json!({"type": "user", "uuid": format!("{id}-1"), "timestamp": at(0), "cwd": "/work/app",

@@ -98,7 +98,7 @@ impl PriceTable {
 mod tests {
     use std::str::FromStr as _;
 
-    use chrono::Utc;
+    use time::UtcDateTime;
 
     use super::*;
 
@@ -106,7 +106,7 @@ mod tests {
         Usage {
             id: String::new(),
             owner: None,
-            at: Utc::now(),
+            at: UtcDateTime::now(),
             model: model.to_string(),
             fast: false,
             input,
