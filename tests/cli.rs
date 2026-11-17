@@ -164,7 +164,7 @@ fn configure_requires_a_usable_label_before_saving() {
 
     // A failed reconfiguration leaves the previous settings byte-for-byte intact.
     for (response, reason) in [
-        ("bad JSON", "returned no usable label"),
+        ("bad JSON", "claude returned invalid JSON: expected value"),
         (
             r#"{"structured_output":{"work":"Invented","topic":"Frontend and UI","prs":[]}}"#,
             "the answer's `work` is not a listed label",
