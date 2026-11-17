@@ -96,10 +96,11 @@ does not record it. Usage counts as read only when it has both input and output 
 ### Label cache
 
 Labels are stored in `~/.cache/atlas-nano/labels.jsonl`, or under `$XDG_CACHE_HOME` when that is
-set. A label can be reused only if the instructions, label lists, answer schema, conversation text,
-labeler, effort, and unit match. The cache key also includes the Atlas Nano version by design, so
-the first labeling run after any upgrade makes new calls for eligible sessions in the selected
-period, even if the prompt is unchanged. `--no-label` makes no model calls.
+set. Atlas Nano reuses a label only when the full prompts, answer schema, labeler, effort, and unit
+match. The prompts include the instructions, label lists, and conversation text, plus the repository
+URL and branch when pull request mapping is on. The cache key also includes the Atlas Nano version
+by design. After an upgrade, Atlas Nano makes new model calls the first time it labels each session
+in the selected period, even if the prompt is unchanged. Use `--no-label` to skip those calls.
 
 A session whose call failed is not stored, so the next run tries it again. When the file cannot be
 written, the run warns once and its new labels are not stored.
