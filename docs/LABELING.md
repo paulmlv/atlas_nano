@@ -162,11 +162,11 @@ references its parent's history without copying it, the text is rebuilt from the
   per call from the price table.
 - Each attempt has ten minutes to send the prompt and collect the response. Standard output,
   standard error, and Codex's answer file are each limited to 8 MiB.
-- When the client exits, Atlas stops its process group and reads the buffered output. A helper that
-  inherited a pipe cannot hold up a successful call if it stays in the group. Atlas also stops the
-  group on failure or timeout.
-- Ctrl-C, SIGTERM, and SIGHUP stop all active labeler groups. If Atlas receives SIGKILL or aborts,
-  its clients can keep running. Helpers that leave their group can also survive cleanup.
+- When the client exits, Atlas stops its process group and collects the buffered output. A helper
+  holding an output pipe open cannot delay the answer. Failure or timeout also stops the group.
+- Ctrl-C, SIGTERM, and SIGHUP stop active labeler groups. Atlas preserves signals its launcher
+  ignores, so a run started with `nohup` can continue after logout. If Atlas receives SIGKILL or
+  aborts, its clients can keep running. Helpers that leave their group can also survive cleanup.
 - A call fails when it is rejected, exceeds a deadline or output limit, or returns an answer that
   does not match the schema. Once every call has run, each failed call is tried again, and this
   repeats up to `retries` times (1 by default, set in `config.toml` or with `--retries`). Only the

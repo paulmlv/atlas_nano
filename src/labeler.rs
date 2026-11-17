@@ -6,6 +6,7 @@ mod process;
 
 use std::fs;
 use std::io::{self, Read as _};
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::str::FromStr;
@@ -204,12 +205,15 @@ fn answer(value: &Value, schema: &Value) -> Result<Answer, Failure> {
 
 /// Codex writes its answer in the private call folder. Bound the read even if the file grows.
 fn read_answer(path: &Path) -> io::Result<String> {
-    if !path.metadata()?.is_file() {
+    let file = fs::File::options()
+        .read(true)
+        .custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32)
+        .open(path)?;
+    if !file.metadata()?.is_file() {
         return Err(io::Error::other("expected a regular file"));
     }
     let mut text = String::new();
-    fs::File::open(path)?
-        .take(OUTPUT_LIMIT as u64 + 1)
+    file.take(OUTPUT_LIMIT as u64 + 1)
         .read_to_string(&mut text)?;
     if text.len() > OUTPUT_LIMIT {
         return Err(io::Error::other(format!(

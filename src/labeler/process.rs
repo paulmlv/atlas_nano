@@ -35,7 +35,27 @@ fn active_groups() -> MutexGuard<'static, Vec<Pid>> {
 }
 
 fn listen_for_signals() -> io::Result<()> {
-    let mut signals = Signals::new([SIGINT, SIGTERM, SIGHUP])?;
+    // A noninteractive POSIX shell cannot trap signals its launcher ignored (e.g. nohup).
+    // Check once before installing handlers, without changing Atlas's own dispositions.
+    let probe = Command::new("/bin/sh")
+        .env_clear()
+        .args([
+            "-c",
+            r#"for sig in HUP INT TERM; do trap "echo $sig" "$sig"; kill -s "$sig" "$$"; done"#,
+        ])
+        .output()?;
+    if !probe.status.success() {
+        return Err(io::Error::other(
+            "could not check inherited signal handling",
+        ));
+    }
+    let names = String::from_utf8_lossy(&probe.stdout);
+    let mut signals = Signals::new(names.lines().filter_map(|name| match name {
+        "HUP" => Some(SIGHUP),
+        "INT" => Some(SIGINT),
+        "TERM" => Some(SIGTERM),
+        _ => None,
+    }))?;
     thread::Builder::new()
         .name("labeler-signals".into())
         .spawn(move || {
@@ -117,26 +137,32 @@ fn retryable(error: &io::Error) -> bool {
 }
 
 /// Read one chunk per pass, so a busy stream cannot starve the other pipe or deadline checks.
-fn read(pipe: &mut Option<impl Read>, bytes: &mut Vec<u8>, name: &str) -> io::Result<bool> {
+fn read(
+    pipe: &mut Option<impl Read>,
+    bytes: &mut Vec<u8>,
+    name: &str,
+    exited: bool,
+) -> io::Result<bool> {
     let Some(source) = pipe else { return Ok(false) };
     let mut buffer = [0; 8192];
-    match source.read(&mut buffer) {
-        Ok(0) => {
-            *pipe = None;
-            Ok(true)
+    let count = match source.read(&mut buffer) {
+        Ok(count) => count,
+        // All of the client's bytes are buffered, even if a detached helper still owns a writer.
+        Err(e) if exited && e.kind() == io::ErrorKind::WouldBlock => 0,
+        Err(e) if retryable(&e) => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    if count == 0 {
+        *pipe = None;
+    } else {
+        if bytes.len() + count > OUTPUT_LIMIT {
+            return Err(io::Error::other(format!(
+                "{name} exceeded {OUTPUT_LIMIT} bytes"
+            )));
         }
-        Ok(count) => {
-            if bytes.len() + count > OUTPUT_LIMIT {
-                return Err(io::Error::other(format!(
-                    "{name} exceeded {OUTPUT_LIMIT} bytes"
-                )));
-            }
-            bytes.extend_from_slice(&buffer[..count]);
-            Ok(true)
-        }
-        Err(e) if retryable(&e) => Ok(false),
-        Err(error) => Err(error),
+        bytes.extend_from_slice(&buffer[..count]);
     }
+    Ok(true)
 }
 
 /// Send stdin and collect both output streams under the same deadline, with no blocking pipe
@@ -179,8 +205,8 @@ pub(super) fn run(
                 Err(error) => return Err(failed(error)),
             }
         }
-        progressed |= read(&mut stdout, &mut out, "stdout").map_err(failed)?;
-        progressed |= read(&mut stderr, &mut err, "stderr").map_err(failed)?;
+        progressed |= read(&mut stdout, &mut out, "stdout", status.is_some()).map_err(failed)?;
+        progressed |= read(&mut stderr, &mut err, "stderr", status.is_some()).map_err(failed)?;
         if let Some(succeeded) = status
             && stdout.is_none()
             && stderr.is_none()
@@ -236,6 +262,19 @@ mod tests {
         assert!(ok);
         assert_eq!(stdout, "done");
         assert_eq!(stderr, "warning");
+    }
+
+    #[test]
+    fn an_open_writer_cannot_delay_an_exited_clients_buffered_output() {
+        let (reader, mut writer) = io::pipe().unwrap();
+        nonblocking(&reader).unwrap();
+        writer.write_all(b"done").unwrap();
+        let mut reader = Some(reader);
+        let mut output = Vec::new();
+        assert!(read(&mut reader, &mut output, "stdout", true).unwrap());
+        assert!(read(&mut reader, &mut output, "stdout", true).unwrap());
+        assert!(reader.is_none());
+        assert_eq!(output, b"done");
     }
 
     #[test]

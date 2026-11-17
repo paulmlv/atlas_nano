@@ -12,6 +12,8 @@ use std::time::{Duration as WallDuration, Instant};
 use chrono::{Duration, Utc};
 use serde_json::json;
 
+const ATLAS: &str = env!("CARGO_BIN_EXE_atlas-nano");
+
 /// A stand-in for Claude Code: it answers `--help`, logs each call, rejects a conversation that
 /// says REJECT, rejects one that says FLAKY only the first time, and labels the rest by whether
 /// they mention a bug; a bug comes with a pull request.
@@ -76,7 +78,7 @@ impl Sandbox {
     /// Run the binary with `input` typed on its standard input, then closed.
     fn answer(&self, arguments: &[&str], input: &str) -> Output {
         let mut child = self
-            .command(arguments)
+            .command(ATLAS, arguments)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -91,8 +93,8 @@ impl Sandbox {
         child.wait_with_output().unwrap()
     }
 
-    fn command(&self, arguments: &[&str]) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_atlas-nano"));
+    fn command(&self, program: &str, arguments: &[&str]) -> Command {
+        let mut command = Command::new(program);
         command
             .args(arguments)
             .env_clear()
@@ -148,7 +150,7 @@ fn run_needs_a_configuration() {
 fn interrupting_atlas_stops_all_active_labelers_and_their_helpers() {
     use rustix::process::{Pid, Signal, kill_process};
 
-    for signal in [Signal::INT, Signal::TERM] {
+    for signal in [Signal::INT, Signal::TERM, Signal::HUP] {
         let sandbox = Sandbox::new(&format!("interrupted-{}", signal.as_raw()));
         sandbox.session("first", "First request", 1);
         sandbox.session("second", "Second request", 1);
@@ -171,7 +173,7 @@ wait
         )
         .unwrap();
         let mut child = sandbox
-            .command(&["run", "--no-cache"])
+            .command(ATLAS, &["run", "--no-cache"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -227,6 +229,26 @@ wait
 }
 
 #[test]
+fn nohup_preserves_a_labeling_run_through_hangup() {
+    let sandbox = Sandbox::new("nohup");
+    sandbox.session("plain", "A plain request", 1);
+    assert!(
+        sandbox
+            .answer(&["configure"], "\n\n1\n\n\n\n")
+            .status
+            .success()
+    );
+    let fake = FAKE_CLAUDE.replace("input=$(cat)", "kill -HUP \"$PPID\"\ninput=$(cat)");
+    fs::write(sandbox.root.join("bin/claude"), fake).unwrap();
+    let output = sandbox
+        .command("nohup", &[ATLAS, "run", "--no-cache"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(text(&output.stdout).contains("1 labeled, 0 from cache, 0 unlabeled"));
+}
+
+#[test]
 fn codex_collects_its_answer_and_rejects_oversized_or_special_files() {
     let sandbox = Sandbox::new("codex-answer");
     sandbox.session("plain", "A plain request", 1);
@@ -258,7 +280,7 @@ echo '{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":5}}'
         ("fifo", "0 labeled, 0 from cache, 1 unlabeled"),
     ] {
         let output = sandbox
-            .command(&["run", "--no-cache", "--retries", "0"])
+            .command(ATLAS, &["run", "--no-cache", "--retries", "0"])
             .env("FAKE_MODE", mode)
             .output()
             .unwrap();
