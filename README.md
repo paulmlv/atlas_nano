@@ -41,12 +41,12 @@ atlas-nano run --confirm    # print the labeling estimate and ask first
 ## Documents
 
 - [Command line](docs/CLI.md): the commands, their flags, and the configuration.
-- [Privacy](docs/PRIVACY.md): what leaves the computer, which account is used, and what stays local.
-- [Report](docs/REPORT.md): the printed report, the CSV and JSON, and how each number is defined.
 - [Labeling](docs/LABELING.md): what is sent to the labeling model and how the call is made.
-- [Taxonomy](docs/TAXONOMY.md): how conversations are labeled, and the pull request mapping.
-- [Prompt](prompts/label.md) and [labels](prompts/labels.md): what the labeling model is sent.
 - [Next steps](docs/NEXT_STEPS.md): what is left to test and decide.
+- [Privacy](docs/PRIVACY.md): what leaves the computer, which account is used, and what stays local.
+- [Prompt](prompts/label.md) and [labels](prompts/labels.md): what the labeling model is sent.
+- [Report](docs/REPORT.md): the printed report, the CSV and JSON, and how each number is defined.
+- [Taxonomy](docs/TAXONOMY.md): how conversations are labeled, and the pull request mapping.
 - [Working on Atlas Nano](AGENTS.md): the contributor guide.
 
 ## License
