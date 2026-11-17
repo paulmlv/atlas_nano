@@ -41,9 +41,11 @@ not asked. `codex` covers Codex and ChatGPT desktop sessions, and `claude` Claud
 - **Labeling model:** `anthropic/claude-haiku-5-5` through Claude Code, or `openai/gpt-6-luna`
   through Codex. With one client installed, its model labels and the question is not asked. No other
   model is accepted, in `configure` or in the saved file.
-- **Test call:** configuration runs one small labeling call with the chosen labeling model and the
-  [required flags](LABELING.md#required-flags). Configuration fails if the call is rejected, as when
-  its client is not signed in. A missing or invalid answer does not fail configuration.
+- **Test call:** configuration makes one call to the chosen labeling model with a built-in sample
+  conversation and the [required flags](LABELING.md#required-flags). It saves the settings only if
+  the answer contains a valid type of work and topic and, when pull request mapping is on, a pull
+  request list (which can be empty). If the call fails, configuration reports the reason and keeps
+  any existing settings.
 - **Provider confirmation:** when the labeler would read another client's conversations,
   configuration asks whether to continue (yes by default) before any call or save. A no stops it
   with nothing saved. The prompt appears if you cover both clients or if you cover only one and

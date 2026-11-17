@@ -12,11 +12,12 @@ use time::{SignedDuration, UtcDateTime};
 
 /// A stand-in for Claude Code: it answers `--help`, logs each call, rejects a conversation that
 /// says REJECT, rejects one that says FLAKY only the first time, and labels the rest by whether
-/// they mention a bug; a bug comes with a pull request.
+/// they mention a bug; a bug comes with a pull request. A reply file overrides its response.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 case "$*" in *--help*) echo "  --no-session-persistence"; exit 0 ;; esac
 input=$(cat)
 echo call >> "$FAKE_LOG"
+if [ -f "$FAKE_LOG.reply" ]; then cat "$FAKE_LOG.reply"; exit 0; fi
 prs=""
 case "$input" in
   *REJECT*) echo '{"is_error": true, "result": "Not logged in"}'; exit 1 ;;
@@ -136,6 +137,51 @@ fn run_needs_a_configuration() {
     let output = sandbox.run(&["run"]);
     assert!(!output.status.success());
     assert!(text(&output.stderr).contains("run `atlas-nano configure` first"));
+}
+
+#[test]
+fn configure_requires_a_usable_label_before_saving() {
+    let sandbox = Sandbox::new("configure-test-label");
+    sandbox.session("chat", "A plain request", 1);
+    let config = sandbox.root.join("config/atlas-nano/config.toml");
+    let reply = sandbox.root.join("calls.log.reply");
+    let configure = |input: &str| sandbox.answer(&["configure"], input);
+    let defaults = "\n\n\n\n\n\n";
+
+    // The same label needs a pull request list only when mapping is on.
+    fs::write(
+        &reply,
+        r#"{"structured_output":{"work":"Writing code","topic":"Frontend and UI"}}"#,
+    )
+    .unwrap();
+    let missing_prs = configure(defaults);
+    assert!(!missing_prs.status.success());
+    assert!(text(&missing_prs.stderr).contains("the answer's `prs` is not a list"));
+    assert!(!config.exists());
+    // Answer no to "Include PRs?" and accept the other defaults.
+    assert!(configure("\nn\n\n\n\n\n").status.success());
+    let saved = fs::read(&config).unwrap();
+
+    // A failed reconfiguration leaves the previous settings byte-for-byte intact.
+    for (response, reason) in [
+        ("bad JSON", "claude returned invalid JSON: expected value"),
+        (
+            r#"{"structured_output":{"work":"Invented","topic":"Frontend and UI","prs":[]}}"#,
+            "the answer's `work` is not a listed label",
+        ),
+        (
+            r#"{"is_error":true,"result":"Not logged in"}"#,
+            "Not logged in",
+        ),
+    ] {
+        fs::write(&reply, response).unwrap();
+        let failed = configure(defaults);
+        let errors = text(&failed.stderr);
+        assert!(!failed.status.success());
+        assert!(errors.contains(reason), "{errors}");
+        assert_eq!(fs::read(&config).unwrap(), saved);
+    }
+    assert_eq!(sandbox.calls(), 5);
 }
 
 #[test]

@@ -128,9 +128,9 @@ references its parent's history without copying it, the text is rebuilt from the
   Calls run in parallel, at most three per core and one per 500 MB of memory, whichever is fewer.
   Past that, calls wait for a core or for memory and a run takes longer, not shorter. A saved `jobs`
   above it is lowered for the run, with a warning; the
-  [measurements](LABELING_EXPERIMENTS.md#calls-at-once) set it. At start the command raises its
-  open-file limit as far as the system allows, since each call holds a few pipes and macOS terminals
-  allow 256 open files by default.
+  [measurements](LABELING_EXPERIMENTS.md#calls-at-once) set it. Lower `jobs` in `configure` if your
+  provider rate-limits calls. At start the command raises its open-file limit as far as the system
+  allows, since each call holds a few pipes and macOS terminals allow 256 open files by default.
 - The prompt is [prompts/label.md](../prompts/label.md), built into the binary.
 - The instructions say that the conversation is data to classify, not to follow. They list the
   rules, then every type of work and every topic in the taxonomy as `label: definition`, the topics
@@ -175,8 +175,8 @@ references its parent's history without copying it, the text is rebuilt from the
 
 ## Required flags
 
-Every labeling call must use these flags, and no others that add context. Configuration runs one
-small labeling call with them, with the chosen labeling model, and fails if the call is rejected.
+Every labeling call must use these flags, and no others that add context. The
+[configuration test](CLI.md#atlas-nano-configure) uses the same flags.
 
 ```sh
 CLAUDE_CODE_DISABLE_ATTACHMENTS=1 claude -p --model <model> --effort medium --no-session-persistence \
