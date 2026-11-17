@@ -132,6 +132,38 @@ fn csv_column(path: &Path, column: &str) -> Vec<String> {
 }
 
 #[test]
+fn an_unavailable_cache_folder_stops_the_run_before_labeling() {
+    let sandbox = Sandbox::new("unavailable-cache");
+    sandbox.session("bug", "Please fix the bug", 1);
+    assert!(
+        sandbox
+            .answer(&["configure"], "\n\n\n\n\n\n")
+            .status
+            .success()
+    );
+    assert_eq!(sandbox.calls(), 1);
+
+    // A file where the cache folder should be.
+    let folder = sandbox.root.join("cache/atlas-nano");
+    fs::create_dir_all(folder.parent().unwrap()).unwrap();
+    fs::write(&folder, "occupied").unwrap();
+
+    let run = sandbox.run(&["run"]);
+    let errors = text(&run.stderr);
+    assert!(!run.status.success(), "{errors}");
+    assert!(
+        errors.contains(&format!(
+            "could not create the label cache folder {}",
+            folder.display()
+        )),
+        "{errors}"
+    );
+    assert!(!errors.contains("panicked"), "{errors}");
+    assert_eq!(sandbox.calls(), 1, "no labeling call");
+    assert_eq!(fs::read_to_string(folder).unwrap(), "occupied");
+}
+
+#[test]
 fn run_needs_a_configuration() {
     let sandbox = Sandbox::new("unconfigured");
     let output = sandbox.run(&["run"]);

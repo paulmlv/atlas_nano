@@ -476,7 +476,12 @@ fn plan<'a>(
 /// The file the labels are stored in, its folder created if needed.
 fn cache_path() -> Result<PathBuf, String> {
     let folder = config::cache_folder()?;
-    fs::create_dir_all(&folder).map_err(|error| format!("{}: {error}", folder.display()))?;
+    fs::create_dir_all(&folder).map_err(|error| {
+        format!(
+            "could not create the label cache folder {}: {error}",
+            folder.display()
+        )
+    })?;
     Ok(folder.join("labels.jsonl"))
 }
 
