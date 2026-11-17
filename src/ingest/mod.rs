@@ -9,9 +9,9 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Utc};
 use rayon::prelude::*;
 use serde_json::Value;
+use time::UtcDateTime;
 
 use crate::model::{Client, Item, Kind, Role, Session, SessionRef, Usage};
 
@@ -24,10 +24,10 @@ pub const FOLDERS: [(Client, &str); 3] = [
 
 /// The earliest and latest record times seen.
 #[derive(Default)]
-struct Span(Option<(DateTime<Utc>, DateTime<Utc>)>);
+struct Span(Option<(UtcDateTime, UtcDateTime)>);
 
 impl Span {
-    fn add(&mut self, at: Option<DateTime<Utc>>) {
+    fn add(&mut self, at: Option<UtcDateTime>) {
         if let Some(at) = at {
             self.0 = Some(
                 self.0
@@ -36,16 +36,9 @@ impl Span {
         }
     }
 
-    fn bounds(&self) -> (Option<DateTime<Utc>>, Option<DateTime<Utc>>) {
+    fn bounds(&self) -> (Option<UtcDateTime>, Option<UtcDateTime>) {
         (self.0.map(|span| span.0), self.0.map(|span| span.1))
     }
-}
-
-/// Parse a record's ISO 8601 time into UTC.
-fn time(text: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(text)
-        .ok()
-        .map(|at| at.with_timezone(&Utc))
 }
 
 /// A recorded string, or `None` when it is missing or empty.
@@ -310,6 +303,7 @@ mod tests {
 
     use super::*;
     use crate::model::Kind;
+    use crate::timestamp;
 
     fn write(path: &Path, records: &[Value], compress: bool) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -508,7 +502,7 @@ mod tests {
 
         let sessions = load(&home, &[Client::Claude]).sessions;
         fs::remove_dir_all(&home).unwrap();
-        let fork_time = time(fork_time).unwrap();
+        let fork_time = timestamp::parse(fork_time).unwrap();
         let covered = in_period(&sessions, &roots(&sessions), Some(fork_time));
         let included: Vec<_> = sessions
             .iter()
@@ -704,7 +698,7 @@ mod tests {
                 .unwrap()
         };
         let roots = roots(&sessions);
-        let included = in_period(&sessions, &roots, time("2026-01-09T00:00:00Z"));
+        let included = in_period(&sessions, &roots, timestamp::parse("2026-01-09T00:00:00Z"));
         for (child, parent, in_period) in [
             (&before, &thread, false),
             (&after, &edit, true),

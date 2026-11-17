@@ -19,6 +19,7 @@ use crate::paint::{Paint, Tone, printable};
 use crate::report::{
     self, COLUMNS, Group, NO_REPO, Report, Row, category, count, local_day, money, share, span,
 };
+use crate::timestamp;
 
 /// Which part of a session's requests a line holds.
 #[derive(Debug, Clone, PartialEq)]
@@ -372,9 +373,8 @@ fn chat(report: &Report, root: usize) -> Table {
         &first.place.repo
     };
     let started = first.session.started.map_or(String::new(), |at| {
-        at.with_timezone(&chrono::Local)
-            .format("%Y-%m-%d %H:%M")
-            .to_string()
+        let local = timestamp::local(at);
+        format!("{} {:02}:{:02}", local.date(), local.hour(), local.minute())
     });
     let mut note = vec![format!(
         "{} · project {} · repo {repo} · started {started}",

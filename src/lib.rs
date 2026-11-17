@@ -18,3 +18,4 @@ pub mod report;
 pub mod run;
 pub mod taxonomy;
 pub mod text;
+mod timestamp;

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{self, IsTerminal as _, Write as _};
 
-use chrono::{Duration, Utc};
+use time::{SignedDuration, UtcDateTime};
 
 use crate::account;
 use crate::cli::{Period, RunArgs};
@@ -56,7 +56,7 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
     if let Some(retries) = args.retries {
         config.labeler.retries = retries;
     }
-    let now = Utc::now();
+    let now = UtcDateTime::now();
     let home = config::home()?;
     let loaded = ingest::load(&home, &config.coverage);
     // Paths are quoted with escapes, so a file name cannot send control characters to the terminal.
@@ -69,7 +69,7 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
     }
     let sessions = loaded.sessions;
     let roots = account::roots(&sessions);
-    let cutoff = hours(args.period).map(|hours| now - Duration::hours(hours));
+    let cutoff = hours(args.period).map(|hours| now - SignedDuration::hours(hours));
     let in_period = account::in_period(&sessions, &roots, cutoff);
     // The covered sessions' indexes, in order; a covered session's root is covered too.
     let covered: Vec<usize> = (0..sessions.len()).filter(|&n| in_period[n]).collect();
