@@ -91,7 +91,7 @@ fn request(text: &str) -> String {
 }
 
 /// One model response's usage, from Codex's token counts and an ID that a fork's copy keeps.
-fn usage(id: String, counts: &Value, timestamp: &str, model: &str) -> Option<Usage> {
+fn usage(id: String, counts: &Value, at: Option<UtcDateTime>, model: &str) -> Option<Usage> {
     // Without its input and output counts the usage was not read, so the session is flagged.
     let (input, output) = (
         counts["input_tokens"].as_u64()?,
@@ -105,7 +105,7 @@ fn usage(id: String, counts: &Value, timestamp: &str, model: &str) -> Option<Usa
     Some(Usage {
         id,
         owner: None,
-        at: timestamp::parse(timestamp)?,
+        at: at?,
         model: model.to_string(),
         fast: false,
         input: input.saturating_sub(cached + cache_write),
@@ -249,8 +249,7 @@ pub(super) fn parse(path: &Path, records: &[Value]) -> (Session, Option<Version>
         .collect();
     for (line, record) in (0u64..).zip(records) {
         let position = record["ordinal"].as_u64().unwrap_or(line);
-        let timestamp = record["timestamp"].as_str().unwrap_or_default();
-        let at = timestamp::parse(timestamp);
+        let at = record["timestamp"].as_str().and_then(timestamp::parse);
         span.add(at);
         let (record_type, payload) = (
             record["type"].as_str().unwrap_or_default(),
@@ -328,7 +327,7 @@ pub(super) fn parse(path: &Path, records: &[Value]) -> (Session, Option<Version>
                 // Each record is one response; its ID survives a fork's copy.
                 if let Some(response) = payload["response_id"].as_str()
                     && let Some(reported) =
-                        usage(response.to_string(), &payload["usage"], timestamp, &model)
+                        usage(response.to_string(), &payload["usage"], at, &model)
                 {
                     // A turn's first response can be recorded before the turn's model.
                     if let Some(id) = payload["turn_id"].as_str()
@@ -354,8 +353,7 @@ pub(super) fn parse(path: &Path, records: &[Value]) -> (Session, Option<Version>
                         total["output_tokens"]
                     );
                     if running
-                        && let Some(reported) =
-                            usage(id, &info["last_token_usage"], timestamp, &model)
+                        && let Some(reported) = usage(id, &info["last_token_usage"], at, &model)
                     {
                         session.usage.push(reported);
                     }
