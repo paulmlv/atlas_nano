@@ -100,7 +100,8 @@ set. Atlas Nano reuses a label only when the full prompts, answer schema, labele
 match. The prompts include the instructions, label lists, and conversation text, plus the repository
 URL and branch when pull request mapping is on. The cache key also includes the Atlas Nano version
 by design. After an upgrade, Atlas Nano makes new model calls the first time it labels each session
-in the selected period, even if the prompt is unchanged. Use `--no-label` to skip those calls.
+in the selected period, even if the prompt is unchanged. With `--no-label`, the run makes no model
+calls and omits all labels from the report, including cached ones.
 
 A session whose call failed is not stored, so the next run tries it again. When the file cannot be
 written, the run warns once and its new labels are not stored.
