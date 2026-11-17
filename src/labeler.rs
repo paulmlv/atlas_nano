@@ -377,7 +377,13 @@ impl Labeler<'_> {
             &self.schema.to_string(),
         ]);
         let (succeeded, stdout, stderr) = run(command, prompt, TIMEOUT)?;
-        let result: Value = serde_json::from_str(stdout.trim()).unwrap_or(Value::Null);
+        let result: Value = serde_json::from_str(stdout.trim()).map_err(|error| {
+            if succeeded {
+                Failure::Invalid(format!("claude returned invalid JSON: {error}"))
+            } else {
+                Failure::Rejected(format!("claude: {}", last_line(&stderr)))
+            }
+        })?;
         let usage = &result["usage"];
         let count = |name: &str| usage[name].as_u64().unwrap_or(0);
         let cached = count("cache_read_input_tokens");
