@@ -101,9 +101,9 @@ from the model's replies and tool calls.
 
 ### Forks
 
-The text of a fork includes the history it inherited from its parent. Where a Codex rollout
-references its parent's history without copying it, the text is rebuilt from the parent rollout. The
-[accounting](REPORT.md#accounting) counts only what happened after the fork.
+When a Codex fork references a parent rollout, Atlas reads the parent messages up to the fork's
+recorded cutoff to find its title or prepare its labeling text. A parent outside the report period
+can still supply that context. [Accounting](REPORT.md#accounting) counts each model request once.
 
 ## Sessions too long for one call
 

@@ -9,7 +9,7 @@ use time::{SignedDuration, UtcDateTime};
 
 use crate::account::{Cost, Tokens, Totals};
 use crate::label::Labeling;
-use crate::model::{Kind, Label, Role, Session};
+use crate::model::{Item, Kind, Label, Session, first_request, short_title};
 #[cfg(test)]
 use crate::paint::Theme;
 use crate::paint::{self, Paint, Tone};
@@ -24,6 +24,8 @@ pub(crate) const NO_REPO: &str = "(no repo)";
 /// One session in the report, with its cost, its label, and the chat it descends from.
 pub struct Row<'a> {
     pub session: &'a Session,
+    /// Display title derived from the full visible transcript.
+    pub title: String,
     pub cost: Cost,
     pub label: Option<&'a Label>,
     /// The index in the rows of the chat the user started.
@@ -337,19 +339,13 @@ pub(crate) fn category(
 
 /// A session's title, else the first line of its first user message, else of the task an agent gave
 /// it, as one short line.
-pub fn title(session: &Session) -> String {
-    let first = [Role::User, Role::Agent]
-        .into_iter()
-        .find_map(|role| session.items.iter().find(|item| item.role == role));
-    let text = match &session.title {
-        Some(title) => title.as_str(),
-        None => first.map_or("", |item| item.text.lines().next().unwrap_or_default()),
-    };
-    let line: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+pub fn title<'a>(session: &Session, items: impl IntoIterator<Item = &'a Item>) -> String {
+    let text = session.title.as_deref().or_else(|| first_request(items));
+    let line = short_title(text.unwrap_or_default());
     if line.is_empty() {
         "Untitled".to_string()
     } else {
-        line.chars().take(60).collect()
+        line
     }
 }
 
@@ -712,7 +708,7 @@ impl Report<'_> {
                 let session = self.rows[root].session;
                 let day = session.started.map_or(String::new(), local_day);
                 vec![
-                    p.tone(Tone::Plain, &format!("  {}", title(session))),
+                    p.tone(Tone::Plain, &format!("  {}", self.rows[root].title)),
                     p.dim(&day),
                     p.tone(Tone::Plain, &self.rows[root].place.project),
                     p.tone(Tone::Money, &money(spend)),
@@ -1002,6 +998,7 @@ mod tests {
         let rows = [(&chat, Some(&label)), (&agent, None)]
             .into_iter()
             .map(|(session, label)| Row {
+                title: title(session, &session.items),
                 session,
                 cost: cost(session, &prices),
                 label,
@@ -1193,6 +1190,7 @@ mod tests {
         let rows: Vec<Row> = sessions
             .iter()
             .map(|(_, _, session)| Row {
+                title: title(session, &session.items),
                 session,
                 cost: cost(session, &prices),
                 label: None,
@@ -1266,6 +1264,7 @@ mod tests {
             .into_iter()
             .enumerate()
             .map(|(root, (session, label))| Row {
+                title: title(session, &session.items),
                 session,
                 cost: cost(session, &prices),
                 label: Some(label),

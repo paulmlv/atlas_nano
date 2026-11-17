@@ -17,7 +17,7 @@ use time::UtcDateTime;
 
 use crate::config::{self, Config};
 use crate::labeler::{self, Answer, Call, Failure, Labeler, Spent};
-use crate::model::{Client, Kind, Label, PrRole, PullRequest, Session, Usage};
+use crate::model::{Client, Item, Kind, Label, PrRole, PullRequest, Session, Usage};
 use crate::paint::{self, Paint, Tone};
 use crate::prices::PriceTable;
 use crate::prompt::Prompt;
@@ -416,8 +416,8 @@ fn remote(session: &Session, pull_requests: bool, known: &mut HashMap<String, St
 
 /// Plan each session's calls: render and chunk it, and build its prompts and its cache key.
 /// Safety reviews are left out, and a session that renders to no text counts as unlabeled.
-fn plan<'a>(
-    sessions: &[&'a Session],
+fn plan<'a, Parts: IntoIterator<Item = &'a Item>>(
+    sessions: impl IntoIterator<Item = (&'a Session, Parts)>,
     config: &Config,
     prompt: &Prompt,
     schema: &str,
@@ -435,11 +435,11 @@ fn plan<'a>(
     );
     let mut remotes = HashMap::new();
     let mut plans = Vec::new();
-    for &session in sessions
-        .iter()
-        .filter(|session| session.kind != Kind::Review)
+    for (session, items) in sessions
+        .into_iter()
+        .filter(|(session, _)| session.kind != Kind::Review)
     {
-        let chunks = text::chunks(&text::render(&session.items, settings.tools), budget);
+        let chunks = text::chunks(&text::render(items, settings.tools), budget);
         if chunks.is_empty() {
             summary.unlabeled += 1;
             continue;
@@ -794,8 +794,8 @@ fn collect(
 }
 
 /// Label `sessions`, reusing stored labels unless `no_cache`, and asking first with `confirm`.
-pub fn label(
-    sessions: &[&Session],
+pub fn label<'a, Parts: IntoIterator<Item = &'a Item>>(
+    sessions: impl IntoIterator<Item = (&'a Session, Parts)>,
     config: &Config,
     taxonomy: &Taxonomy,
     prices: &PriceTable,

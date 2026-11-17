@@ -139,6 +139,56 @@ fn run_needs_a_configuration() {
 }
 
 #[test]
+fn a_fork_uses_its_older_parents_title_and_labeling_context() {
+    let sandbox = Sandbox::new("fork-period");
+    let folder = sandbox.root.join("home/.codex/sessions");
+    fs::create_dir_all(&folder).unwrap();
+    let (base, fork) = ("a".repeat(36), "b".repeat(36));
+    let now = UtcDateTime::now();
+    let old = (now - SignedDuration::days(30)).format(&Rfc3339).unwrap();
+    let recent = now.format(&Rfc3339).unwrap();
+    let save = |id: &str, rows: Vec<serde_json::Value>| {
+        let lines: String = rows.iter().map(|r| format!("{r}\n")).collect();
+        fs::write(folder.join(format!("rollout-{id}.jsonl")), lines).unwrap();
+    };
+    save(
+        &base,
+        vec![
+            json!({"type":"session_meta","timestamp":old,"payload":{}}),
+            json!({"type":"response_item","timestamp":old,"metadata":{"user_input_order":0},
+            "payload":{"type":"message","role":"user","content":"Fix the old bug\nExtra context"}}),
+        ],
+    );
+    save(
+        &fork,
+        vec![
+            json!({"type":"session_meta","timestamp":recent,"payload":{"history_base":{
+            "thread_id":base,"end_ordinal_exclusive":2}}}),
+            json!({"type":"turn_context","timestamp":recent,"payload":{"turn_id":"new","model":"gpt-6-luna"}}),
+            json!({"type":"token_usage_record","timestamp":recent,"payload":{"turn_id":"new","response_id":"r",
+            "usage":{"input_tokens":10,"output_tokens":5}}}),
+        ],
+    );
+    assert!(
+        sandbox
+            .answer(&["configure"], &"\n".repeat(7))
+            .status
+            .success()
+    );
+    let accounting = sandbox.run(&["run", "--period", "1d", "--no-label"]);
+    assert!(accounting.status.success());
+    assert!(text(&accounting.stdout).contains("Fix the old bug"));
+    let export = sandbox.root.join("fork.json");
+    let labeled = sandbox.run(&["run", "--period", "1d", "--json", export.to_str().unwrap()]);
+    assert!(labeled.status.success());
+    let row: serde_json::Value = serde_json::from_slice(&fs::read(export).unwrap()).unwrap();
+    assert_eq!(row["session_id"], fork);
+    assert_eq!(row["label"]["work"], "Debugging");
+    assert_eq!(row["tokens"]["output"], 5);
+    assert_eq!(sandbox.calls(), 2);
+}
+
+#[test]
 fn a_failed_call_is_retried_unless_retries_are_off() {
     let sandbox = Sandbox::new("retried");
     sandbox.session("flaky", "A FLAKY request", 1);

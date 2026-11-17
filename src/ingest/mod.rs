@@ -2,8 +2,10 @@
 
 mod claude;
 mod codex;
+mod history;
 mod timing;
 
+use self::history::History;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
@@ -107,16 +109,28 @@ fn transcripts(folder: &Path, found: &mut Vec<PathBuf>, unreadable: &mut Vec<(Pa
 
 /// What a load found.
 pub struct Loaded {
-    pub sessions: Vec<Session>,
+    sessions: Vec<Session>,
+    history: History,
     /// Files and folders that could not be read, with the reason.
     pub unreadable: Vec<(PathBuf, String)>,
 }
 
+impl Loaded {
+    /// Sessions in load order. Each contains its own items.
+    pub fn sessions(&self) -> &[Session] {
+        &self.sessions
+    }
+
+    /// The items visible in a session, including the portion inherited from any Codex parent.
+    pub fn items(&self, session: usize) -> impl Iterator<Item = &Item> {
+        self.history.items(&self.sessions, session)
+    }
+}
+
 /// Read every session of the covered clients beneath `home`.
 ///
-/// A session found in several files is read from the copy with the most valid records. A fork's
-/// text starts with the history it inherited, and each model request stays only in the session
-/// recorded with it, or else the one that started first, among those holding a copy of it.
+/// Keep the copy with the most valid records and store each session's own items. Each model
+/// request stays with its recorded owner or the earliest session that has a copy.
 pub fn load(home: &Path, clients: &[Client]) -> Loaded {
     let mut files = Vec::new();
     let mut unreadable = Vec::new();
@@ -164,8 +178,7 @@ pub fn load(home: &Path, clients: &[Client]) -> Loaded {
         .filter_map(|key| Some(longest.remove(key)?.1))
         .unzip();
     codex::link_parents(&mut sessions, &versions);
-    // Flag before requests are kept once and forks inherit history: a Claude fork's copied usage
-    // still counts as its own, and a Codex fork's inherited replies do not.
+    // A fork's inherited replies do not imply it made a request of its own.
     for session in &mut sessions {
         session.usage_missing = session.usage.is_empty()
             && session
@@ -174,9 +187,9 @@ pub fn load(home: &Path, clients: &[Client]) -> Loaded {
                 .any(|item| matches!(item.role, Role::Assistant | Role::Tool));
     }
     count_requests_once(&mut sessions);
-    inherit_history(&mut sessions);
     link_scratchpads(&mut sessions);
     Loaded {
+        history: History::new(&sessions),
         sessions,
         unreadable,
     }
@@ -249,49 +262,6 @@ fn count_requests_once(sessions: &mut [Session]) {
         session
             .usage
             .retain(|usage| owner[&usage.id] == index && seen.insert(usage.id.clone()));
-    }
-}
-
-/// Prepend to each Codex fork the items of the rollout it references, before its cutoff.
-fn inherit_history(sessions: &mut [Session]) {
-    let index: HashMap<String, usize> = sessions
-        .iter()
-        .enumerate()
-        .filter(|(_, session)| session.client == Client::Codex)
-        .map(|(n, session)| (session.id.clone(), n))
-        .collect();
-    // Follow the bases up to the first one not loaded, stopping if one repeats, then add each
-    // level's own items on top of what it inherits before its cutoff.
-    fn complete(n: usize, sessions: &[Session], index: &HashMap<String, usize>) -> Vec<Item> {
-        let mut chain = vec![n];
-        let mut seen = HashSet::from([n]);
-        let mut cutoffs = Vec::new();
-        while let Some(base) = &sessions[*chain.last().expect("starts with n")].history_base {
-            match index.get(&base.rollout) {
-                Some(&parent) if seen.insert(parent) => {
-                    chain.push(parent);
-                    cutoffs.push(base.end);
-                }
-                _ => break,
-            }
-        }
-        let top = chain.pop().expect("starts with n");
-        let mut items = sessions[top].items.clone();
-        for (level, end) in chain.into_iter().zip(cutoffs).rev() {
-            items.retain(|item| item.position < end);
-            items.extend(sessions[level].items.iter().cloned());
-        }
-        items
-    }
-    let forks: Vec<usize> = (0..sessions.len())
-        .filter(|&n| sessions[n].history_base.is_some())
-        .collect();
-    let completed: Vec<Vec<Item>> = forks
-        .iter()
-        .map(|&n| complete(n, sessions, &index))
-        .collect();
-    for (n, items) in forks.into_iter().zip(completed) {
-        sessions[n].items = items;
     }
 }
 
@@ -747,11 +717,10 @@ mod tests {
             .collect();
         sessions.push(rollout("x", Some("y")));
         sessions.push(rollout("y", Some("x")));
-        inherit_history(&mut sessions);
+        let history = History::new(&sessions);
         let texts = |n: usize| -> Vec<&str> {
-            sessions[n]
-                .items
-                .iter()
+            history
+                .items(&sessions, n)
                 .map(|item| item.text.as_str())
                 .collect()
         };
@@ -759,6 +728,51 @@ mod tests {
         deepest.push("late-s39".to_string());
         assert_eq!(texts(39), deepest);
         assert_eq!(texts(40), ["y", "x", "late-x"]);
+    }
+
+    #[test]
+    fn nested_forks_borrow_only_items_before_every_cutoff_in_transcript_order() {
+        use crate::account::tests::session;
+        use crate::model::HistoryBase;
+        let rollout = |id: &str, base: Option<(&str, u64)>, positions: &[u64]| {
+            let mut chat = session(id, Kind::Primary, None, 1);
+            chat.client = Client::Codex;
+            chat.history_base = base.map(|(rollout, end)| HistoryBase {
+                rollout: rollout.to_string(),
+                end,
+            });
+            chat.items = positions
+                .iter()
+                .map(|&position| Item {
+                    position,
+                    role: Role::User,
+                    text: format!("{id}/{position}"),
+                })
+                .collect();
+            chat
+        };
+        let sessions = [
+            rollout("parent", Some(("missing", 10)), &[4, 1, 3]),
+            rollout("middle", Some(("parent", 4)), &[6, 2]),
+            rollout("early", Some(("middle", 3)), &[9]),
+            rollout("late", Some(("middle", 8)), &[11]),
+        ];
+        let history = History::new(&sessions);
+        let texts = |n| {
+            history
+                .items(&sessions, n)
+                .map(|item| item.text.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(texts(2), ["parent/1", "middle/2", "early/9"]);
+        assert_eq!(
+            texts(3),
+            ["parent/1", "parent/3", "middle/6", "middle/2", "late/11"]
+        );
+        assert!(std::ptr::eq(
+            history.items(&sessions, 2).next().unwrap(),
+            &sessions[0].items[1]
+        ));
     }
 
     #[test]
@@ -848,16 +862,13 @@ mod tests {
         write(&folder.join(name(&fork)), &[forked, said("four")], false);
 
         let loaded = load(&home, &[Client::Codex]);
-        let session = loaded
+        let index = loaded
             .sessions
             .iter()
-            .find(|session| session.id == fork)
+            .position(|session| session.id == fork)
             .unwrap();
-        let texts: Vec<&str> = session
-            .items
-            .iter()
-            .map(|item| item.text.as_str())
-            .collect();
+        assert_eq!(loaded.sessions[index].items.len(), 1);
+        let texts: Vec<_> = loaded.items(index).map(|item| item.text.as_str()).collect();
         assert_eq!(texts, ["one", "two", "four"]);
         fs::remove_dir_all(&home).unwrap();
     }

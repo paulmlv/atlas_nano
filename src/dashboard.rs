@@ -307,10 +307,10 @@ fn chats(report: &Report, title: &str, rows: &[usize], slice: &Slice) -> Table {
         .into_iter()
         .map(|(root, chat)| {
             let row = &report.rows[root];
-            let name = report::title(row.session);
+            let name = &row.title;
             // A subagent whose chat was not loaded is its own root.
             let name = match row.session.kind {
-                Kind::Primary => name,
+                Kind::Primary => name.clone(),
                 Kind::Subagent => format!("(subagent) {name}"),
                 Kind::Review => format!("(review) {name}"),
             };
@@ -413,7 +413,7 @@ fn chat(report: &Report, root: usize) -> Table {
             let label = |pick: fn(&Label) -> &str| plain(row.label.map_or("-", pick));
             Item {
                 cells: vec![
-                    plain(format!("{kind}  {}", report::title(session))),
+                    plain(format!("{kind}  {}", row.title)),
                     label(|label| &label.work),
                     label(|label| &label.topic),
                     plain(models.join(", ")),
@@ -428,7 +428,7 @@ fn chat(report: &Report, root: usize) -> Table {
         })
         .collect();
     let mut table = Table::new(
-        &report::title(first.session),
+        &first.title,
         &[
             "Session",
             "Type of work",
@@ -837,6 +837,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(n, session)| Row {
+                    title: report::title(session, &session.items),
                     session,
                     cost: account::cost(session, &prices),
                     label: Some(&labels[n]),

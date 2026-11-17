@@ -94,6 +94,28 @@ pub struct Item {
     pub text: String,
 }
 
+/// The first line of the first user message, or of the first agent message when there is no user.
+pub(crate) fn first_request<'a>(items: impl IntoIterator<Item = &'a Item>) -> Option<&'a str> {
+    let mut agent = None;
+    for item in items {
+        match item.role {
+            Role::User => return Some(item.text.lines().next().unwrap_or_default()),
+            Role::Agent if agent.is_none() => agent = Some(item.text.as_str()),
+            _ => {}
+        }
+    }
+    agent.map(|text| text.lines().next().unwrap_or_default())
+}
+
+/// A display title has at most 60 characters, with a single space between words.
+pub(crate) fn short_title(text: &str) -> String {
+    text.split_whitespace()
+        .enumerate()
+        .flat_map(|(index, word)| (index > 0).then_some(' ').into_iter().chain(word.chars()))
+        .take(60)
+        .collect()
+}
+
 /// One visible user request and how long the model worked on it, when that is recorded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Turn {
@@ -137,9 +159,9 @@ pub struct Session {
     pub branch: Option<String>,
     pub started: Option<UtcDateTime>,
     pub ended: Option<UtcDateTime>,
+    /// Items recorded in this rollout. Loaded::items also includes the inherited history.
     pub items: Vec<Item>,
-    /// The tool calls in this session's own transcript, a call with an id counted once. `items` can
-    /// repeat a call and, for a Codex fork, also holds the history inherited from its base.
+    /// The tool calls in this session's own transcript, a call with an id counted once.
     pub tool_calls: u64,
     pub turns: Vec<Turn>,
     pub usage: Vec<Usage>,

@@ -12,11 +12,11 @@ use crate::config::{self, Config, Output};
 use crate::dashboard;
 use crate::ingest;
 use crate::label;
-use crate::model::{Client, Session};
+use crate::model::Client;
 use crate::paint::{Paint, Tone};
 use crate::place::{self, Place};
 use crate::prices::PriceTable;
-use crate::report::{Report, Row};
+use crate::report::{self, Report, Row};
 use crate::taxonomy::Taxonomy;
 
 /// The hours a period covers, back from the time of the run; None covers everything.
@@ -67,10 +67,10 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
             errors.tone(Tone::Warning, "warning:")
         );
     }
-    let sessions = loaded.sessions;
-    let roots = account::roots(&sessions);
+    let sessions = loaded.sessions();
+    let roots = account::roots(sessions);
     let cutoff = hours(args.period).map(|hours| now - SignedDuration::hours(hours));
-    let in_period = account::in_period(&sessions, &roots, cutoff);
+    let in_period = account::in_period(sessions, &roots, cutoff);
     // The covered sessions' indexes, in order; a covered session's root is covered too.
     let covered: Vec<usize> = (0..sessions.len()).filter(|&n| in_period[n]).collect();
     for (client, name) in [(Client::Claude, "Claude Code"), (Client::Codex, "Codex")] {
@@ -91,9 +91,8 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
     let outcome = if args.no_label {
         None
     } else {
-        let selected: Vec<&Session> = covered.iter().map(|&n| &sessions[n]).collect();
         Some(label::label(
-            &selected,
+            covered.iter().map(|&n| (&sessions[n], loaded.items(n))),
             &config,
             &taxonomy,
             &prices,
@@ -115,6 +114,7 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
         .iter()
         .map(|&n| Row {
             session: &sessions[n],
+            title: report::title(&sessions[n], loaded.items(n)),
             cost: account::cost(&sessions[n], &prices),
             label: outcome
                 .as_ref()
