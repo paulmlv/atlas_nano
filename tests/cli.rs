@@ -3,7 +3,7 @@
 use std::fs;
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::process::ExitStatusExt as _;
+use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::thread;
@@ -151,6 +151,16 @@ fn interrupting_atlas_stops_all_active_labelers_and_their_helpers() {
     use rustix::process::{Pid, Signal, kill_process};
 
     for signal in [Signal::INT, Signal::TERM, Signal::HUP] {
+        // An isolated group containing only kill inherits the test runner's signal disposition.
+        let probe = Command::new("/bin/kill")
+            .process_group(0)
+            .args([format!("-{}", signal.as_raw()), "0".into()])
+            .status()
+            .unwrap();
+        if probe.success() {
+            continue;
+        }
+        assert_eq!(probe.signal(), Some(signal.as_raw()));
         let sandbox = Sandbox::new(&format!("interrupted-{}", signal.as_raw()));
         sandbox.session("first", "First request", 1);
         sandbox.session("second", "Second request", 1);

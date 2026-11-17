@@ -35,27 +35,19 @@ fn active_groups() -> MutexGuard<'static, Vec<Pid>> {
 }
 
 fn listen_for_signals() -> io::Result<()> {
-    // A noninteractive POSIX shell cannot trap signals its launcher ignored (e.g. nohup).
-    // Check once before installing handlers, without changing Atlas's own dispositions.
-    let probe = Command::new("/bin/sh")
-        .env_clear()
-        .args([
-            "-c",
-            r#"for sig in HUP INT TERM; do trap "echo $sig" "$sig"; kill -s "$sig" "$$"; done"#,
-        ])
-        .output()?;
-    if !probe.status.success() {
-        return Err(io::Error::other(
-            "could not check inherited signal handling",
-        ));
+    // Each short-lived child inherits Atlas's signal dispositions. If it survives sending
+    // itself the signal, respect the launcher's choice to ignore it (e.g. nohup).
+    let mut handled = Vec::new();
+    for (name, number) in [("HUP", SIGHUP), ("INT", SIGINT), ("TERM", SIGTERM)] {
+        let probe = Command::new("/bin/sh")
+            .env_clear()
+            .args(["-c", r#"kill -s "$1" "$$""#, "sh", name])
+            .output()?;
+        if !probe.status.success() {
+            handled.push(number);
+        }
     }
-    let names = String::from_utf8_lossy(&probe.stdout);
-    let mut signals = Signals::new(names.lines().filter_map(|name| match name {
-        "HUP" => Some(SIGHUP),
-        "INT" => Some(SIGINT),
-        "TERM" => Some(SIGTERM),
-        _ => None,
-    }))?;
+    let mut signals = Signals::new(handled)?;
     thread::Builder::new()
         .name("labeler-signals".into())
         .spawn(move || {
