@@ -48,7 +48,7 @@ design. The [next steps](docs/NEXT_STEPS.md) list what is left to test and decid
 | `ingest/`      | Find and parse both clients' sessions; forks; each request once         |
 | `label.rs`     | The cache, the estimate, the parallel calls, and the chunk vote         |
 | `labeler.rs`   | One labeling call through Claude Code or Codex                          |
-| `labeler/`     | Bounded client I/O, deadlines, and process-group cleanup                |
+| `labeler/`     | Bounded client I/O and process-group cleanup                            |
 | `lib.rs`       | The library the command is built on: the other modules                  |
 | `main.rs`      | The `atlas-nano` command: parse the arguments and run a command         |
 | `model.rs`     | What is kept of a session: its parts, turns, and model requests         |

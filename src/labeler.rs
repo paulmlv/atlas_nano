@@ -4,12 +4,13 @@
 
 mod process;
 
-use std::collections::HashSet;
 use std::fs;
+use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
@@ -17,7 +18,7 @@ use serde_json::{Value, json};
 use crate::model::{Client, PrRole, PullRequest};
 use crate::prompt::Prompt;
 use crate::taxonomy::Taxonomy;
-use process::{Budget, read_answer, run};
+use process::{OUTPUT_LIMIT, RESPONSE_TIMEOUT, check_deadline, run};
 
 /// The reasoning effort of every labeling call. It is part of the label cache key.
 pub const EFFORT: &str = "medium";
@@ -154,8 +155,7 @@ fn pull_request_url(url: &str) -> Option<String> {
 }
 
 /// Check an answer against the schema's labels and read it.
-fn answer(value: &Value, schema: &Value, budget: &Budget) -> Result<Answer, Failure> {
-    budget.check_total()?;
+fn answer(value: &Value, schema: &Value) -> Result<Answer, Failure> {
     let label = |name: &str| -> Result<String, Failure> {
         let allowed = schema["properties"][name]["enum"].as_array();
         match value[name].as_str() {
@@ -172,18 +172,21 @@ fn answer(value: &Value, schema: &Value, budget: &Budget) -> Result<Answer, Fail
         let invalid =
             || Failure::Invalid("the answer's `prs` is not a list of pull requests".into());
         let listed = value["prs"].as_array().ok_or_else(invalid)?;
+        let entries = listed
+            .iter()
+            .map(|pr| {
+                let role = pr["role"].as_str().and_then(PrRole::from_name);
+                match (pr["url"].as_str(), role) {
+                    (Some(url), Some(role)) => Ok((url, role)),
+                    _ => Err(invalid()),
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         // An entry that names no pull request is dropped; the rest are kept once each.
-        let mut prs = Vec::new();
-        let mut seen = HashSet::new();
-        for pr in listed {
-            budget.check_total()?;
-            let role = pr["role"].as_str().and_then(PrRole::from_name);
-            let (url, role) = match (pr["url"].as_str(), role) {
-                (Some(url), Some(role)) => (url, role),
-                _ => return Err(invalid()),
-            };
+        let mut prs: Vec<PullRequest> = Vec::new();
+        for (url, role) in entries {
             if let Some(url) = pull_request_url(url)
-                && seen.insert(url.clone())
+                && !prs.iter().any(|seen| seen.url == url)
             {
                 prs.push(PullRequest { url, role });
             }
@@ -192,13 +195,28 @@ fn answer(value: &Value, schema: &Value, budget: &Budget) -> Result<Answer, Fail
     } else {
         Vec::new()
     };
-    let answer = Answer {
+    Ok(Answer {
         work: label("work")?,
         topic: label("topic")?,
         prs,
-    };
-    budget.check_total()?;
-    Ok(answer)
+    })
+}
+
+/// Codex writes its answer in the private call folder. Bound the read even if the file grows.
+fn read_answer(path: &Path) -> io::Result<String> {
+    if !path.metadata()?.is_file() {
+        return Err(io::Error::other("expected a regular file"));
+    }
+    let mut text = String::new();
+    fs::File::open(path)?
+        .take(OUTPUT_LIMIT as u64 + 1)
+        .read_to_string(&mut text)?;
+    if text.len() > OUTPUT_LIMIT {
+        return Err(io::Error::other(format!(
+            "answer file exceeded {OUTPUT_LIMIT} bytes"
+        )));
+    }
+    Ok(text)
 }
 
 /// Per-call files are removed on every return path, including a spawn failure or timeout.
@@ -224,17 +242,21 @@ fn last_line(text: &str) -> &str {
 impl Labeler<'_> {
     /// Label one conversation, already rendered and wrapped as the prompt.
     pub fn call(&self, prompt: &str) -> Call {
-        let budget = Budget::new();
+        let deadline = Instant::now() + RESPONSE_TIMEOUT;
         let mut spent = Spent::default();
         let answer = match self.client {
-            Client::Claude => self.claude(prompt, &mut spent, &budget),
-            Client::Codex => self.codex(prompt, &mut spent, &budget),
+            Client::Claude => self.claude(prompt, &mut spent, deadline),
+            Client::Codex => self.codex(prompt, &mut spent, deadline),
         };
-        let answer = budget.check_total().and(answer);
         Call { answer, spent }
     }
 
-    fn claude(&self, prompt: &str, spent: &mut Spent, budget: &Budget) -> Result<Answer, Failure> {
+    fn claude(
+        &self,
+        prompt: &str,
+        spent: &mut Spent,
+        deadline: Instant,
+    ) -> Result<Answer, Failure> {
         let mut command = Command::new("claude");
         // Without this, an `@path` in the conversation makes Claude Code attach that file.
         command.env("CLAUDE_CODE_DISABLE_ATTACHMENTS", "1");
@@ -258,10 +280,8 @@ impl Labeler<'_> {
             "--json-schema",
             &self.schema.to_string(),
         ]);
-        let (succeeded, stdout, stderr) = run(command, prompt, budget)?;
-        budget.check_total()?;
+        let (succeeded, stdout, stderr) = run(command, prompt, deadline)?;
         let result: Value = serde_json::from_str(stdout.trim()).unwrap_or(Value::Null);
-        budget.check_total()?;
         let usage = &result["usage"];
         let count = |name: &str| usage[name].as_u64().unwrap_or(0);
         let cached = count("cache_read_input_tokens");
@@ -279,10 +299,10 @@ impl Labeler<'_> {
                 .unwrap_or_else(|| last_line(&stderr));
             return Err(Failure::Rejected(format!("claude: {reason}")));
         }
-        answer(&result["structured_output"], &self.schema, budget)
+        answer(&result["structured_output"], &self.schema)
     }
 
-    fn codex(&self, prompt: &str, spent: &mut Spent, budget: &Budget) -> Result<Answer, Failure> {
+    fn codex(&self, prompt: &str, spent: &mut Spent, deadline: Instant) -> Result<Answer, Failure> {
         // Each call has its own files, so parallel calls never read a file another is writing.
         static CALLS: AtomicU64 = AtomicU64::new(0);
         let unique = CALLS.fetch_add(1, Ordering::Relaxed);
@@ -332,21 +352,18 @@ impl Labeler<'_> {
             .arg(answer_path);
         command.args(["--json", "-"]);
         let input = format!("{}\n{prompt}", self.prompt.instructions);
-        let (succeeded, stdout, stderr) = run(command, &input, budget)?;
-        // Read the file before parsing events: it shares the response-collection deadline.
-        let written = read_answer(answer_path, budget);
-        let (mut completed, mut failed) = (Value::Null, Value::Null);
-        for line in stdout.lines() {
-            budget.check_total()?;
-            if let Ok(event) = serde_json::from_str::<Value>(line) {
-                match event["type"].as_str() {
-                    Some("turn.completed") => completed = event,
-                    Some("turn.failed") => failed = event,
-                    _ => {}
-                }
-            }
-        }
-        budget.check_total()?;
+        let (succeeded, stdout, stderr) = run(command, &input, deadline)?;
+        let written = read_answer(answer_path)
+            .map_err(|error| Failure::Invalid(format!("could not read codex's answer: {error}")));
+        let written = check_deadline(deadline).and(written);
+        let event = |name: &str| {
+            stdout
+                .lines()
+                .rev()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .find(|event| event["type"] == name)
+        };
+        let completed = event("turn.completed").unwrap_or(Value::Null);
         let usage = &completed["usage"];
         let count = |name: &str| usage[name].as_u64().unwrap_or(0);
         *spent = Spent {
@@ -356,7 +373,7 @@ impl Labeler<'_> {
             cost: None,
         };
         // A `Reconnecting...` error event is a retry: only a failed turn or no answer is a failure.
-        if !failed.is_null() {
+        if let Some(failed) = event("turn.failed") {
             let reason = failed["error"]["message"]
                 .as_str()
                 .unwrap_or("the turn failed");
@@ -368,8 +385,7 @@ impl Labeler<'_> {
         let text = written?;
         let value: Value = serde_json::from_str(text.trim())
             .map_err(|error| Failure::Invalid(format!("codex's answer is not JSON: {error}")))?;
-        budget.check_total()?;
-        answer(&value, &self.schema, budget)
+        answer(&value, &self.schema)
     }
 }
 
@@ -395,22 +411,6 @@ pub fn no_save_support(client: Client) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
-
-    #[test]
-    fn validation_uses_the_total_deadline_after_the_response_deadline() {
-        let schema = schema(&Taxonomy::built_in(), false);
-        let value = json!({"work": "Debugging", "topic": "Security"});
-        let reading_done = Budget::with_limits(Duration::ZERO, Duration::from_secs(1));
-        assert!(answer(&value, &schema, &reading_done).is_ok());
-        let expired = Budget::with_limits(Duration::ZERO, Duration::ZERO);
-        assert!(
-            answer(&value, &schema, &expired)
-                .unwrap_err()
-                .message()
-                .contains("15-minute")
-        );
-    }
 
     #[test]
     fn the_schema_lists_the_labels_and_adds_pull_requests_on_request() {
@@ -465,7 +465,7 @@ mod tests {
             {"url": "https://github.com/o/r/pull/7", "role": "Reviewed"},
             {"url": "https://github.com/o/r/pull/7#discussion_r1", "role": "Reviewed"}]});
         assert_eq!(
-            answer(&value, &schema, &Budget::new()).unwrap().prs,
+            answer(&value, &schema).unwrap().prs,
             [PullRequest {
                 url: "https://github.com/o/r/pull/7".into(),
                 role: PrRole::Reviewed
@@ -479,7 +479,7 @@ mod tests {
         let good = json!({"work": "Debugging", "topic": "Security", "prs": [
             {"url": "https://github.com/o/r/pull/1", "role": "Reviewed"}]});
         assert_eq!(
-            answer(&good, &schema, &Budget::new()).unwrap(),
+            answer(&good, &schema).unwrap(),
             Answer {
                 work: "Debugging".into(),
                 topic: "Security".into(),
@@ -493,23 +493,20 @@ mod tests {
         let invented = json!({"work": "Debugging", "topic": "Security", "prs": [
             {"url": "https://github.com/o/r/pull/2", "role": "Invented"}]});
         assert!(matches!(
-            answer(&invented, &schema, &Budget::new()),
+            answer(&invented, &schema),
             Err(Failure::Invalid(_))
         ));
         let missing = json!({"work": "Debugging", "topic": "Security"});
         assert!(matches!(
-            answer(&missing, &schema, &Budget::new()),
+            answer(&missing, &schema),
             Err(Failure::Invalid(_))
         ));
         let without = super::schema(&Taxonomy::built_in(), false);
-        assert_eq!(answer(&missing, &without, &Budget::new()).unwrap().prs, []);
+        assert_eq!(answer(&missing, &without).unwrap().prs, []);
         let bad = json!({"work": "Debugging", "topic": "Astrology", "prs": []});
+        assert!(matches!(answer(&bad, &schema), Err(Failure::Invalid(_))));
         assert!(matches!(
-            answer(&bad, &schema, &Budget::new()),
-            Err(Failure::Invalid(_))
-        ));
-        assert!(matches!(
-            answer(&Value::Null, &schema, &Budget::new()),
+            answer(&Value::Null, &schema),
             Err(Failure::Invalid(_))
         ));
     }

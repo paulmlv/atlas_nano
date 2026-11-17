@@ -230,22 +230,11 @@ wait
 fn codex_collects_its_answer_and_rejects_oversized_or_special_files() {
     let sandbox = Sandbox::new("codex-answer");
     sandbox.session("plain", "A plain request", 1);
-    assert!(
-        sandbox
-            .answer(&["configure"], "\n\n\n\n\n\n")
-            .status
-            .success()
-    );
-    let config = sandbox.root.join("config/atlas-nano/config.toml");
-    let mut saved =
-        atlas_nano::config::Config::decode(&fs::read_to_string(&config).unwrap()).unwrap();
-    saved.labeler.client = atlas_nano::model::Client::Codex;
-    saved.labeler.model = "gpt-6-luna".into();
-    fs::write(config, saved.encode()).unwrap();
     let fake = sandbox.root.join("bin/codex");
     fs::write(
         &fake,
         r#"#!/bin/sh
+case "$*" in *--help*) echo --ephemeral; exit 0 ;; esac
 while [ "$#" -gt 0 ]; do
   if [ "$1" = "-o" ]; then shift; answer=$1; fi
   shift
@@ -261,6 +250,8 @@ echo '{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":5}}'
     )
     .unwrap();
     fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+    let configured = sandbox.answer(&["configure"], "openai/gpt-6-luna\n\n\n\n1\n\n\n\n");
+    assert!(configured.status.success(), "{}", text(&configured.stderr));
     for (mode, expected) in [
         ("ok", "1 labeled, 0 from cache, 0 unlabeled"),
         ("oversized", "0 labeled, 0 from cache, 1 unlabeled"),

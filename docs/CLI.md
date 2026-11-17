@@ -91,9 +91,8 @@ does not record it. Usage counts as read only when it has both input and output 
 - While the calls run, a progress bar on standard error shows the calls done, the time spent, and an
   estimate of the time left. Each retry of failed calls prints how many it retries and has its own
   bar.
-- Each attempt has ten minutes to collect the complete response and fifteen minutes total through
-  validation, as described in [the call](LABELING.md#the-call). These limits apply to individual
-  calls, not the whole run. Ctrl-C stops the active labeler process groups as Atlas exits.
+- Each labeling attempt has ten minutes to collect its response. Ctrl-C stops all active labeler
+  groups. See [the call](LABELING.md#the-call).
 - After labeling, the run prints the tokens actually used and their API-equivalent cost.
 
 ### Label cache

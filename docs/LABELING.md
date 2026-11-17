@@ -160,18 +160,13 @@ references its parent's history without copying it, the text is rebuilt from the
   `usage`, and `total_cost_usd`.
 - Codex writes the answer to the answer file and reports usage in its `turn.completed` event, priced
   per call from the price table.
-- Each call has ten minutes from launch to send the prompt, wait for the client to exit, and finish
-  reading its output, including Codex's answer file. A helper holding an output pipe open does not
-  extend this deadline. Standard output, standard error, and the answer file each have an 8 MiB
-  limit; Codex's answer must be a regular file.
-- A fifteen-minute total deadline, also measured from launch, covers parsing and validating the
-  response. It is checked before and after JSON decoding and during validation; decoding itself is
-  not interrupted. The output limits keep this work small. Both deadlines apply to each attempt, not
-  the full `atlas-nano run`.
-- After a call finishes or fails, its process group is stopped, its direct child is reaped, and its
-  temporary files are removed. Ctrl-C, termination, and hangup signals stop all active labeler
-  groups before Atlas exits with the original signal. Helpers that deliberately leave the group are
-  outside this cleanup.
+- Each attempt has ten minutes to send the prompt and collect the response. Standard output,
+  standard error, and Codex's answer file are each limited to 8 MiB.
+- When the client exits, Atlas stops its process group and reads the buffered output. A helper that
+  inherited a pipe cannot hold up a successful call if it stays in the group. Atlas also stops the
+  group on failure or timeout.
+- Ctrl-C, SIGTERM, and SIGHUP stop all active labeler groups. If Atlas receives SIGKILL or aborts,
+  its clients can keep running. Helpers that leave their group can also survive cleanup.
 - A call fails when it is rejected, exceeds a deadline or output limit, or returns an answer that
   does not match the schema. Once every call has run, each failed call is tried again, and this
   repeats up to `retries` times (1 by default, set in `config.toml` or with `--retries`). Only the
