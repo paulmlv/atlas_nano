@@ -5,8 +5,10 @@ What Atlas Nano assumes about the clients' files, and why.
 ## A session stored in several files is read from the longest copy
 
 When several files share a client and file name, `ingest::load` keeps the copy with the most valid
-records. Claude Code makes such copies when a chat is resumed from another folder, or forked with
-its subagents; a copied subagent still belongs to the session its records name.
+records. On a tie it prefers fewer malformed lines, then more readable usage records. Another copy
+can supply missing token counts for a response ID in the chosen transcript. Claude Code makes such
+copies when a chat is resumed from another folder, or forked with its subagents. A copied subagent
+still belongs to the session its records name.
 
 **Why it is safe:** in a check in November 2026, every extra copy seen was identical to the longest
 or a prefix of it. Only Claude Code sessions had copies; Codex sessions had none. A shorter copy

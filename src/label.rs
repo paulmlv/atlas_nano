@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 
 use crate::config::{self, Config};
 use crate::labeler::{self, Answer, Call, Failure, Labeler, Spent};
-use crate::model::{Client, Kind, Label, PrRole, PullRequest, Session, Usage};
+use crate::model::{Client, Item, Kind, Label, PrRole, PullRequest, Session, Usage};
 use crate::paint::{self, Paint, Tone};
 use crate::prices::PriceTable;
 use crate::prompt::Prompt;
@@ -413,15 +413,16 @@ fn remote(session: &Session, pull_requests: bool, known: &mut HashMap<String, St
     url.map_or("unknown".to_string(), |url| without_credentials(&url))
 }
 
-/// Plan each session's calls: render and chunk it, and build its prompts and its cache key.
+/// Look up each session's label as soon as its cache key is known. Keep prompts only for misses.
 /// Safety reviews are left out, and a session that renders to no text counts as unlabeled.
-fn plan<'a>(
-    sessions: &[&'a Session],
+fn plan<'a, Parts: IntoIterator<Item = &'a Item>>(
+    sessions: impl IntoIterator<Item = (&'a Session, Parts)>,
     config: &Config,
     prompt: &Prompt,
     schema: &str,
+    cache: Option<&Path>,
     summary: &mut Labeling,
-) -> Vec<Plan<'a>> {
+) -> (HashMap<String, Label>, Vec<Plan<'a>>) {
     let settings = &config.labeler;
     // Claude Code caps its window at 200K when this is set to anything but 0 or false.
     let capped = std::env::var("CLAUDE_CODE_DISABLE_1M_CONTEXT")
@@ -433,12 +434,14 @@ fn plan<'a>(
         capped,
     );
     let mut remotes = HashMap::new();
-    let mut plans = Vec::new();
-    for &session in sessions
-        .iter()
-        .filter(|session| session.kind != Kind::Review)
+    let cached = cache.map(read_cache).unwrap_or_default();
+    let mut labels = HashMap::new();
+    let mut pending = Vec::new();
+    for (session, items) in sessions
+        .into_iter()
+        .filter(|(session, _)| session.kind != Kind::Review)
     {
-        let chunks = text::chunks(&text::render(&session.items, settings.tools), budget);
+        let chunks = text::chunks(&text::render(items, settings.tools), budget);
         if chunks.is_empty() {
             summary.unlabeled += 1;
             continue;
@@ -446,8 +449,8 @@ fn plan<'a>(
         let url = remote(session, settings.pull_requests, &mut remotes);
         let branch = session.branch.as_deref().unwrap_or("unknown");
         let prompts: Vec<String> = chunks
-            .iter()
-            .map(|chunk| prompt.conversation(&url, branch, chunk))
+            .into_iter()
+            .map(|chunk| prompt.conversation(&url, branch, &chunk))
             .collect();
         // Everything sent to the labeler, and how, so a changed instruction, label list or effort
         // relabels; and this build's version, so a new release that reads answers differently does
@@ -463,13 +466,19 @@ fn plan<'a>(
             config.unit.as_str(),
         ];
         parts.extend(prompts.iter().map(String::as_str));
-        plans.push(Plan {
-            session,
-            key: digest(&parts),
-            prompts,
-        });
+        let key = digest(&parts);
+        if let Some(label) = cached.get(&key).and_then(stored) {
+            summary.from_cache += 1;
+            labels.insert(session.key(), label);
+        } else {
+            pending.push(Plan {
+                session,
+                key,
+                prompts,
+            });
+        }
     }
-    plans
+    (labels, pending)
 }
 
 /// The file the labels are stored in, its folder created if needed.
@@ -477,32 +486,6 @@ fn cache_path() -> Result<PathBuf, String> {
     let folder = config::cache_folder()?;
     fs::create_dir_all(&folder).map_err(|error| format!("{}: {error}", folder.display()))?;
     Ok(folder.join("labels.jsonl"))
-}
-
-/// Split the plans into the labels already stored, by session key, and the plans still to call.
-fn lookup<'a>(
-    plans: Vec<Plan<'a>>,
-    cache_path: &Path,
-    no_cache: bool,
-    summary: &mut Labeling,
-) -> (HashMap<String, Label>, Vec<Plan<'a>>) {
-    let cached = if no_cache {
-        HashMap::new()
-    } else {
-        read_cache(cache_path)
-    };
-    let mut labels = HashMap::new();
-    let mut pending = Vec::new();
-    for plan in plans {
-        match cached.get(&plan.key).and_then(stored) {
-            Some(label) => {
-                summary.from_cache += 1;
-                labels.insert(plan.session.key(), label);
-            }
-            None => pending.push(plan),
-        }
-    }
-    (labels, pending)
 }
 
 /// Print the estimate: what will be sent, before anything is.
@@ -801,6 +784,25 @@ pub fn label(
     no_cache: bool,
     confirm: bool,
 ) -> Result<Outcome, String> {
+    label_selected(
+        sessions.iter().map(|&session| (session, &session.items)),
+        config,
+        taxonomy,
+        prices,
+        no_cache,
+        confirm,
+    )
+}
+
+/// Label each selected session using its borrowed transcript, including any inherited history.
+pub(crate) fn label_selected<'a, Parts: IntoIterator<Item = &'a Item>>(
+    sessions: impl IntoIterator<Item = (&'a Session, Parts)>,
+    config: &Config,
+    taxonomy: &Taxonomy,
+    prices: &PriceTable,
+    no_cache: bool,
+    confirm: bool,
+) -> Result<Outcome, String> {
     let settings = &config.labeler;
     let prompt = Prompt::new(taxonomy, settings.pull_requests);
     let schema = labeler::schema(taxonomy, settings.pull_requests);
@@ -811,9 +813,15 @@ pub fn label(
         ..Labeling::default()
     };
 
-    let plans = plan(sessions, config, &prompt, &schema.to_string(), &mut summary);
     let cache_path = cache_path()?;
-    let (mut labels, pending) = lookup(plans, &cache_path, no_cache, &mut summary);
+    let (mut labels, pending) = plan(
+        sessions,
+        config,
+        &prompt,
+        &schema.to_string(),
+        (!no_cache).then_some(cache_path.as_path()),
+        &mut summary,
+    );
     let paint = Paint::stderr(config.theme);
     estimate(&pending, &summary, settings, &prompt, prices, paint);
     if !pending.is_empty() {
@@ -925,6 +933,67 @@ mod tests {
         let mut keys: Vec<&str> = cache.keys().map(String::as_str).collect();
         keys.sort_unstable();
         assert_eq!(keys, ["a", "b"]);
+    }
+
+    #[test]
+    fn a_fork_reuses_the_key_from_its_expanded_transcript() {
+        use crate::account::tests::session;
+        use crate::ingest::History;
+        use crate::model::{HistoryBase, Role};
+
+        let chat = |id: &str| {
+            let mut chat = session(id, Kind::Primary, None, 1);
+            chat.client = Client::Codex;
+            chat.items.push(Item {
+                position: 0,
+                role: Role::User,
+                text: id.to_string(),
+            });
+            chat
+        };
+        let parent = chat("parent");
+        let mut fork = chat("fork");
+        fork.history_base = Some(HistoryBase {
+            rollout: parent.id.clone(),
+            end: 1,
+        });
+        let config = config::tests::config();
+        let taxonomy = Taxonomy::built_in();
+        let prompt = Prompt::new(&taxonomy, config.labeler.pull_requests);
+        let schema = labeler::schema(&taxonomy, config.labeler.pull_requests).to_string();
+        let (_, old_plans) = plan(
+            [(&fork, [&parent.items[0], &fork.items[0]])],
+            &config,
+            &prompt,
+            &schema,
+            None,
+            &mut Labeling::default(),
+        );
+        let path =
+            std::env::temp_dir().join(format!("atlas-nano-fork-cache-{}", std::process::id()));
+        let entry = json!({"key": old_plans[0].key, "work": "Debugging", "topic": "Security",
+            "prs": [], "model": config.labeler.model});
+        fs::write(&path, entry.to_string()).unwrap();
+
+        let sessions = [parent, fork];
+        let history = History::new(&sessions);
+        let mut summary = Labeling::default();
+        let (labels, pending) = plan(
+            sessions
+                .iter()
+                .enumerate()
+                .map(|(n, session)| (session, history.items(&sessions, n))),
+            &config,
+            &prompt,
+            &schema,
+            Some(&path),
+            &mut summary,
+        );
+        fs::remove_file(path).unwrap();
+        assert!(labels["codex:fork"].from_cache);
+        assert_eq!(summary.from_cache, 1);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].session.id, "parent");
     }
 
     fn answer(work: &str, topic: &str, pr: Option<(&str, &str)>) -> Answer {

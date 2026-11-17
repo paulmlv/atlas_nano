@@ -13,11 +13,12 @@ use ratatui::widgets::{
 };
 use rust_decimal::Decimal;
 
-use crate::account::Totals;
+use crate::account::{Totals, UsageCoverage};
 use crate::model::{Kind, Label, Usage};
 use crate::paint::{Paint, Tone, printable};
 use crate::report::{
-    self, COLUMNS, Group, NO_REPO, Report, Row, category, count, local_day, money, share, span,
+    self, COLUMNS, Group, NO_REPO, Report, Row, Subtotal, category, count, local_day, measured,
+    money, share, span, spend_share,
 };
 
 /// Which part of a session's requests a line holds.
@@ -33,18 +34,19 @@ enum Slice {
 }
 
 /// A row's tokens and spend within `slice`.
-fn part(row: &Row, slice: &Slice) -> (u64, Decimal) {
+fn part(row: &Row, slice: &Slice) -> Subtotal {
     let requests = |keep: &dyn Fn(&Usage) -> bool| {
         let kept = row.session.usage.iter().zip(&row.cost.requests);
-        kept.filter(|(usage, _)| keep(usage)).fold(
-            (0, Decimal::ZERO),
-            |(tokens, spend), (usage, price)| {
-                (tokens + usage.tokens(), spend + price.unwrap_or_default())
-            },
-        )
+        kept.filter(|(usage, _)| keep(usage))
+            .map(|(usage, price)| Subtotal {
+                tokens: usage.tokens(),
+                spend: price.unwrap_or_default(),
+                coverage: UsageCoverage::RECORDED,
+            })
+            .sum()
     };
     match slice {
-        Slice::All => (row.cost.tokens.total(), row.cost.spend),
+        Slice::All => Subtotal::from(&row.cost),
         Slice::Model(name) => {
             requests(&|usage| format!("{} / {}", row.session.client.name(), usage.model) == *name)
         }
@@ -53,12 +55,13 @@ fn part(row: &Row, slice: &Slice) -> (u64, Decimal) {
             let worked = report::worked_on(row);
             if worked.contains(&url.as_str()) {
                 let n = worked.len() as u64;
-                (
-                    row.cost.tokens.total() / n,
-                    row.cost.spend / Decimal::from(n),
-                )
+                Subtotal {
+                    tokens: row.cost.tokens.total() / n,
+                    spend: row.cost.spend / Decimal::from(n),
+                    coverage: row.cost.coverage,
+                }
             } else {
-                (0, Decimal::ZERO)
+                Subtotal::default()
             }
         }
     }
@@ -165,9 +168,12 @@ fn grouped(all: &Totals, title: &str, groups: Vec<Group>) -> Table {
                 plain(totals.turns.to_string()),
                 plain(span(totals.working)),
                 plain(span(totals.wall)),
-                plain(count(totals.tokens.total())),
-                (money(totals.spend), Tone::Money),
-                (share(totals.spend, all.spend), Tone::Dim),
+                plain(measured(count(totals.tokens.total()), totals.coverage)),
+                (measured(money(totals.spend), totals.coverage), Tone::Money),
+                (
+                    spend_share(totals.spend, all.spend, all.coverage),
+                    Tone::Dim,
+                ),
             ],
             strong,
             open: Some(Open::Chats(line.name, line.rows, Slice::All)),
@@ -203,7 +209,7 @@ fn models(report: &Report, all: &Totals) -> Table {
                     plain(model.requests.to_string()),
                     plain(count(model.tokens)),
                     spend,
-                    (share(model.spend, all.spend), Tone::Dim),
+                    (spend_share(model.spend, all.spend, all.coverage), Tone::Dim),
                 ],
                 strong: false,
                 open: Some(Open::Chats(
@@ -244,21 +250,18 @@ fn days(report: &Report) -> Table {
 fn pull_requests(report: &Report) -> Table {
     let items = report::pull_requests(&report.rows)
         .into_iter()
-        .map(|pr| {
-            let mark = if pr.split { "~" } else { "" };
-            Item {
-                cells: vec![
-                    plain(pr.url.clone()),
-                    plain(pr.rows.len().to_string()),
-                    (format!("{mark}{}", money(pr.spend)), Tone::Money),
-                ],
-                strong: false,
-                open: Some(Open::Chats(
-                    pr.url.clone(),
-                    pr.rows,
-                    Slice::PullRequest(pr.url),
-                )),
-            }
+        .map(|pr| Item {
+            cells: vec![
+                plain(pr.url.clone()),
+                plain(pr.rows.len().to_string()),
+                (pr.total.pr_spend(pr.split), Tone::Money),
+            ],
+            strong: false,
+            open: Some(Open::Chats(
+                pr.url.clone(),
+                pr.rows,
+                Slice::PullRequest(pr.url),
+            )),
         })
         .collect();
     let mut table = Table::new(
@@ -274,8 +277,7 @@ fn pull_requests(report: &Report) -> Table {
 /// whose type of work it shows.
 struct ChatPart {
     sessions: u64,
-    tokens: u64,
-    spend: Decimal,
+    total: Subtotal,
     labeled: usize,
 }
 
@@ -284,24 +286,21 @@ fn chats(report: &Report, title: &str, rows: &[usize], slice: &Slice) -> Table {
     let mut by_root: HashMap<usize, ChatPart> = HashMap::new();
     for &n in rows {
         let row = &report.rows[n];
-        let (tokens, spend) = part(row, slice);
         let chat = by_root.entry(row.root).or_insert(ChatPart {
             sessions: 0,
-            tokens: 0,
-            spend: Decimal::ZERO,
+            total: Subtotal::default(),
             labeled: n,
         });
         chat.sessions += 1;
-        chat.tokens += tokens;
-        chat.spend += spend;
+        chat.total += part(row, slice);
         // The chat's own label when it is one of the rows, else the first session's that is.
         if n == row.root {
             chat.labeled = n;
         }
     }
     let mut listed: Vec<(usize, ChatPart)> = by_root.into_iter().collect();
-    listed.sort_by(|a, b| b.1.spend.cmp(&a.1.spend).then(a.0.cmp(&b.0)));
-    let whole: Decimal = listed.iter().map(|chat| chat.1.spend).sum();
+    listed.sort_by(|a, b| b.1.total.spend.cmp(&a.1.total.spend).then(a.0.cmp(&b.0)));
+    let whole: Subtotal = listed.iter().map(|chat| chat.1.total).sum();
     let items = listed
         .into_iter()
         .map(|(root, chat)| {
@@ -326,9 +325,12 @@ fn chats(report: &Report, title: &str, rows: &[usize], slice: &Slice) -> Table {
                     plain(row.place.project.clone()),
                     plain(work),
                     plain(chat.sessions.to_string()),
-                    plain(count(chat.tokens)),
-                    (money(chat.spend), Tone::Money),
-                    (share(chat.spend, whole), Tone::Dim),
+                    plain(measured(count(chat.total.tokens), chat.total.coverage)),
+                    (chat.total.display_spend(), Tone::Money),
+                    (
+                        spend_share(chat.total.spend, whole.spend, whole.coverage),
+                        Tone::Dim,
+                    ),
                 ],
                 strong: false,
                 open: Some(Open::Chat(root)),
@@ -419,8 +421,11 @@ fn chat(report: &Report, root: usize) -> Table {
                     plain(models.join(", ")),
                     plain(session.turns.len().to_string()),
                     plain(span(session.working())),
-                    plain(count(row.cost.tokens.total())),
-                    (money(row.cost.spend), Tone::Money),
+                    plain(measured(count(row.cost.tokens.total()), row.cost.coverage)),
+                    (
+                        measured(money(row.cost.spend), row.cost.coverage),
+                        Tone::Money,
+                    ),
                 ],
                 strong: n == root,
                 open: None,
@@ -476,11 +481,18 @@ impl<'r, 'a> Dashboard<'r, 'a> {
             let topics = groups(&|row| category(row, &taxonomy.topics, |l| &l.topic));
             tabs.push(("Topic", grouped(&all, "By topic", topics)));
         }
-        tabs.push(("Models", models(report, &all)));
+        let mut model_table = models(report, &all);
+        let mut day_table = days(report);
+        if all.coverage.missing {
+            let note = "Model and day tables show only requests with recorded usage.";
+            model_table.note.push(note.into());
+            day_table.note.push(note.into());
+        }
+        tabs.push(("Models", model_table));
         let projects = groups(&|row| (row.place.project.clone(), String::new()));
         tabs.push(("Projects", grouped(&all, "By project", projects)));
         tabs.push(("Repos", grouped(&all, "By repo", groups(&report::repo))));
-        tabs.push(("Days", days(report)));
+        tabs.push(("Days", day_table));
         // The conversations the printed report ranks, with every session they started.
         let ranked: HashSet<usize> = report::chats(&report.rows)
             .into_iter()
@@ -581,7 +593,18 @@ impl<'r, 'a> Dashboard<'r, 'a> {
             Line::from(vec![
                 Span::styled("atlas-nano", p.style(Tone::Heading, false)),
                 format!(" · {} · ", self.report.period).into(),
-                Span::styled(money(all.spend), p.style(Tone::Money, true)),
+                Span::styled(
+                    measured(money(all.spend), all.coverage),
+                    p.style(Tone::Money, true),
+                ),
+                Span::styled(
+                    if all.coverage.missing {
+                        " (incomplete usage)"
+                    } else {
+                        ""
+                    },
+                    warning,
+                ),
                 caveat(
                     all.unpriced_requests,
                     "requests have no price and count as $0",
@@ -599,10 +622,10 @@ impl<'r, 'a> Dashboard<'r, 'a> {
                     format!(
                         " · wall {} · tokens in {} · cached {} · cache-write {} · out {}",
                         span(all.wall),
-                        count(tokens.input),
-                        count(tokens.cached),
-                        count(tokens.cache_write),
-                        count(tokens.output)
+                        measured(count(tokens.input), all.coverage),
+                        measured(count(tokens.cached), all.coverage),
+                        measured(count(tokens.cache_write), all.coverage),
+                        measured(count(tokens.output), all.coverage)
                     ),
                     dim,
                 ),
@@ -1040,6 +1063,37 @@ mod tests {
         assert!(
             shown.contains("(2 turns with no recorded completion)"),
             "{shown}"
+        );
+    }
+
+    #[test]
+    fn shows_unknown_chats_and_the_recorded_part_when_a_subagent_has_usage() {
+        let mut sessions = sessions();
+        sessions[0].usage.clear();
+        sessions[0].usage_missing = true;
+        let tab = [KeyCode::Char('7')];
+        let partial = screen(&sessions, &tab);
+        assert!(partial.contains("$0.51+ (incomplete usage)"), "{partial}");
+        let models = screen(&sessions, &[KeyCode::Char('3')]);
+        assert!(
+            models.contains("Model and day tables show only requests with recorded usage."),
+            "{models}"
+        );
+        sessions[1].usage.clear();
+        let unknown = screen(&sessions, &tab);
+        assert!(unknown.contains(" · ? (incomplete usage)"), "{unknown}");
+        assert!(
+            unknown
+                .lines()
+                .any(|line| line.contains("Fix the export") && line.contains('?')),
+            "{unknown}"
+        );
+        let opened = screen(&sessions, &[KeyCode::Char('7'), KeyCode::Enter]);
+        assert!(
+            opened
+                .lines()
+                .any(|line| line.contains("chat  Fix the export") && line.contains('?')),
+            "{opened}"
         );
     }
 

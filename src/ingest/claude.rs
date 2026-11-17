@@ -8,8 +8,8 @@ use regex::Regex;
 use serde_json::Value;
 
 use super::timing::{self, Event, Signal};
-use super::{Span, known, stem, time};
-use crate::model::{Client, Item, Kind, Role, Session, SessionRef, Usage};
+use super::{Evidence, Span, TextMode, TitleCandidates, known, optional_count, stem, time};
+use crate::model::{Client, Kind, Role, Session, SessionRef, Usage};
 
 const INTERRUPTIONS: [&str; 2] = [
     "[Request interrupted by user]",
@@ -112,6 +112,33 @@ fn is_turn(text: &str) -> bool {
     }
 }
 
+/// Discard bodies that an accounting-only read never uses. Keep block types and tool IDs for
+/// turn timing, usage evidence and tool counts.
+pub(super) fn discard_bodies(record: &mut Value) {
+    let assistant = record["type"] == "assistant";
+    if let Some(fields) = record.as_object_mut() {
+        fields.remove("toolUseResult");
+    }
+    if let Some(blocks) = record
+        .pointer_mut("/message/content")
+        .and_then(Value::as_array_mut)
+    {
+        for block in blocks {
+            if (assistant || matches!(block["type"].as_str(), Some("tool_result" | "image")))
+                && let Some(fields) = block.as_object_mut()
+            {
+                fields.retain(|key, _| matches!(key.as_str(), "type" | "id"));
+            }
+        }
+    }
+}
+
+fn recorded_owner(record: &Value) -> Option<&str> {
+    record["forkedFrom"]["sessionId"]
+        .as_str()
+        .or_else(|| record["sessionId"].as_str())
+}
+
 fn usage(record: &Value, at: chrono::DateTime<chrono::Utc>) -> Option<Usage> {
     let reply = &record["message"];
     let reported = reply.get("usage")?;
@@ -120,23 +147,17 @@ fn usage(record: &Value, at: chrono::DateTime<chrono::Utc>) -> Option<Usage> {
         reported["input_tokens"].as_u64()?,
         reported["output_tokens"].as_u64()?,
     );
-    let count = |name: &str| reported[name].as_u64().unwrap_or(0);
-    let hour = reported["cache_creation"]["ephemeral_1h_input_tokens"]
-        .as_u64()
-        .unwrap_or(0);
+    let hour = optional_count(&reported["cache_creation"]["ephemeral_1h_input_tokens"])?;
     Some(Usage {
-        id: reply["id"].as_str()?.to_string(),
+        id: known(&reply["id"])?,
         // A fork can relabel a copied record with its own ID but keeps where it came from.
-        owner: record["forkedFrom"]["sessionId"]
-            .as_str()
-            .or_else(|| record["sessionId"].as_str())
-            .map(str::to_string),
+        owner: recorded_owner(record).map(str::to_owned),
         at,
         model: reply["model"].as_str().unwrap_or_default().to_string(),
         fast: reported["speed"].as_str() == Some("fast"),
         input,
-        cached: count("cache_read_input_tokens"),
-        cache_write: count("cache_creation_input_tokens").saturating_sub(hour),
+        cached: optional_count(&reported["cache_read_input_tokens"])?,
+        cache_write: optional_count(&reported["cache_creation_input_tokens"])?.saturating_sub(hour),
         cache_write_1h: hour,
         output,
     })
@@ -145,7 +166,12 @@ fn usage(record: &Value, at: chrono::DateTime<chrono::Utc>) -> Option<Usage> {
 /// Describe one transcript. A file under a `subagents` directory is a subagent of the session its
 /// records name, or else of the session whose directory holds it: a fork or resume can copy the
 /// file under another session. A fork is dated from its own records after the copied prefix.
-pub fn parse(path: &Path, records: &[Value]) -> Session {
+pub(super) fn parse(
+    path: &Path,
+    records: &[Value],
+    mode: TextMode,
+    evidence: &mut Evidence,
+) -> Session {
     let owner = path
         .ancestors()
         .find(|folder| folder.file_name().is_some_and(|name| name == "subagents"))
@@ -185,6 +211,7 @@ pub fn parse(path: &Path, records: &[Value]) -> Session {
     let mut seen: HashSet<&str> = HashSet::new();
     let mut tools: HashSet<&str> = HashSet::new();
     let mut usage_at: HashMap<String, usize> = HashMap::new();
+    let mut titles = TitleCandidates::default();
     let mut events: Vec<Event> = Vec::new();
     let mut last_complete: Option<&str> = None;
     let (mut custom_title, mut ai_title) = ("", "");
@@ -213,13 +240,7 @@ pub fn parse(path: &Path, records: &[Value]) -> Session {
             session.branch = known(&record["gitBranch"]);
         }
         let mut keep = |role: Role, text: String| {
-            if !text.is_empty() {
-                session.items.push(Item {
-                    position,
-                    role,
-                    text,
-                });
-            }
+            titles.keep(mode, &mut session.items, position, role, text);
         };
         let event = |signal: Signal| Event {
             signal,
@@ -269,7 +290,7 @@ pub fn parse(path: &Path, records: &[Value]) -> Session {
                 let reply = &record["message"];
                 for block in reply["content"].as_array().into_iter().flatten() {
                     match block["type"].as_str() {
-                        Some("text") => {
+                        Some("text") if mode == TextMode::Full => {
                             let text = block["text"].as_str().unwrap_or_default().trim();
                             keep(Role::Assistant, text.to_string());
                         }
@@ -277,15 +298,17 @@ pub fn parse(path: &Path, records: &[Value]) -> Session {
                             if block["id"].as_str().is_none_or(|id| tools.insert(id)) {
                                 session.tool_calls += 1;
                             }
-                            let name = block["name"].as_str().unwrap_or_default();
-                            keep(Role::Tool, format!("{name} {}", block["input"]));
+                            if mode == TextMode::Full {
+                                let name = block["name"].as_str().unwrap_or_default();
+                                keep(Role::Tool, format!("{name} {}", block["input"]));
+                            }
                         }
                         _ => {}
                     }
                 }
-                if let Some(at) = at
-                    && let Some(reported) = usage(record, at)
-                {
+                let generated =
+                    reply["model"] != "<synthetic>" && record["isApiErrorMessage"] != true;
+                if let Some(reported) = at.and_then(|at| usage(record, at)) {
                     // Streaming writes a record per content block, each with the usage so far.
                     match usage_at.get(&reported.id) {
                         Some(&index) => session.usage[index] = reported,
@@ -294,6 +317,9 @@ pub fn parse(path: &Path, records: &[Value]) -> Session {
                             session.usage.push(reported);
                         }
                     }
+                } else if generated {
+                    let id = reply["id"].as_str().filter(|id| !id.is_empty());
+                    evidence.missing_response(id, recorded_owner(record), position as usize + 1);
                 }
                 let done = matches!(
                     reply["stop_reason"].as_str(),
@@ -330,7 +356,12 @@ mod tests {
     use super::*;
 
     fn parse_main(records: &[Value]) -> Session {
-        parse(Path::new("/home/.claude/projects/p/abc.jsonl"), records)
+        parse(
+            Path::new("/home/.claude/projects/p/abc.jsonl"),
+            records,
+            TextMode::Full,
+            &mut Evidence::default(),
+        )
     }
 
     fn rendered(session: &Session) -> Vec<String> {
@@ -409,7 +440,7 @@ mod tests {
                 "origin": {"kind": "human"}, "prompt": "also this"}}),
         ];
         let path = Path::new("/home/.claude/projects/p/parent-id/subagents/agent-1.jsonl");
-        let session = parse(path, &records);
+        let session = parse(path, &records, TextMode::Full, &mut Evidence::default());
         assert_eq!(
             rendered(&session),
             [

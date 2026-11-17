@@ -12,7 +12,7 @@ use crate::config::{self, Config, Output};
 use crate::dashboard;
 use crate::ingest;
 use crate::label;
-use crate::model::{Client, Session};
+use crate::model::{Client, first_request, short_title};
 use crate::paint::{Paint, Tone};
 use crate::place::{self, Place};
 use crate::prices::PriceTable;
@@ -58,7 +58,12 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
     }
     let now = Utc::now();
     let home = config::home()?;
-    let loaded = ingest::load(&home, &config.coverage);
+    let mode = if args.no_label {
+        ingest::TextMode::Titles
+    } else {
+        ingest::TextMode::Full
+    };
+    let loaded = ingest::load_for_run(&home, &config.coverage, mode);
     // Paths are quoted with escapes, so a file name cannot send control characters to the terminal.
     let errors = Paint::stderr(config.theme);
     for (path, error) in &loaded.unreadable {
@@ -67,12 +72,26 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
             errors.tone(Tone::Warning, "warning:")
         );
     }
-    let sessions = loaded.sessions;
+    let mut sessions = loaded.sessions;
     let roots = account::roots(&sessions);
     let cutoff = hours(args.period).map(|hours| now - Duration::hours(hours));
     let in_period = account::in_period(&sessions, &roots, cutoff);
     // The covered sessions' indexes, in order; a covered session's root is covered too.
     let covered: Vec<usize> = (0..sessions.len()).filter(|&n| in_period[n]).collect();
+    for file in &loaded.issues {
+        // If the root date itself was lost, warn even though a dated report cannot include it.
+        if in_period[file.session] || sessions[roots[file.session]].started.is_none() {
+            for issue in &file.records {
+                eprintln!(
+                    "{} {:?}, line {}: {}",
+                    errors.tone(Tone::Warning, "warning:"),
+                    file.path,
+                    issue.line,
+                    issue.reason
+                );
+            }
+        }
+    }
     for (client, name) in [(Client::Claude, "Claude Code"), (Client::Codex, "Codex")] {
         let missing = covered
             .iter()
@@ -80,10 +99,15 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
             .count();
         if missing > 0 {
             eprintln!(
-                "{} {missing} {name} session(s) have replies but no usage Atlas Nano could read, so \
-                 their spend is missing from this report",
+                "{} {missing} {name} session(s) have incomplete usage; totals include only recorded usage",
                 errors.tone(Tone::Warning, "warning:")
             );
+        }
+    }
+    let history = ingest::History::new(&sessions);
+    for &n in &covered {
+        if sessions[n].history_base.is_some() && sessions[n].title.is_none() {
+            sessions[n].title = first_request(history.items(&sessions, n)).map(short_title);
         }
     }
     let prices = PriceTable::built_in();
@@ -91,9 +115,10 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
     let outcome = if args.no_label {
         None
     } else {
-        let selected: Vec<&Session> = covered.iter().map(|&n| &sessions[n]).collect();
-        Some(label::label(
-            &selected,
+        Some(label::label_selected(
+            covered
+                .iter()
+                .map(|&n| (&sessions[n], history.items(&sessions, n))),
             &config,
             &taxonomy,
             &prices,

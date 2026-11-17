@@ -135,6 +135,101 @@ fn run_needs_a_configuration() {
 }
 
 #[test]
+fn partial_spend_keeps_the_recorded_subtotal_and_reports_damaged_lines() {
+    let sandbox = Sandbox::new("partial-records");
+    sandbox.session("chat", "A priced conversation", 1);
+    assert!(
+        sandbox
+            .answer(&["configure"], "\n\n\n\n\n\n")
+            .status
+            .success()
+    );
+    let export = sandbox.root.join("rows.json");
+    let run = || sandbox.run(&["run", "--no-label", "--json", export.to_str().unwrap()]);
+    let row = || serde_json::from_slice::<serde_json::Value>(&fs::read(&export).unwrap()).unwrap();
+    assert!(run().status.success());
+    let before = row();
+    assert_eq!(before["usage_status"], "complete");
+    let transcript = sandbox.root.join("home/.claude/projects/p/chat.jsonl");
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .open(&transcript)
+        .unwrap();
+    let unmeasured = json!({"type":"assistant","timestamp":Utc::now().to_rfc3339(),"message":{
+        "id":"second","model":"claude-haiku-5-5","content":[{"type":"thinking"}]}});
+    write!(file, "\n{unmeasured}\nbad record\n{{\"type\":").unwrap();
+    drop(file);
+    let output = run();
+    assert!(output.status.success());
+    let after = row();
+    assert_eq!(after["usage_status"], "partial");
+    assert_eq!(after["spend_usd"], before["spend_usd"]);
+    assert_eq!(after["tokens"], before["tokens"]);
+    let warnings = text(&output.stderr);
+    for message in [
+        "line 3: missing or unreadable token usage",
+        "line 4: malformed JSON record",
+        "line 5: unfinished final record",
+    ] {
+        assert!(
+            warnings.contains(&format!("{transcript:?}, {message}")),
+            "{warnings}"
+        );
+    }
+    assert!(text(&output.stdout).contains("Incomplete usage"));
+    assert_eq!(sandbox.calls(), 1);
+}
+
+#[test]
+fn a_fork_uses_its_older_parents_title_and_labeling_context() {
+    let sandbox = Sandbox::new("fork-period");
+    let folder = sandbox.root.join("home/.codex/sessions");
+    fs::create_dir_all(&folder).unwrap();
+    let (base, fork) = ("a".repeat(36), "b".repeat(36));
+    let old = (Utc::now() - Duration::days(30)).to_rfc3339();
+    let recent = Utc::now().to_rfc3339();
+    let save = |id: &str, rows: Vec<serde_json::Value>| {
+        let lines: String = rows.iter().map(|r| format!("{r}\n")).collect();
+        fs::write(folder.join(format!("rollout-{id}.jsonl")), lines).unwrap();
+    };
+    save(
+        &base,
+        vec![
+            json!({"type":"session_meta","timestamp":old,"payload":{}}),
+            json!({"type":"response_item","timestamp":old,"metadata":{"user_input_order":0},
+            "payload":{"type":"message","role":"user","content":"Fix the old bug\nExtra context"}}),
+        ],
+    );
+    save(
+        &fork,
+        vec![
+            json!({"type":"session_meta","timestamp":recent,"payload":{"history_base":{
+            "thread_id":base,"end_ordinal_exclusive":2}}}),
+            json!({"type":"turn_context","timestamp":recent,"payload":{"turn_id":"new","model":"gpt-6-luna"}}),
+            json!({"type":"token_usage_record","timestamp":recent,"payload":{"turn_id":"new","response_id":"r",
+            "usage":{"input_tokens":10,"output_tokens":5}}}),
+        ],
+    );
+    assert!(
+        sandbox
+            .answer(&["configure"], &"\n".repeat(7))
+            .status
+            .success()
+    );
+    let accounting = sandbox.run(&["run", "--period", "1d", "--no-label"]);
+    assert!(accounting.status.success());
+    assert!(text(&accounting.stdout).contains("Fix the old bug"));
+    let export = sandbox.root.join("fork.json");
+    let labeled = sandbox.run(&["run", "--period", "1d", "--json", export.to_str().unwrap()]);
+    assert!(labeled.status.success());
+    let row: serde_json::Value = serde_json::from_slice(&fs::read(export).unwrap()).unwrap();
+    assert_eq!(row["session_id"], fork);
+    assert_eq!(row["label"]["work"], "Debugging");
+    assert_eq!(row["tokens"]["output"], 5);
+    assert_eq!(sandbox.calls(), 2);
+}
+
+#[test]
 fn a_failed_call_is_retried_unless_retries_are_off() {
     let sandbox = Sandbox::new("retried");
     sandbox.session("flaky", "A FLAKY request", 1);
@@ -373,12 +468,12 @@ fn configure_then_run_labels_reports_and_reuses_the_cache() {
         .replace("\"usage\"", "\"moved\"");
     fs::write(&file, lines).unwrap();
     let recent = text(&sandbox.run(&["run", "--no-label"]).stderr);
-    assert!(!recent.contains("have replies but no usage"), "{recent}");
+    assert!(!recent.contains("incomplete usage"), "{recent}");
     let all = text(
         &sandbox
             .run(&["run", "--no-label", "--period", "all"])
             .stderr,
     );
-    let missing = "1 Claude Code session(s) have replies but no usage";
+    let missing = "1 Claude Code session(s) have incomplete usage";
     assert!(all.contains(missing), "{all}");
 }

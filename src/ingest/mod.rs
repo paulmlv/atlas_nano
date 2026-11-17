@@ -2,18 +2,73 @@
 
 mod claude;
 mod codex;
+mod completeness;
+mod history;
 mod timing;
 
+pub(crate) use history::History;
+
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io;
+use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use rayon::prelude::*;
 use serde_json::Value;
 
-use crate::model::{Client, Item, Kind, Role, Session, SessionRef, Usage};
+use self::completeness::Evidence;
+use crate::model::{Client, Item, Kind, Role, Session, SessionRef, short_title};
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TextMode {
+    Titles,
+    Full,
+}
+
+/// In a report without labels, only the first user or agent line can become a title. A later
+/// candidate matters to a fork only if its ordinal is lower, so an earlier cutoff can expose it.
+#[derive(Default)]
+struct TitleCandidates {
+    user: Option<u64>,
+    agent: Option<u64>,
+}
+
+impl TitleCandidates {
+    fn keep(
+        &mut self,
+        mode: TextMode,
+        items: &mut Vec<Item>,
+        position: u64,
+        role: Role,
+        text: String,
+    ) {
+        if text.is_empty() {
+            return;
+        }
+        let text = match mode {
+            TextMode::Full => text,
+            TextMode::Titles => {
+                let earliest = match role {
+                    Role::User => &mut self.user,
+                    Role::Agent => &mut self.agent,
+                    _ => return,
+                };
+                if earliest.is_some_and(|seen| seen <= position) {
+                    return;
+                }
+                *earliest = Some(position);
+                short_title(text.lines().next().unwrap_or_default())
+            }
+        };
+        items.push(Item {
+            position,
+            role,
+            text,
+        });
+    }
+}
 
 /// The folders each client keeps its sessions in, relative to the user's home.
 pub const FOLDERS: [(Client, &str); 3] = [
@@ -56,6 +111,15 @@ fn known(value: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Clients omit unused token categories. A present, nonnumeric count is unreadable.
+fn optional_count(value: &Value) -> Option<u64> {
+    if value.is_null() {
+        Some(0)
+    } else {
+        value.as_u64()
+    }
+}
+
 /// Return a transcript's file name without `.jsonl` and an optional `.zst`.
 fn stem(path: &Path) -> String {
     let name = path
@@ -67,17 +131,64 @@ fn stem(path: &Path) -> String {
         .to_string()
 }
 
-/// Decode a JSON Lines file, which may be zstd-compressed. A line that is not JSON becomes `null`,
-/// so every record keeps its line's position, which fork cutoffs count by.
-fn read_jsonl(path: &Path) -> io::Result<Vec<Value>> {
-    let mut data = fs::read(path)?;
-    if path.extension().is_some_and(|extension| extension == "zst") {
-        data = zstd::decode_all(data.as_slice())?;
+/// A bad or blank record keeps its physical position for fork cutoffs.
+fn read_jsonl(
+    path: &Path,
+    client: Client,
+    mode: TextMode,
+) -> io::Result<(Vec<Value>, Vec<LineIssue>)> {
+    let file = fs::File::open(path)?;
+    let compressed = path.extension().is_some_and(|extension| extension == "zst");
+    let mut reader: Box<dyn BufRead> = if compressed {
+        Box::new(BufReader::new(zstd::stream::read::Decoder::new(file)?))
+    } else {
+        Box::new(BufReader::new(file))
+    };
+    let (mut records, mut issues, mut line) = (Vec::new(), Vec::new(), Vec::new());
+    loop {
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(error) if records.is_empty() => return Err(error),
+            Err(_) => {
+                issues.push(LineIssue {
+                    line: records.len() + 1,
+                    reason: "could not finish reading the transcript",
+                });
+                break;
+            }
+        }
+        let parsed = if line.iter().all(u8::is_ascii_whitespace) {
+            Ok(Value::Null)
+        } else {
+            match serde_json::from_slice::<Value>(&line) {
+                Ok(mut value) if value.is_object() => {
+                    if mode == TextMode::Titles {
+                        match client {
+                            Client::Claude => claude::discard_bodies(&mut value),
+                            Client::Codex => codex::discard_bodies(&mut value),
+                        }
+                    }
+                    Ok(value)
+                }
+                Ok(_) => Err("expected a JSON object"),
+                Err(error) if !compressed && !line.ends_with(b"\n") && error.is_eof() => {
+                    Err("unfinished final record; the client may still be writing it")
+                }
+                Err(_) => Err("malformed JSON record"),
+            }
+        };
+        let record = parsed.unwrap_or_else(|reason| {
+            issues.push(LineIssue {
+                line: records.len() + 1,
+                reason,
+            });
+            Value::Null
+        });
+        records.push(record);
+        line.clear();
     }
-    Ok(data
-        .split(|byte| *byte == b'\n')
-        .map(|line| serde_json::from_slice(line).unwrap_or(Value::Null))
-        .collect())
+    Ok((records, issues))
 }
 
 /// List every transcript under `folder`, in path order.
@@ -117,6 +228,55 @@ pub struct Loaded {
     pub sessions: Vec<Session>,
     /// Files and folders that could not be read, with the reason.
     pub unreadable: Vec<(PathBuf, String)>,
+    /// Problems in the selected copy of a session.
+    pub issues: Vec<FileIssues>,
+}
+
+pub struct FileIssues {
+    pub session: usize,
+    pub path: PathBuf,
+    pub records: Vec<LineIssue>,
+}
+
+pub struct LineIssue {
+    pub line: usize,
+    pub reason: &'static str,
+}
+
+struct Parsed {
+    session: Session,
+    version: Option<codex::Version>,
+    evidence: Evidence,
+    path: PathBuf,
+    issues: Vec<LineIssue>,
+    valid: usize,
+}
+
+impl Parsed {
+    fn quality(&self) -> (usize, Reverse<usize>, usize) {
+        (
+            self.valid,
+            Reverse(self.issues.len()),
+            self.session.usage.len(),
+        )
+    }
+}
+
+fn parse_file(client: Client, path: &Path, mode: TextMode) -> io::Result<Parsed> {
+    let (records, issues) = read_jsonl(path, client, mode)?;
+    let mut evidence = Evidence::default();
+    let (session, version) = match client {
+        Client::Claude => (claude::parse(path, &records, mode, &mut evidence), None),
+        Client::Codex => codex::parse(path, &records, mode, &mut evidence),
+    };
+    Ok(Parsed {
+        session,
+        version,
+        evidence,
+        path: path.to_owned(),
+        issues,
+        valid: records.iter().filter(|r| !r.is_null()).count(),
+    })
 }
 
 /// Read every session of the covered clients beneath `home`.
@@ -125,6 +285,13 @@ pub struct Loaded {
 /// text starts with the history it inherited, and each model request stays only in the session
 /// recorded with it, or else the one that started first, among those holding a copy of it.
 pub fn load(home: &Path, clients: &[Client]) -> Loaded {
+    let mut loaded = load_for_run(home, clients, TextMode::Full);
+    inherit_history(&mut loaded.sessions);
+    loaded
+}
+
+/// Load each session's own items. The CLI follows history links only for the requested period.
+pub(crate) fn load_for_run(home: &Path, clients: &[Client], mode: TextMode) -> Loaded {
     let mut files = Vec::new();
     let mut unreadable = Vec::new();
     for (client, folder) in FOLDERS {
@@ -136,56 +303,70 @@ pub fn load(home: &Path, clients: &[Client]) -> Loaded {
     }
     let parsed: Vec<_> = files
         .par_iter()
-        .map(|(client, path)| {
-            read_jsonl(path).map(|records| {
-                let parsed = match client {
-                    Client::Claude => (claude::parse(path, &records), None),
-                    Client::Codex => codex::parse(path, &records),
-                };
-                // Malformed lines keep their place for fork cutoffs but do not make a copy longer.
-                let valid = records.iter().filter(|record| !record.is_null()).count();
-                (valid, parsed)
-            })
-        })
+        .map(|(client, path)| parse_file(*client, path, mode))
         .collect();
-    let mut longest = HashMap::new();
-    let mut order = Vec::new();
+    let mut indices = HashMap::new();
+    let mut chosen: Vec<Parsed> = Vec::new();
+    let mut duplicate_usage = Vec::new();
     for ((_, path), result) in files.iter().zip(parsed) {
         match result {
             Err(error) => unreadable.push((path.clone(), error.to_string())),
-            Ok((length, parsed)) => {
-                let key = parsed.0.key();
-                match longest.get(&key) {
-                    Some((best, _)) if *best >= length => {}
-                    Some(_) => drop(longest.insert(key, (length, parsed))),
-                    None => {
-                        order.push(key.clone());
-                        longest.insert(key, (length, parsed));
+            Ok(mut copy) => {
+                let index = *indices
+                    .entry(copy.session.reference())
+                    .or_insert(chosen.len());
+                if index == chosen.len() {
+                    chosen.push(copy);
+                } else {
+                    if copy.quality() > chosen[index].quality() {
+                        std::mem::swap(&mut chosen[index], &mut copy);
                     }
+                    duplicate_usage.push((index, copy.session.usage));
                 }
             }
         }
     }
-    let (mut sessions, versions): (Vec<_>, Vec<_>) = order
-        .iter()
-        .filter_map(|key| Some(longest.remove(key)?.1))
-        .unzip();
+    for (index, readings) in duplicate_usage {
+        let entry = &mut chosen[index];
+        entry
+            .evidence
+            .recover_from_copy(&mut entry.session, readings);
+    }
+    let mut sessions = Vec::with_capacity(chosen.len());
+    let mut versions = Vec::with_capacity(chosen.len());
+    let mut evidence = Vec::with_capacity(chosen.len());
+    let mut files = Vec::with_capacity(chosen.len());
+    for copy in chosen {
+        sessions.push(copy.session);
+        versions.push(copy.version);
+        evidence.push(copy.evidence);
+        files.push((copy.path, copy.issues));
+    }
     codex::link_parents(&mut sessions, &versions);
-    // Flag before requests are kept once and forks inherit history: a Claude fork's copied usage
-    // still counts as its own, and a Codex fork's inherited replies do not.
-    for session in &mut sessions {
-        session.usage_missing = session.usage.is_empty()
-            && session
-                .items
-                .iter()
-                .any(|item| matches!(item.role, Role::Assistant | Role::Tool));
+    let missing = completeness::resolve(&mut sessions, &evidence);
+    let mut issues = Vec::new();
+    for (n, ((path, mut records), line)) in files.into_iter().zip(missing).enumerate() {
+        if let Some(line) = line {
+            records.push(LineIssue {
+                line,
+                reason: "missing or unreadable token usage",
+            });
+        }
+        if !records.is_empty() {
+            sessions[n].usage_missing = true;
+            issues.push(FileIssues {
+                session: n,
+                path,
+                records,
+            });
+        }
     }
     count_requests_once(&mut sessions);
-    inherit_history(&mut sessions);
     link_scratchpads(&mut sessions);
     Loaded {
         sessions,
         unreadable,
+        issues,
     }
 }
 
@@ -224,80 +405,58 @@ fn link_scratchpads(sessions: &mut [Session]) {
     }
 }
 
+fn ownership_rank<'a>(
+    session: &'a Session,
+    owner: Option<&str>,
+) -> (bool, bool, Option<DateTime<Utc>>, bool, &'a str) {
+    (
+        owner != Some(session.id.as_str()),
+        session.started.is_none(),
+        session.started,
+        session.parent.is_some(),
+        &session.id,
+    )
+}
+
 /// Keep each model request once: in the session recorded with it, when that session holds a copy,
 /// or else in the earliest-started session that does.
 ///
 /// A fork's copied history can start at its parent's time; on a tie the session with no parent
 /// keeps the request. A request repeated within one session also counts once.
 fn count_requests_once(sessions: &mut [Session]) {
-    // Every copy of a request records the same owner, so one usage ranks all its holders.
-    let keys: Vec<String> = sessions.iter().map(Session::key).collect();
-    let rank = |n: usize, usage: &Usage| {
-        let session = &sessions[n];
-        (
-            usage.owner.as_deref() != Some(session.id.as_str()),
-            session.started.is_none(),
-            session.started,
-            session.parent.is_some(),
-            &keys[n],
-        )
-    };
-    let mut owner: HashMap<String, usize> = HashMap::new();
+    let mut owners = HashMap::<Client, HashMap<String, (usize, usize)>>::new();
     for (index, session) in sessions.iter().enumerate() {
-        for usage in &session.usage {
-            let held = owner.entry(usage.id.clone()).or_insert(index);
-            if *held != index && rank(index, usage) < rank(*held, usage) {
-                *held = index;
+        let owner = owners.entry(session.client).or_default();
+        for (request, usage) in session.usage.iter().enumerate() {
+            let held = owner.entry(usage.id.clone()).or_insert((index, request));
+            let other = &sessions[held.0];
+            if held.0 != index
+                && ownership_rank(session, usage.owner.as_deref())
+                    < ownership_rank(other, other.usage[held.1].owner.as_deref())
+            {
+                *held = (index, request);
             }
         }
     }
     for (index, session) in sessions.iter_mut().enumerate() {
+        let owner = &owners[&session.client];
         let mut seen = HashSet::new();
         session
             .usage
-            .retain(|usage| owner[&usage.id] == index && seen.insert(usage.id.clone()));
+            .retain(|usage| owner[&usage.id].0 == index && seen.insert(usage.id.clone()));
     }
 }
 
-/// Prepend to each Codex fork the items of the rollout it references, before its cutoff.
+/// Keep the public loader's complete, independently owned transcripts for library callers.
 fn inherit_history(sessions: &mut [Session]) {
-    let index: HashMap<String, usize> = sessions
+    let history = History::new(sessions);
+    let complete: Vec<(usize, Vec<Item>)> = sessions
         .iter()
         .enumerate()
-        .filter(|(_, session)| session.client == Client::Codex)
-        .map(|(n, session)| (session.id.clone(), n))
+        .filter(|(_, session)| session.history_base.is_some())
+        .map(|(n, _)| (n, history.items(sessions, n).cloned().collect()))
         .collect();
-    // Follow the bases up to the first one not loaded, stopping if one repeats, then add each
-    // level's own items on top of what it inherits before its cutoff.
-    fn complete(n: usize, sessions: &[Session], index: &HashMap<String, usize>) -> Vec<Item> {
-        let mut chain = vec![n];
-        let mut seen = HashSet::from([n]);
-        let mut cutoffs = Vec::new();
-        while let Some(base) = &sessions[*chain.last().expect("starts with n")].history_base {
-            match index.get(&base.rollout) {
-                Some(&parent) if seen.insert(parent) => {
-                    chain.push(parent);
-                    cutoffs.push(base.end);
-                }
-                _ => break,
-            }
-        }
-        let top = chain.pop().expect("starts with n");
-        let mut items = sessions[top].items.clone();
-        for (level, end) in chain.into_iter().zip(cutoffs).rev() {
-            items.retain(|item| item.position < end);
-            items.extend(sessions[level].items.iter().cloned());
-        }
-        items
-    }
-    let forks: Vec<usize> = (0..sessions.len())
-        .filter(|&n| sessions[n].history_base.is_some())
-        .collect();
-    let completed: Vec<Vec<Item>> = forks
-        .iter()
-        .map(|&n| complete(n, sessions, &index))
-        .collect();
-    for (n, items) in forks.into_iter().zip(completed) {
+    for (n, items) in complete {
         sessions[n].items = items;
     }
 }
@@ -548,6 +707,34 @@ mod tests {
     }
 
     #[test]
+    fn a_shorter_copy_only_recovers_measurements_for_matching_responses() {
+        let home = home("complementary-copies");
+        let folder = home.join(".claude/projects");
+        let mut broken = reply("m2", 2);
+        broken["message"]["usage"]["cache_read_input_tokens"] = json!("unreadable");
+        write(
+            &folder.join("a/chat.jsonl"),
+            &[reply("m1", 1), broken, reply("m3", 3)],
+            false,
+        );
+        write(
+            &folder.join("b/chat.jsonl"),
+            &[reply("m2", 2), reply("outside", 4)],
+            false,
+        );
+        let loaded = load(&home, &[Client::Claude]);
+        assert!(loaded.issues.is_empty());
+        let mut ids: Vec<_> = loaded.sessions[0]
+            .usage
+            .iter()
+            .map(|u| u.id.as_str())
+            .collect();
+        ids.sort_unstable();
+        assert_eq!(ids, ["m1", "m2", "m3"]);
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
     fn a_claude_copy_belongs_to_the_session_recorded_with_it() {
         let home = home("claude-recorded-owner");
         let projects = home.join(".claude/projects/p");
@@ -753,11 +940,10 @@ mod tests {
             .collect();
         sessions.push(rollout("x", Some("y")));
         sessions.push(rollout("y", Some("x")));
-        inherit_history(&mut sessions);
+        let history = History::new(&sessions);
         let texts = |n: usize| -> Vec<&str> {
-            sessions[n]
-                .items
-                .iter()
+            history
+                .items(&sessions, n)
                 .map(|item| item.text.as_str())
                 .collect()
         };
@@ -768,6 +954,51 @@ mod tests {
     }
 
     #[test]
+    fn nested_forks_borrow_only_items_before_every_cutoff_in_transcript_order() {
+        use crate::account::tests::session;
+        use crate::model::HistoryBase;
+        let rollout = |id: &str, base: Option<(&str, u64)>, positions: &[u64]| {
+            let mut chat = session(id, Kind::Primary, None, 1);
+            chat.client = Client::Codex;
+            chat.history_base = base.map(|(rollout, end)| HistoryBase {
+                rollout: rollout.to_string(),
+                end,
+            });
+            chat.items = positions
+                .iter()
+                .map(|&position| Item {
+                    position,
+                    role: Role::User,
+                    text: format!("{id}/{position}"),
+                })
+                .collect();
+            chat
+        };
+        let sessions = [
+            rollout("parent", Some(("missing", 10)), &[4, 1, 3]),
+            rollout("middle", Some(("parent", 4)), &[6, 2]),
+            rollout("early", Some(("middle", 3)), &[9]),
+            rollout("late", Some(("middle", 8)), &[11]),
+        ];
+        let history = History::new(&sessions);
+        let texts = |n| {
+            history
+                .items(&sessions, n)
+                .map(|item| item.text.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(texts(2), ["parent/1", "middle/2", "early/9"]);
+        assert_eq!(
+            texts(3),
+            ["parent/1", "parent/3", "middle/6", "middle/2", "late/11"]
+        );
+        assert!(std::ptr::eq(
+            history.items(&sessions, 2).next().unwrap(),
+            &sessions[0].items[1]
+        ));
+    }
+
+    #[test]
     fn flags_the_sessions_with_replies_but_no_usage() {
         let home = home("usage-missing");
         let projects = home.join(".claude/projects/p");
@@ -775,8 +1006,12 @@ mod tests {
         answer["sessionId"] = json!("with_usage");
         answer["message"]["content"] = json!([{"type": "text", "text": "hi"}]);
         let mut no_usage = answer.clone();
+        no_usage["message"]["id"] = json!("missing-usage");
+        no_usage["sessionId"] = json!("no_usage");
         no_usage["message"].as_object_mut().unwrap().remove("usage");
         let mut renamed = answer.clone();
+        renamed["message"]["id"] = json!("renamed-usage");
+        renamed["sessionId"] = json!("renamed");
         renamed["message"]["usage"] = json!({"input": 1, "output": 1});
         write(&projects.join("with_usage.jsonl"), &[answer.clone()], false);
         write(&projects.join("no_usage.jsonl"), &[no_usage], false);
@@ -798,15 +1033,15 @@ mod tests {
         let message = json!({"type": "response_item", "timestamp": "2026-01-01T00:00:01Z",
             "payload": {"type": "message", "role": "assistant",
                 "content": [{"type": "output_text", "text": "hi"}]}});
-        let record = |usage: Value| {
+        let record = |id: &str, usage: Value| {
             json!({"type": "token_usage_record", "timestamp": "2026-01-01T00:00:01Z",
-                "payload": {"response_id": "r1", "usage": usage}})
+                "payload": {"response_id": id, "usage": usage}})
         };
         let counts = json!({"input_tokens": 1, "output_tokens": 1});
-        write(&rollout(1), &[message.clone(), record(counts)], false);
+        write(&rollout(1), &[message.clone(), record("r1", counts)], false);
         write(&rollout(2), std::slice::from_ref(&message), false);
         let renamed = json!({"input": 1, "output": 1});
-        write(&rollout(3), &[message, record(renamed)], false);
+        write(&rollout(3), &[message, record("r3", renamed)], false);
         // A fork with no reply of its own inherits its base's replies but not their usage.
         let thread = "00000037-0205-7016-8024-000000000001";
         let forked = json!({"type": "session_meta", "payload": {
@@ -831,6 +1066,165 @@ mod tests {
                 "codex:00000037-0205-7016-8024-000000000003"
             ]
         );
+    }
+
+    #[test]
+    fn a_stream_or_fork_can_supply_the_missing_counts_of_one_claude_response() {
+        let home = home("usage-copies");
+        let folder = home.join(".claude/projects/p");
+        let mut missing = reply("copied", 1);
+        missing["message"].as_object_mut().unwrap().remove("usage");
+        missing["sessionId"] = json!("parent");
+        let mut readable = reply("copied", 2);
+        readable["forkedFrom"] = json!({"sessionId":"parent"});
+        let mut stream = reply("stream", 3);
+        stream["message"].as_object_mut().unwrap().remove("usage");
+        let mut synthetic = reply("local", 5);
+        synthetic["message"]["model"] = json!("<synthetic>");
+        synthetic["message"]
+            .as_object_mut()
+            .unwrap()
+            .remove("usage");
+        write(
+            &folder.join("parent.jsonl"),
+            &[missing, stream, reply("stream", 4), synthetic],
+            false,
+        );
+        write(&folder.join("fork.jsonl"), &[readable], false);
+
+        for mode in [TextMode::Full, TextMode::Titles] {
+            let loaded = load_for_run(&home, &[Client::Claude], mode);
+            assert!(loaded.issues.is_empty());
+            let parent = loaded.sessions.iter().find(|s| s.id == "parent").unwrap();
+            assert_eq!(parent.usage.len(), 2);
+            assert!(parent.usage.iter().any(|u| u.id == "copied"));
+            assert!(
+                loaded
+                    .sessions
+                    .iter()
+                    .find(|s| s.id == "fork")
+                    .unwrap()
+                    .usage
+                    .is_empty()
+            );
+        }
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn short_title_candidates_preserve_the_first_request_at_every_fork_cutoff() {
+        use crate::model::first_request;
+        let mut titles = TitleCandidates::default();
+        let (mut full, mut hints) = (Vec::new(), Vec::new());
+        for (position, role, text) in [
+            (3, Role::Agent, "agent's task"),
+            (7, Role::User, " first   user\nbody"),
+            (8, Role::User, "later"),
+            (5, Role::User, "earlier ordinal"),
+            (0, Role::Tool, "tool"),
+        ] {
+            titles.keep(TextMode::Full, &mut full, position, role, text.to_owned());
+            titles.keep(
+                TextMode::Titles,
+                &mut hints,
+                position,
+                role,
+                text.to_owned(),
+            );
+        }
+        assert_eq!(hints.len(), 3);
+        for end in 0..=9 {
+            let title = |items: &[Item]| {
+                first_request(items.iter().filter(|item| item.position < end)).map(short_title)
+            };
+            assert_eq!(title(&hints), title(&full));
+        }
+    }
+
+    #[test]
+    fn codex_checks_each_turn_and_explicit_response_without_counting_status_events() {
+        let home = home("usage-turns");
+        let folder = home.join(".codex/sessions");
+        let row = |kind: &str, payload: Value| json!({"timestamp":"2026-01-01T00:00:01Z","type":kind,"payload":payload});
+        let reply = |turn, response| {
+            row(
+                "response_item",
+                json!({"type":"message","role":"assistant","turn_id":turn,"response_id":response}),
+            )
+        };
+        let usage = |turn, response| {
+            row(
+                "token_usage_record",
+                json!({"turn_id":turn,"response_id":response,"usage":{"input_tokens":0,"output_tokens":0}}),
+            )
+        };
+        let start = |turn| row("event_msg", json!({"type":"task_started","turn_id":turn}));
+        let count = row(
+            "event_msg",
+            json!({"type":"token_count","turn_id":"old","info":{
+            "total_token_usage":{"input_tokens":10,"output_tokens":1},
+            "last_token_usage":{"input_tokens":10,"output_tokens":1}}}),
+        );
+        write(
+            &folder.join("complete.jsonl.zst"),
+            &[
+                start("old"),
+                reply("old", "old-response"),
+                row("event_msg", json!({"type":"token_count","info":null})),
+                count.clone(),
+                count,
+                start("new"),
+                reply("new", "new-response"),
+                usage("new", "new-response"),
+                row(
+                    "response_item",
+                    json!({"type":"function_call_output","turn_id":"tool-only"}),
+                ),
+            ],
+            true,
+        );
+        write(
+            &folder.join("partial.jsonl"),
+            &[
+                start("a"),
+                reply("a", "a1"),
+                usage("a", "a1"),
+                reply("a", "a2"),
+                row(
+                    "token_usage_record",
+                    json!({"turn_id":"a","response_id":"a3","usage":{"input_tokens":1}}),
+                ),
+            ],
+            false,
+        );
+        write(
+            &folder.join("unknown.jsonl"),
+            &[
+                start("b"),
+                row("response_item", json!({"type":"reasoning"})),
+                row("event_msg", json!({"type":"token_count","info":null})),
+            ],
+            false,
+        );
+        for mode in [TextMode::Full, TextMode::Titles] {
+            let loaded = load_for_run(&home, &[Client::Codex], mode);
+            let find = |id| loaded.sessions.iter().find(|s| s.id == id).unwrap();
+            assert!(!find("complete").usage_missing);
+            assert_eq!(find("complete").usage.len(), 2);
+            assert!(find("partial").usage_missing);
+            assert_eq!(find("partial").usage.len(), 1);
+            assert!(find("unknown").usage_missing);
+            assert!(find("unknown").usage.is_empty());
+            assert_eq!(
+                loaded
+                    .issues
+                    .iter()
+                    .map(|f| f.records[0].line)
+                    .collect::<Vec<_>>(),
+                [4, 2]
+            );
+        }
+        fs::remove_dir_all(home).unwrap();
     }
 
     #[test]

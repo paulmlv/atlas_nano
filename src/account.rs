@@ -33,19 +33,63 @@ impl AddAssign for Tokens {
     }
 }
 
+/// Evidence for a session's usage, or for any group of sessions. A recorded zero is a reading.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UsageCoverage {
+    recorded: bool,
+    pub missing: bool,
+}
+
+impl UsageCoverage {
+    pub(crate) const RECORDED: Self = Self {
+        recorded: true,
+        missing: false,
+    };
+
+    pub fn unknown(self) -> bool {
+        self.missing && !self.recorded
+    }
+
+    pub fn status(self) -> &'static str {
+        match (self.missing, self.recorded) {
+            (false, _) => "complete",
+            (true, true) => "partial",
+            (true, false) => "unknown",
+        }
+    }
+}
+
+impl AddAssign for UsageCoverage {
+    fn add_assign(&mut self, other: Self) {
+        self.recorded |= other.recorded;
+        self.missing |= other.missing;
+    }
+}
+
 /// One session's tokens and API-equivalent spend. Unpriced requests cost nothing.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Cost {
     pub tokens: Tokens,
     pub spend: Decimal,
     pub unpriced_requests: u64,
+    pub coverage: UsageCoverage,
     /// Each request's price, in the order of the session's usage; None when it has no price.
     pub requests: Vec<Option<Decimal>>,
 }
 
 /// Price a session's own model requests, each once.
 pub fn cost(session: &Session, prices: &PriceTable) -> Cost {
-    let mut cost = Cost::default();
+    let mut cost = Cost {
+        coverage: UsageCoverage {
+            // A local Claude placeholder can record zero tokens without a model call.
+            recorded: session
+                .usage
+                .iter()
+                .any(|u| u.model != "<synthetic>" || u.tokens() > 0),
+            missing: session.usage_missing,
+        },
+        ..Cost::default()
+    };
     for usage in &session.usage {
         cost.tokens += Tokens {
             input: usage.input,
@@ -76,6 +120,7 @@ pub struct Totals {
     pub tokens: Tokens,
     pub spend: Decimal,
     pub unpriced_requests: u64,
+    pub coverage: UsageCoverage,
 }
 
 impl Totals {
@@ -96,6 +141,7 @@ impl Totals {
         self.tokens += cost.tokens;
         self.spend += cost.spend;
         self.unpriced_requests += cost.unpriced_requests;
+        self.coverage += cost.coverage;
     }
 }
 
@@ -111,6 +157,7 @@ impl AddAssign<&Totals> for Totals {
         self.tokens += other.tokens;
         self.spend += other.spend;
         self.unpriced_requests += other.unpriced_requests;
+        self.coverage += other.coverage;
     }
 }
 
@@ -319,5 +366,29 @@ pub mod tests {
                 output: 2_000_000
             }
         );
+    }
+
+    #[test]
+    fn a_zero_reading_counts_as_evidence_when_combining_incomplete_sessions() {
+        let prices = PriceTable::built_in();
+        let mut chat = session("chat", Kind::Primary, None, 1);
+        let mut zero = chat.usage.remove(0);
+        zero.input = 0;
+        zero.output = 0;
+        chat.usage.clear();
+
+        let mut total = Totals::default();
+        total.add(&chat, &cost(&chat, &prices));
+        assert_eq!(total.coverage.status(), "complete");
+        chat.usage_missing = true;
+        total.add(&chat, &cost(&chat, &prices));
+        assert!(total.coverage.unknown());
+        chat.usage.push(zero);
+        chat.usage_missing = false;
+        let mut known_zero = Totals::default();
+        known_zero.add(&chat, &cost(&chat, &prices));
+        total += &known_zero;
+        assert_eq!(total.coverage.status(), "partial");
+        assert_eq!(total.spend, Decimal::ZERO);
     }
 }
