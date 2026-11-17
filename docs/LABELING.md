@@ -169,8 +169,8 @@ references its parent's history without copying it, the text is rebuilt from the
   returns an answer that does not match the schema. A timeout stops the direct client. Its helpers
   can keep running. Once every call has run, each failed call is tried again, and this repeats up to
   `retries` times (1 by default, set in `config.toml` or with `--retries`). Only the failed call is
-  tried again, not the other chunks of its session. Every try's tokens and cost count in the
-  labeling summary, so retries can cost more than the estimate.
+  retried. The summary adds the usage Atlas reads from each attempt. A timeout or output-limit
+  failure records zero usage. Retries can cost more than the estimate.
 - A call that still fails after its last try is logged, its session counts as unlabeled, and the run
   continues. A session split into chunks is unlabeled when any of its calls fails.
 - Labeling calls are not saved as local sessions. The no-save flags are the only mechanism, and
