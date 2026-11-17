@@ -15,11 +15,13 @@ branch when known.
 
 One selected labeler labels all covered sessions. For example, choosing Claude Code to label both
 clients sends Codex conversation text through Claude Code too. `configure` discloses this and asks
-whether to continue before any call or save. Choose matching coverage and labeler to avoid
-cross-provider labeling.
+whether to continue before any call or save. To avoid cross-provider labeling, cover only the
+labeler's own client. This excludes the other client's sessions and spend from the report. To
+include both clients' spend without making model calls, cover both and use `run --no-label`.
 
 Calls use the client's current authentication and inherited environment. This may be a different
-account from the one that recorded an older conversation. Atlas does not verify that they match.
+account from the one that recorded an older conversation. Atlas Nano does not verify that they
+match.
 
 Labeling can use a different configuration from your interactive sessions because the
 [required flags](LABELING.md#required-flags) skip the client's regular settings files. Environment
@@ -33,9 +35,8 @@ Settings, the label cache, and optional report exports are stored locally. The
 [label cache](CLI.md#label-cache) holds labels, pull request URLs, model names, timestamps, and
 content hashes, not conversation text.
 
-`run --no-label` makes no model calls. `configure` makes one small test call using a built-in
-example, not your recorded conversations. `run --confirm` asks before making labeling calls, after
-showing the estimate.
+`configure` makes one small test call using a built-in example, not your recorded conversations.
+`run --confirm` asks before making labeling calls, after showing the estimate.
 
 Labeling calls stay out of your local session history. Client logging, provider retention, and use
 for training depend on the policies and settings for your client, provider, and account.
