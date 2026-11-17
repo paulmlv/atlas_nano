@@ -2,8 +2,8 @@
 
 use std::fmt;
 
-use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
+use time::{SignedDuration, UtcDateTime};
 
 /// The client that recorded a session, named in the settings as `claude` or `codex`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -43,7 +43,7 @@ pub struct Usage {
     pub id: String,
     /// The session the client recorded the request in, when it says. A copy keeps it.
     pub owner: Option<String>,
-    pub at: DateTime<Utc>,
+    pub at: UtcDateTime,
     pub model: String,
     pub fast: bool,
     pub input: u64,
@@ -119,8 +119,8 @@ pub(crate) fn short_title(text: &str) -> String {
 /// One visible user request and how long the model worked on it, when that is recorded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Turn {
-    pub at: DateTime<Utc>,
-    pub working: Option<Duration>,
+    pub at: UtcDateTime,
+    pub working: Option<SignedDuration>,
 }
 
 /// The rollout a Codex session inherits history from, up to an exclusive record position.
@@ -157,8 +157,8 @@ pub struct Session {
     pub title: Option<String>,
     pub repository: Option<String>,
     pub branch: Option<String>,
-    pub started: Option<DateTime<Utc>>,
-    pub ended: Option<DateTime<Utc>>,
+    pub started: Option<UtcDateTime>,
+    pub ended: Option<UtcDateTime>,
     pub items: Vec<Item>,
     /// The tool calls in this session's own transcript, a call with an id counted once. `items` can
     /// repeat a call and, for a Codex fork, also holds the history inherited from its base.
@@ -186,12 +186,12 @@ impl Session {
     }
 
     /// The time between the session's recorded start and end, gaps included.
-    pub fn wall(&self) -> Option<Duration> {
+    pub fn wall(&self) -> Option<SignedDuration> {
         Some(self.ended? - self.started?)
     }
 
     /// The working time of the turns that record a completion.
-    pub fn working(&self) -> Duration {
+    pub fn working(&self) -> SignedDuration {
         self.turns.iter().filter_map(|turn| turn.working).sum()
     }
 }

@@ -6,8 +6,9 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-use chrono::{Duration, Utc};
 use serde_json::json;
+use time::format_description::well_known::Rfc3339;
+use time::{SignedDuration, UtcDateTime};
 
 /// A stand-in for Claude Code: it answers `--help`, logs each call, rejects a conversation that
 /// says REJECT, rejects one that says FLAKY only the first time, and labels the rest by whether
@@ -49,8 +50,11 @@ impl Sandbox {
 
     /// Write a Claude Code session of one request and one reply, started `hours_ago`.
     fn session(&self, id: &str, request: &str, hours_ago: i64) {
-        let at = |minutes: i64| {
-            (Utc::now() - Duration::hours(hours_ago) + Duration::minutes(minutes)).to_rfc3339()
+        let start = UtcDateTime::now() - SignedDuration::hours(hours_ago);
+        let at = |minutes| {
+            (start + SignedDuration::minutes(minutes))
+                .format(&Rfc3339)
+                .unwrap()
         };
         let records = [
             json!({"type": "user", "uuid": format!("{id}-1"), "timestamp": at(0), "cwd": "/work/app",
@@ -155,7 +159,8 @@ fn partial_spend_keeps_the_recorded_subtotal_and_reports_damaged_lines() {
         .append(true)
         .open(&transcript)
         .unwrap();
-    let unmeasured = json!({"type":"assistant","timestamp":Utc::now().to_rfc3339(),"message":{
+    let timestamp = UtcDateTime::now().format(&Rfc3339).unwrap();
+    let unmeasured = json!({"type":"assistant","timestamp":timestamp,"message":{
         "id":"second","model":"claude-haiku-5-5","content":[{"type":"thinking"}]}});
     write!(file, "\n{unmeasured}\nbad record\n{{\"type\":").unwrap();
     drop(file);
@@ -186,8 +191,9 @@ fn a_fork_uses_its_older_parents_title_and_labeling_context() {
     let folder = sandbox.root.join("home/.codex/sessions");
     fs::create_dir_all(&folder).unwrap();
     let (base, fork) = ("a".repeat(36), "b".repeat(36));
-    let old = (Utc::now() - Duration::days(30)).to_rfc3339();
-    let recent = Utc::now().to_rfc3339();
+    let now = UtcDateTime::now();
+    let old = (now - SignedDuration::days(30)).format(&Rfc3339).unwrap();
+    let recent = now.format(&Rfc3339).unwrap();
     let save = |id: &str, rows: Vec<serde_json::Value>| {
         let lines: String = rows.iter().map(|r| format!("{r}\n")).collect();
         fs::write(folder.join(format!("rollout-{id}.jsonl")), lines).unwrap();

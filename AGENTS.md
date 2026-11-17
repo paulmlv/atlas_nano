@@ -59,6 +59,7 @@ design. The [next steps](docs/NEXT_STEPS.md) list what is left to test and decid
 | `run.rs`       | `run`: load, select the period, label, print                            |
 | `taxonomy.rs`  | Read the label lists from `prompts/labels.md`, built into the binary    |
 | `text.rs`      | Render a session's parts and split them into chunks                     |
+| `timestamp.rs` | Parse record times, their UTC spelling, and the local offset            |
 | `tests/cli.rs` | The binary end to end, with a stand-in client                           |
 
 Parsers and accounting are pure functions tested on synthetic records. Money is `Decimal`.

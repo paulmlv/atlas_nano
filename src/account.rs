@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 use std::ops::AddAssign;
 
-use chrono::{DateTime, Duration, Utc};
 use rust_decimal::Decimal;
+use time::{SignedDuration, UtcDateTime};
 
 use crate::model::{Kind, Session, SessionRef};
 use crate::prices::PriceTable;
@@ -115,8 +115,8 @@ pub struct Totals {
     pub reviews: u64,
     pub turns: u64,
     pub unknown_turns: u64,
-    pub working: Duration,
-    pub wall: Duration,
+    pub working: SignedDuration,
+    pub wall: SignedDuration,
     pub tokens: Tokens,
     pub spend: Decimal,
     pub unpriced_requests: u64,
@@ -209,11 +209,7 @@ pub fn roots(sessions: &[Session]) -> Vec<usize> {
 }
 
 /// Whether each session is in the period: its root chat started at or after `cutoff`.
-pub fn in_period(
-    sessions: &[Session],
-    roots: &[usize],
-    cutoff: Option<DateTime<Utc>>,
-) -> Vec<bool> {
+pub fn in_period(sessions: &[Session], roots: &[usize], cutoff: Option<UtcDateTime>) -> Vec<bool> {
     roots
         .iter()
         .map(|&root| match (cutoff, sessions[root].started) {
@@ -226,13 +222,12 @@ pub fn in_period(
 
 #[cfg(test)]
 pub mod tests {
-    use chrono::TimeZone;
-
     use super::*;
     use crate::model::{Client, SessionRef, Turn, Usage};
+    use crate::timestamp;
 
-    pub fn at(hour: u32) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 1, 10, hour, 0, 0).unwrap()
+    pub fn at(hour: u32) -> UtcDateTime {
+        timestamp::parse(&format!("2026-01-10T{hour:02}:00:00Z")).unwrap()
     }
 
     pub fn session(id: &str, kind: Kind, parent: Option<&str>, started: u32) -> Session {
@@ -255,7 +250,7 @@ pub mod tests {
             turns: vec![
                 Turn {
                     at: at(started),
-                    working: Some(Duration::minutes(30)),
+                    working: Some(SignedDuration::minutes(30)),
                 },
                 Turn {
                     at: at(started + 1),
@@ -352,8 +347,8 @@ pub mod tests {
             (1, 1, 4)
         );
         assert_eq!(totals.unknown_turns, 2);
-        assert_eq!(totals.working, Duration::hours(1));
-        assert_eq!(totals.wall, Duration::hours(4));
+        assert_eq!(totals.working, SignedDuration::hours(1));
+        assert_eq!(totals.wall, SignedDuration::hours(4));
         // Haiku: $0.01 input + $0.50 output per session; the other request has no price.
         assert_eq!(totals.spend, Decimal::new(102, 2));
         assert_eq!(totals.unpriced_requests, 2);

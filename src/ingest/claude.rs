@@ -6,10 +6,12 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 use serde_json::Value;
+use time::UtcDateTime;
 
 use super::timing::{self, Event, Signal};
-use super::{Evidence, Span, TextMode, TitleCandidates, known, optional_count, stem, time};
+use super::{Evidence, Span, TextMode, TitleCandidates, known, optional_count, stem};
 use crate::model::{Client, Kind, Role, Session, SessionRef, Usage};
+use crate::timestamp;
 
 const INTERRUPTIONS: [&str; 2] = [
     "[Request interrupted by user]",
@@ -139,7 +141,7 @@ fn recorded_owner(record: &Value) -> Option<&str> {
         .or_else(|| record["sessionId"].as_str())
 }
 
-fn usage(record: &Value, at: chrono::DateTime<chrono::Utc>) -> Option<Usage> {
+fn usage(record: &Value, at: UtcDateTime) -> Option<Usage> {
     let reply = &record["message"];
     let reported = reply.get("usage")?;
     // Without its input and output counts the usage was not read, so the session is flagged.
@@ -221,7 +223,7 @@ pub(super) fn parse(
         {
             continue;
         }
-        let at = record["timestamp"].as_str().and_then(time);
+        let at = record["timestamp"].as_str().and_then(timestamp::parse);
         if session.kind == Kind::Primary
             && (record["forkedFrom"]["sessionId"].is_string()
                 || record["sessionId"]
@@ -408,8 +410,11 @@ mod tests {
         assert_eq!(session.tool_calls, 1);
         assert_eq!(session.cwd.as_deref(), Some("/work/app"));
         assert_eq!(session.turns.len(), 1);
-        assert_eq!(session.turns[0].working, Some(chrono::Duration::seconds(9)));
-        assert_eq!(session.wall(), Some(chrono::Duration::seconds(9)));
+        assert_eq!(
+            session.turns[0].working,
+            Some(time::SignedDuration::seconds(9))
+        );
+        assert_eq!(session.wall(), Some(time::SignedDuration::seconds(9)));
         let last = &session.usage[1];
         assert_eq!(
             (

@@ -5,9 +5,9 @@ use std::fmt::Write as _;
 use std::iter::Sum;
 use std::ops::AddAssign;
 
-use chrono::{DateTime, Duration, Local, Utc};
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::{Decimal, RoundingStrategy};
+use time::{SignedDuration, UtcDateTime};
 
 use crate::account::{Cost, Tokens, Totals, UsageCoverage};
 use crate::label::Labeling;
@@ -18,6 +18,7 @@ use crate::paint::{self, Paint, Tone};
 use crate::place::Place;
 use crate::prices::PriceTable;
 use crate::taxonomy::{Entry, Taxonomy};
+use crate::timestamp;
 
 const UNLABELED: &str = "Unlabeled";
 const REVIEWS: &str = "Automatic reviews";
@@ -158,8 +159,8 @@ pub(crate) fn count(tokens: u64) -> String {
 }
 
 /// A length of time in a short form. One decimal of hours ends at 9.95 hours, which is `10h`.
-pub(crate) fn span(duration: Duration) -> String {
-    let seconds = duration.num_seconds();
+pub(crate) fn span(duration: SignedDuration) -> String {
+    let seconds = duration.whole_seconds();
     let hours = seconds as f64 / 3600.0;
     match seconds {
         0 => "-".to_string(),
@@ -893,7 +894,6 @@ impl Report<'_> {
         );
         for row in &self.rows {
             let session = row.session;
-            let time = |at: Option<DateTime<Utc>>| at.map_or(String::new(), |at| at.to_rfc3339());
             let models = models_of(session);
             let label = |pick: fn(&Label) -> String| row.label.map_or(String::new(), pick);
             let usage = |value: String| {
@@ -918,12 +918,12 @@ impl Report<'_> {
                 kind(session).to_string(),
                 row.place.project.clone(),
                 row.place.repo.clone(),
-                time(session.started),
-                time(session.ended),
-                session.working().num_seconds().to_string(),
+                session.started.map(timestamp::format).unwrap_or_default(),
+                session.ended.map(timestamp::format).unwrap_or_default(),
+                session.working().whole_seconds().to_string(),
                 session
                     .wall()
-                    .map_or(String::new(), |wall| wall.num_seconds().to_string()),
+                    .map_or(String::new(), |wall| wall.whole_seconds().to_string()),
                 session.turns.len().to_string(),
                 untimed(session).to_string(),
                 session.tool_calls.to_string(),
@@ -986,10 +986,10 @@ impl Report<'_> {
                 "kind": kind(session),
                 "project": row.place.project,
                 "repo": (!row.place.repo.is_empty()).then_some(&row.place.repo),
-                "started": session.started.map(|at| at.to_rfc3339()),
-                "ended": session.ended.map(|at| at.to_rfc3339()),
-                "working_seconds": session.working().num_seconds(),
-                "wall_seconds": session.wall().map(|wall| wall.num_seconds()),
+                "started": session.started.map(timestamp::format),
+                "ended": session.ended.map(timestamp::format),
+                "working_seconds": session.working().whole_seconds(),
+                "wall_seconds": session.wall().map(|wall| wall.whole_seconds()),
                 "turns": session.turns.len(),
                 "untimed_turns": untimed(session),
                 "tool_calls": session.tool_calls,
@@ -1043,8 +1043,8 @@ fn untimed(session: &Session) -> usize {
 
 /// The local date of a moment, with the time zone's offset at that moment, so daylight saving time
 /// moves no request to the wrong day.
-pub(crate) fn local_day(at: DateTime<Utc>) -> String {
-    at.with_timezone(&Local).format("%Y-%m-%d").to_string()
+pub(crate) fn local_day(at: UtcDateTime) -> String {
+    timestamp::local(at).date().to_string()
 }
 
 /// Quote a CSV field when it needs it. A field a spreadsheet would read as a formula, starting with
@@ -1271,7 +1271,7 @@ mod tests {
             (35_999, "10h"),
         ];
         for (seconds, shown) in spans {
-            assert_eq!(span(Duration::seconds(seconds)), shown);
+            assert_eq!(span(SignedDuration::seconds(seconds)), shown);
         }
     }
 

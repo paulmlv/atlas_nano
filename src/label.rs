@@ -9,11 +9,11 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use chrono::Utc;
 use rayon::prelude::*;
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use time::UtcDateTime;
 
 use crate::config::{self, Config};
 use crate::labeler::{self, Answer, Call, Failure, Labeler, Spent};
@@ -23,6 +23,7 @@ use crate::prices::PriceTable;
 use crate::prompt::Prompt;
 use crate::taxonomy::Taxonomy;
 use crate::text;
+use crate::timestamp;
 
 /// Characters per token when sizing chunks: a lower bound, so a chunk never overflows.
 const CHUNK_CHARS_PER_TOKEN: usize = 2;
@@ -197,7 +198,7 @@ fn store(cache: &Mutex<Store>, key: &str, label: &Label) {
         .collect();
     let entry = json!({
         "key": key, "work": label.work, "topic": label.topic, "prs": prs, "model": label.model,
-        "labeled": Utc::now().to_rfc3339(),
+        "labeled": timestamp::format(UtcDateTime::now()),
     });
     // One write of the whole line to a file opened for appending, so a record written by another
     // run at the same time lands before or after this one, not inside it.
@@ -263,7 +264,7 @@ fn price(
     let usage = Usage {
         id: String::new(),
         owner: None,
-        at: Utc::now(),
+        at: UtcDateTime::now(),
         model: model.to_string(),
         fast: false,
         input: plain,
