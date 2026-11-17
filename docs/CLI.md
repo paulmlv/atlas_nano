@@ -5,7 +5,8 @@ makes no network request of its own. Labeling goes through the installed Claude 
 the user is signed in to: on a subscription it counts against the plan's usage limits and is not
 billed as API calls, and every dollar figure is what the API would cost, not a charge. The exception
 is an exported `ANTHROPIC_API_KEY`: Claude Code bills that key, and its dollar figures are charges.
-Both commands say which applies before any call.
+Both commands say which applies before any call. The [privacy page](PRIVACY.md) explains what is
+sent and how the client's current authentication, routing, and logging apply.
 
 Output to a terminal is in color, in the theme chosen in `configure`. Output to a file or a pipe is
 plain text, and so is any output when `NO_COLOR` is set to a non-empty value, `CLICOLOR` is `0`, or
@@ -98,8 +99,12 @@ does not record it. Usage counts as read only when it has both input and output 
 ### Label cache
 
 Labels are stored in `~/.cache/atlas-nano/labels.jsonl`, or under `$XDG_CACHE_HOME` when that is
-set. A stored label is reused only when everything sent to the labeler (the instructions, the label
-lists, the answer schema, and the conversation's text), the labeler, its effort, the unit and the
-Atlas Nano version are unchanged, so a conversation that grew, any change to the prompt, or a new
-release labels it again. A session whose call failed is not stored, so the next run tries it again.
-When the file cannot be written, the run warns once and its new labels are not stored.
+set. Atlas Nano reuses a label only when the full prompts, answer schema, labeler, effort, and unit
+match. The prompts include the instructions, label lists, and conversation text, plus the repository
+URL and branch when pull request mapping is on. The cache key also includes the Atlas Nano version
+by design. After an upgrade, Atlas Nano makes new model calls the first time it labels each session
+in the selected period, even if the prompt is unchanged. With `--no-label`, the run makes no model
+calls and omits all labels from the report, including cached ones.
+
+A session whose call failed is not stored, so the next run tries it again. When the file cannot be
+written, the run warns once and its new labels are not stored.
