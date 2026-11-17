@@ -13,15 +13,18 @@ branch when known.
 
 ## Accounts and providers
 
-One selected labeler labels all covered sessions. For example, choosing Claude Code to label both
-clients sends Codex conversation text through Claude Code too. `configure` discloses this and asks
-whether to continue before any call or save. To avoid cross-provider labeling, cover only the
-labeler's own client. This excludes the other client's sessions and spend from the report. To
-include both clients' spend without making model calls, cover both and use `run --no-label`.
+If you cover both clients, one labeler handles conversations from both. For example, choosing Claude
+Code sends Codex conversation text through Claude Code too. `configure` asks you to confirm this
+before it makes its test call or saves your settings.
 
-Calls use the client's current authentication and inherited environment. This may be a different
-account from the one that recorded an older conversation. Atlas Nano does not verify that they
-match.
+To keep the two clients' conversations separate, cover only the client you use for labeling. The
+report then excludes the other client's sessions and spend. To include both clients' spend without
+making model calls, cover both and pass `--no-label` on every `run`. A plain `run` uses the saved
+labeler without asking again.
+
+Calls use the client's current authentication and routing. If Claude Code now uses a company
+gateway, it sends older Claude Code conversations there too. Atlas Nano does not verify that the
+account or provider matches the original conversation.
 
 Labeling can use a different configuration from your interactive sessions because the
 [required flags](LABELING.md#required-flags) skip the client's regular settings files. Environment
