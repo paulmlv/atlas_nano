@@ -13,9 +13,10 @@ branch when known.
 
 ## Accounts and providers
 
-If you cover both clients, one labeler handles conversations from both. For example, choosing Claude
-Code sends Codex conversation text through Claude Code too. `configure` asks you to confirm this
-before it makes its test call or saves your settings.
+You choose one client to label the sessions you cover. If you cover only Codex sessions and choose
+Claude Code as the labeler, their text goes through Claude Code. Whenever the labeler would read
+another client's sessions, `configure` asks you to confirm before it makes its test call or saves
+your settings.
 
 To keep the two clients' conversations separate, cover only the client you use for labeling. The
 report then excludes the other client's sessions and spend. To include both clients' spend without
