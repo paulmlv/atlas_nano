@@ -5,8 +5,8 @@ into AI spend.
 
 It reads the sessions both clients keep on this computer, prices every model request at API list
 prices, and sends [selected conversation text](docs/LABELING.md#what-is-sent) through your installed
-Claude Code or Codex client to label each session's type of work and topic. Conversation data is
-never sent to Atlas servers. See [privacy](docs/PRIVACY.md) for accounts, providers, and logging.
+Claude Code or Codex client to label each session's type of work and topic. Atlas Nano has no
+servers of its own. See [privacy](docs/PRIVACY.md) for accounts, providers, and logging.
 
 ## Install
 

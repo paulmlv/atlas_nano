@@ -1,20 +1,15 @@
 # Privacy
 
-Atlas Nano reads local Claude Code and Codex session files. It sends no conversation data to Atlas
-servers and has no telemetry of its own. Labeling sends selected conversation text through your
-installed Claude Code or Codex client.
+Atlas Nano reads local Claude Code and Codex session files. It has no servers or telemetry of its
+own.
 
 ## What is sent
 
-- User and assistant text, messages from other agents, and each tool call's name and full input.
-  Tool calls are included by default; turn them off in `configure` to omit them.
-- Tool results, thinking, and injected context are omitted. An image the user attached becomes an
-  `[image]` marker. The [labeling rules](LABELING.md#what-is-sent) list the full selection.
-- With pull request mapping on, the known repository URL and branch are included. The URL's user
-  name and password are removed.
-
-Kept text is not redacted for secrets. A credential or private file content inside a message or tool
-input can therefore be sent.
+Your selected client sends [conversation text](LABELING.md#what-is-sent) to the labeling provider.
+Credentials or private file contents in that text are sent as written. Tool inputs are included in
+full by default. You can turn off tool calls in `configure`. With
+[pull request mapping](LABELING.md#the-call) on, the provider also receives the repository URL and
+branch when known.
 
 ## Accounts and providers
 
@@ -26,11 +21,9 @@ cross-provider labeling.
 Calls use the client's current authentication and inherited environment. This may be a different
 account from the one that recorded an older conversation. Atlas does not verify that they match.
 
-The [required flags](LABELING.md#required-flags) disable tools and extra context, and skip regular
-settings files: Claude Code uses `--setting-sources ""`; Codex uses `--ignore-user-config`. Labeling
-therefore need not use the same configuration as an interactive conversation. The client's effective
-routing, telemetry, logging, and provider policies still apply, including settings inherited through
-environment variables. See the
+Labeling can use a different configuration from your interactive sessions because the
+[required flags](LABELING.md#required-flags) skip the client's regular settings files. Environment
+variables can still affect routing, telemetry, and logging. See the
 [Claude Code environment reference](https://code.claude.com/docs/en/env-vars) and the
 [Codex command reference](https://developers.openai.com/codex/cli/reference/).
 
@@ -44,6 +37,5 @@ content hashes, not conversation text.
 example, not your recorded conversations. `run --confirm` asks before making labeling calls, after
 showing the estimate.
 
-The clients' no-save flags stop labeling calls from being saved as local sessions. They do not
-disable client logs or set provider retention or training policies; those depend on the client,
-provider, account, and applicable settings.
+Labeling calls stay out of your local session history. Client logging, provider retention, and use
+for training depend on the policies and settings for your client, provider, and account.
