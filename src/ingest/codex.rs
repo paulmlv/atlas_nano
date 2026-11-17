@@ -47,7 +47,7 @@ enum UsageTurn<'a> {
 struct TurnReadings<'a> {
     first_reply: Option<usize>,
     reply_ids: Vec<(&'a str, usize)>,
-    per_response: Vec<&'a str>,
+    per_response: Vec<(&'a str, usize)>,
     bad_response: bool,
     running_totals: Vec<usize>,
     bad_totals: Vec<(Option<String>, usize)>,
@@ -69,36 +69,35 @@ impl<'a> TurnReadings<'a> {
 }
 
 /// Keep both identities until the selected rollouts can be checked for copies of each reading.
-fn finish_usage(thread: &str, turns: HashMap<UsageTurn, TurnReadings>, evidence: &mut Evidence) {
+fn finish_usage(turns: HashMap<UsageTurn, TurnReadings>, evidence: &mut Evidence) {
     for (scope, turn) in turns {
         let id = match scope {
-            UsageTurn::Named(id) => Some(format!("{thread}:{id}")),
+            UsageTurn::Named(id) => Some(id),
             UsageTurn::Unnamed(_) => None,
         };
         let per_response = !turn.per_response.is_empty();
         let legacy = !turn.running_totals.is_empty();
         if per_response || legacy {
-            evidence.measured_turns.extend(id);
+            evidence.measured_turns.extend(id.map(str::to_owned));
         } else if !turn.bad_response
             && turn.bad_totals.is_empty()
             && turn.reply_ids.is_empty()
             && let Some(line) = turn.first_reply
         {
-            evidence.missing_turn(id.as_deref(), line);
+            evidence.missing_turn(id, line);
         }
-        if per_response || !legacy {
+        if legacy {
+            let mut responses = turn.per_response;
+            responses.extend(turn.reply_ids);
+            evidence.legacy_turn(responses, turn.running_totals);
+        } else {
             for &(id, line) in &turn.reply_ids {
                 evidence.missing_response(Some(id), None, line);
             }
         }
-        if legacy {
-            let mut responses = turn.per_response;
-            responses.extend(turn.reply_ids.into_iter().map(|(id, _)| id));
-            evidence.legacy_turn(responses, turn.running_totals);
-        }
         if !per_response {
             for (id, line) in turn.bad_totals {
-                evidence.missing_response(id.as_deref(), None, line);
+                evidence.missing_total(id, line);
             }
         }
     }
@@ -457,7 +456,7 @@ pub(super) fn parse(
                         .entry(scope)
                         .or_default()
                         .per_response
-                        .push(response);
+                        .push((response, line_number));
                 } else {
                     let reading = readings.entry(scope).or_default();
                     reading.bad_response = true;
@@ -484,7 +483,7 @@ pub(super) fn parse(
                         continue;
                     }
                     let id = format!(
-                        "{usage_thread}:{}:{}:{}",
+                        "{}:{}:{}",
                         turn_id.unwrap_or_default(),
                         total["input_tokens"],
                         total["output_tokens"]
@@ -605,7 +604,8 @@ pub(super) fn parse(
             None => session.usage[index].model.clear(),
         }
     }
-    finish_usage(usage_thread, readings, evidence);
+    evidence.usage_thread = Some(usage_thread.to_owned());
+    finish_usage(readings, evidence);
     (session.started, session.ended) = span.bounds();
     session.turns = timing::turns(&events);
     let version = header
@@ -629,7 +629,7 @@ mod tests {
         let (mut session, version) = super::parse(path, records, &mut evidence);
         crate::ingest::completeness::count_requests_once(
             std::slice::from_mut(&mut session),
-            std::slice::from_ref(&evidence),
+            std::slice::from_mut(&mut evidence),
         );
         (session, version)
     }

@@ -9,6 +9,7 @@ use time::UtcDateTime;
 enum Key {
     Response(String),
     Turn(String),
+    RunningTotal(String),
 }
 
 struct Gap {
@@ -19,26 +20,27 @@ struct Gap {
 
 /// A legacy turn may also appear in a newer copy with per-response measurements.
 struct LegacyTurn {
-    responses: Vec<String>,
+    responses: Vec<(String, usize)>,
     totals: Vec<usize>,
 }
 
 #[derive(Default)]
 pub(super) struct Evidence {
     gaps: Vec<Gap>,
+    pub usage_thread: Option<String>,
     pub measured_turns: HashSet<String>,
     legacy: Vec<LegacyTurn>,
 }
 
 impl Evidence {
-    pub fn legacy_turn(&mut self, mut replies: Vec<&str>, totals: Vec<usize>) {
-        if replies.is_empty() {
-            return;
-        }
+    pub fn legacy_turn(&mut self, mut replies: Vec<(&str, usize)>, totals: Vec<usize>) {
         replies.sort_unstable();
-        replies.dedup();
+        replies.dedup_by_key(|r| r.0);
         self.legacy.push(LegacyTurn {
-            responses: replies.into_iter().map(str::to_owned).collect(),
+            responses: replies
+                .into_iter()
+                .map(|(id, line)| (id.to_owned(), line))
+                .collect(),
             totals,
         });
     }
@@ -54,6 +56,14 @@ impl Evidence {
     pub fn missing_turn(&mut self, id: Option<&str>, line: usize) {
         self.gaps.push(Gap {
             key: id.map(|id| Key::Turn(id.to_owned())),
+            owner: None,
+            line,
+        });
+    }
+
+    pub fn missing_total(&mut self, id: Option<String>, line: usize) {
+        self.gaps.push(Gap {
+            key: id.map(Key::RunningTotal),
             owner: None,
             line,
         });
@@ -75,6 +85,44 @@ fn ownership_rank<'a>(
 
 type Owners = HashMap<Client, HashMap<String, (usize, usize)>>;
 
+/// Turn names and cumulative counts belong to a history. Only response IDs are global.
+fn qualify_codex_ids(sessions: &mut [Session], evidence: &mut [Evidence]) {
+    let index: HashMap<_, _> = sessions
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.client == Client::Codex)
+        .map(|(n, s)| (s.id.as_str(), n))
+        .collect();
+    let roots = crate::account::ancestor_roots(evidence.len(), |n| {
+        let parent = evidence[n].usage_thread.as_deref()?;
+        index.get(parent).copied().filter(|&p| p != n)
+    });
+    let scopes: Vec<_> = roots
+        .into_iter()
+        .map(|root| evidence[root].usage_thread.clone())
+        .collect();
+    for ((session, source), scope) in sessions.iter_mut().zip(evidence).zip(scopes) {
+        let Some(scope) = scope else { continue };
+        let qualify = |id: &str| format!("{scope}:{id}");
+        source.measured_turns = source
+            .measured_turns
+            .drain()
+            .map(|id| qualify(&id))
+            .collect();
+        for gap in &mut source.gaps {
+            if let Some(Key::Turn(id) | Key::RunningTotal(id)) = &mut gap.key {
+                *id = qualify(id);
+            }
+        }
+        for turn in &source.legacy {
+            for &n in &turn.totals {
+                let id = &mut session.usage[n].id;
+                *id = qualify(id);
+            }
+        }
+    }
+}
+
 /// Keep each model request once: in the session recorded with it, when that session holds a copy,
 /// or else in the earliest-started session that does.
 ///
@@ -82,8 +130,9 @@ type Owners = HashMap<Client, HashMap<String, (usize, usize)>>;
 /// keeps the request. A request repeated within one session also counts once.
 pub(super) fn count_requests_once(
     sessions: &mut [Session],
-    evidence: &[Evidence],
+    evidence: &mut [Evidence],
 ) -> Vec<Option<usize>> {
+    qualify_codex_ids(sessions, evidence);
     let mut owners = Owners::new();
     for (index, session) in sessions.iter().enumerate() {
         let owner = owners.entry(session.client).or_default();
@@ -113,38 +162,65 @@ pub(super) fn count_requests_once(
 
 /// A copied response can have two IDs: a cumulative token count and an explicit response ID.
 /// When only part of the turn has per-response readings, remove one matching count per response.
-fn deduplicate_running_totals(sessions: &[Session], evidence: &[Evidence], requests: &mut Owners) {
+fn deduplicate_running_totals(
+    sessions: &[Session],
+    evidence: &mut [Evidence],
+    requests: &mut Owners,
+) {
     let Some(readings) = requests.get_mut(&Client::Codex) else {
         return;
     };
     let mut replaced = HashSet::new();
-    for (session, source) in sessions.iter().zip(evidence) {
+    for (session, source) in sessions.iter().zip(evidence.iter()) {
         for legacy in &source.legacy {
-            let measured: Vec<_> = legacy
-                .responses
-                .iter()
-                .filter_map(|id| readings.get(id))
-                .map(|&(s, r)| &sessions[s].usage[r])
-                .collect();
-            if measured.is_empty() {
-                continue;
+            let mut counts = HashMap::new();
+            for &n in &legacy.totals {
+                let u = &session.usage[n];
+                counts
+                    .entry((u.prompt(), u.output))
+                    .or_insert_with(Vec::new)
+                    .push(u);
             }
-            let mut remaining: Vec<_> = legacy.totals.iter().map(|&n| &session.usage[n]).collect();
-            if measured.len() == legacy.responses.len() && measured.len() >= remaining.len() {
-                replaced.extend(remaining.iter().map(|u| u.id.as_str()));
-            } else {
-                for response in measured {
-                    if let Some(index) = remaining.iter().position(|u| {
-                        u.prompt() == response.prompt() && u.output == response.output
-                    }) {
-                        replaced.insert(remaining.remove(index).id.as_str());
-                    }
+            for (id, _) in &legacy.responses {
+                let Some(&(s, r)) = readings.get(id) else {
+                    continue;
+                };
+                let response = &sessions[s].usage[r];
+                if let Some(candidates) = counts.get_mut(&(response.prompt(), response.output))
+                    && !candidates.is_empty()
+                {
+                    let index = candidates
+                        .iter()
+                        .position(|u| {
+                            u.cached == response.cached && u.cache_write == response.cache_write
+                        })
+                        .unwrap_or(0);
+                    replaced.insert(candidates.swap_remove(index).id.as_str());
                 }
             }
         }
     }
     for id in replaced {
         readings.remove(id);
+    }
+    for (session, source) in sessions.iter().zip(evidence) {
+        for legacy in std::mem::take(&mut source.legacy) {
+            let remaining = legacy
+                .totals
+                .iter()
+                .filter(|&&n| readings.contains_key(&session.usage[n].id))
+                .count();
+            let missing: Vec<_> = legacy
+                .responses
+                .into_iter()
+                .filter(|(id, _)| !readings.contains_key(id))
+                .collect();
+            if missing.len() > remaining {
+                for (id, line) in missing {
+                    source.missing_response(Some(&id), None, line);
+                }
+            }
+        }
     }
 }
 
@@ -173,7 +249,9 @@ fn resolve_gaps(
             };
             let measured = match key {
                 Key::Turn(id) => turns.contains(id),
-                Key::Response(id) => requests[&session.client].contains_key(id),
+                Key::Response(id) | Key::RunningTotal(id) => {
+                    requests[&session.client].contains_key(id)
+                }
             };
             if measured {
                 continue;

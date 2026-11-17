@@ -271,7 +271,7 @@ pub fn load(home: &Path, clients: &[Client]) -> Loaded {
         files.push((copy.path, copy.issues));
     }
     codex::link_parents(&mut sessions, &versions);
-    let missing = completeness::count_requests_once(&mut sessions, &evidence);
+    let missing = completeness::count_requests_once(&mut sessions, &mut evidence);
     let mut issues = Vec::new();
     for (n, ((path, mut records), line)) in files.into_iter().zip(missing).enumerate() {
         if let Some(line) = line {
@@ -472,7 +472,7 @@ mod tests {
         // A replayed request within one session.
         parent.usage.push(parent.usage[0].clone());
         let mut sessions = vec![fork, parent];
-        completeness::count_requests_once(&mut sessions, &[]);
+        completeness::count_requests_once(&mut sessions, &mut []);
         assert!(sessions[0].usage.is_empty());
         let ids: Vec<&str> = sessions[1]
             .usage
@@ -878,7 +878,44 @@ mod tests {
         );
         save("another_edit", &[start.clone(), measured, total(100, 100)]);
         save("unrelated", &[start.clone(), reply(None)]);
-        save("independent", &[start, total(100, 100)]);
+        save("independent", &[start.clone(), total(100, 100)]);
+        let inherited = |parent| row("session_meta", json!({"forked_from_id":parent}));
+        save(
+            "child",
+            &[inherited("independent"), start.clone(), total(100, 100)],
+        );
+        save(
+            "grandchild",
+            &[inherited("child"), start.clone(), total(100, 100)],
+        );
+
+        let measured = |id, input: u64| {
+            row(
+                "token_usage_record",
+                json!({
+                    "response_id":id, "usage":{"input_tokens":input,"output_tokens":input/10}
+                }),
+            )
+        };
+        save(
+            "distinct",
+            &[
+                start.clone(),
+                reply(None),
+                total(100, 100),
+                measured("next", 300),
+            ],
+        );
+        save(
+            "gap",
+            &[
+                start.clone(),
+                reply(Some("known")),
+                total(100, 100),
+                reply(Some("missing")),
+            ],
+        );
+        save("gap_copy", &[start, measured("known", 100)]);
 
         let loaded = load(&home, &[Client::Codex]);
         fs::remove_dir_all(home).unwrap();
@@ -896,6 +933,11 @@ mod tests {
         assert_eq!(reading("edit"), (100, 10, false));
         assert_eq!(reading("unrelated"), (0, 0, true));
         assert_eq!(reading("independent"), (100, 10, false));
+        assert_eq!(reading("child"), (0, 0, false));
+        assert_eq!(reading("grandchild"), (0, 0, false));
+        assert_eq!(reading("distinct"), (400, 40, false));
+        assert_eq!(reading("gap"), (0, 0, true));
+        assert_eq!(reading("copy"), (100, 10, false));
     }
 
     #[test]

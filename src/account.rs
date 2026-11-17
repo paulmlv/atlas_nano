@@ -166,17 +166,21 @@ pub fn roots(sessions: &[Session]) -> Vec<usize> {
         .enumerate()
         .map(|(n, session)| (session.reference(), n))
         .collect();
-    let parent = |n: usize| {
+    ancestor_roots(sessions.len(), |n| {
         let session = &sessions[n];
         // A chat the user started is a root, even when it was forked or edited from another.
         if session.kind == Kind::Primary {
             return None;
         }
         index.get(session.parent.as_ref()?).copied()
-    };
-    let mut roots: Vec<Option<usize>> = vec![None; sessions.len()];
-    let mut walking = vec![false; sessions.len()];
-    for start in 0..sessions.len() {
+    })
+}
+
+/// Follow the supplied parent links once, including chains that end at a missing parent or loop.
+pub(crate) fn ancestor_roots(count: usize, parent: impl Fn(usize) -> Option<usize>) -> Vec<usize> {
+    let mut roots: Vec<Option<usize>> = vec![None; count];
+    let mut walking = vec![false; count];
+    for start in 0..count {
         let mut path = Vec::new();
         let mut n = start;
         let root = loop {
