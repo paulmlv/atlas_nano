@@ -147,7 +147,7 @@ minutes. The limit of three calls per core and one per 500 MB of memory gives 30
 
 - One person's history, mostly software work: about 80% of the sample's spend is in the Software
   group, so most taxonomy labels were barely exercised.
-- No label was checked by a person.
+- No label was checked by a person; the later [manual review](TAXONOMY.md#manual-review) did.
 - Run-to-run variation was measured for Opus and Haiku only, once each.
 - The pull request sample spans very few repositories.
 - Subagent sessions and conversations too long for one call were not part of the sample.

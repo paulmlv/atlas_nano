@@ -1,12 +1,11 @@
 # Taxonomy
 
 Atlas Nano gives each conversation one type of work and one topic, chosen by a labeling model from
-fixed lists. This page describes how labeling works and the pull request mapping. The lists and
-their definitions are in [prompts/labels.md](../prompts/labels.md), and the rules the model follows
-are in the [labeling prompt](../prompts/label.md). The
-[labeling experiments](LABELING_EXPERIMENTS.md) measure how often models agree. The
-[manual review](NEXT_STEPS.md#manual-review) compares two models' labels with a person's choices on
-20 conversations.
+fixed lists. This page describes how labeling works, the pull request mapping, and a manual check of
+the labels. The lists and their definitions are in [prompts/labels.md](../prompts/labels.md), and
+the rules the model follows are in the [labeling prompt](../prompts/label.md). The
+[labeling experiments](LABELING_EXPERIMENTS.md) measure how often models agree, and the
+[manual review](#manual-review) checks two models' labels against a person's.
 
 ## How labeling works
 
@@ -42,3 +41,24 @@ are in the [labeling prompt](../prompts/label.md). The
   nothing.
 - A conversation that worked on several pull requests splits its cost evenly among them, and the
   report marks split amounts as estimates.
+
+## Manual review
+
+On 2026-11-17, a person checked the labels on their own conversations. GPT-6.2 Astra and Claude Opus
+5.5, both at high effort, each labeled the same 100 conversations: 44 from Claude Code and 56 from
+Codex, drawn without replacement with each conversation's spend, including its linked subagents and
+reviews, as the weight. 24 of them were labeled in chunks.
+
+The reviewer assessed 20 of the 100, picked at random. Each case showed a summary of the
+conversation and the two models' label pairs in random order, without the model names. After seeing
+which model chose each pair, the reviewer revisited the six cases where they had accepted one pair
+or neither.
+
+| Model           | Pairs accepted blind | Final pair matches | Final topic matches | Final type-of-work matches |
+| --------------- | -------------------: | -----------------: | ------------------: | -------------------------: |
+| GPT-6.2 Astra   |                15/20 |              16/20 |               18/20 |                      16/20 |
+| Claude Opus 5.5 |                16/20 |              16/20 |               18/20 |                      18/20 |
+
+Blind, the reviewer accepted 75% of Astra's pairs and 80% of Opus's. After the revisit, both models
+matched 80% of the final pairs and 90% of the topics, and Opus matched two more types of work.
+Twenty conversations from one person's history are too few to rank the two models.
