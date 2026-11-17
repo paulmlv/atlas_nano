@@ -4,13 +4,14 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::LazyLock;
 
-use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde_json::Value;
+use time::UtcDateTime;
 
 use super::timing::{self, Event, Signal};
-use super::{Span, known, stem, time};
+use super::{Span, known, stem};
 use crate::model::{Client, HistoryBase, Item, Kind, Role, Session, SessionRef, Usage};
+use crate::timestamp;
 
 const TOOL_CALLS: [&str; 6] = [
     "function_call",
@@ -90,7 +91,7 @@ fn request(text: &str) -> String {
 }
 
 /// One model response's usage, from Codex's token counts and an ID that a fork's copy keeps.
-fn usage(id: String, counts: &Value, timestamp: &str, model: &str) -> Option<Usage> {
+fn usage(id: String, counts: &Value, at: Option<UtcDateTime>, model: &str) -> Option<Usage> {
     // Without its input and output counts the usage was not read, so the session is flagged.
     let (input, output) = (
         counts["input_tokens"].as_u64()?,
@@ -104,7 +105,7 @@ fn usage(id: String, counts: &Value, timestamp: &str, model: &str) -> Option<Usa
     Some(Usage {
         id,
         owner: None,
-        at: time(timestamp)?,
+        at: at?,
         model: model.to_string(),
         fast: false,
         input: input.saturating_sub(cached + cache_write),
@@ -126,7 +127,7 @@ fn kind(thread_source: Option<&str>) -> Kind {
 /// The rollout's own creation time, independent of the dates in its history.
 pub(super) struct Version {
     thread: String,
-    created: DateTime<Utc>,
+    created: UtcDateTime,
     parent_is_thread: bool,
 }
 
@@ -248,8 +249,7 @@ pub(super) fn parse(path: &Path, records: &[Value]) -> (Session, Option<Version>
         .collect();
     for (line, record) in (0u64..).zip(records) {
         let position = record["ordinal"].as_u64().unwrap_or(line);
-        let timestamp = record["timestamp"].as_str().unwrap_or_default();
-        let at = time(timestamp);
+        let at = record["timestamp"].as_str().and_then(timestamp::parse);
         span.add(at);
         let (record_type, payload) = (
             record["type"].as_str().unwrap_or_default(),
@@ -327,7 +327,7 @@ pub(super) fn parse(path: &Path, records: &[Value]) -> (Session, Option<Version>
                 // Each record is one response; its ID survives a fork's copy.
                 if let Some(response) = payload["response_id"].as_str()
                     && let Some(reported) =
-                        usage(response.to_string(), &payload["usage"], timestamp, &model)
+                        usage(response.to_string(), &payload["usage"], at, &model)
                 {
                     // A turn's first response can be recorded before the turn's model.
                     if let Some(id) = payload["turn_id"].as_str()
@@ -353,8 +353,7 @@ pub(super) fn parse(path: &Path, records: &[Value]) -> (Session, Option<Version>
                         total["output_tokens"]
                     );
                     if running
-                        && let Some(reported) =
-                            usage(id, &info["last_token_usage"], timestamp, &model)
+                        && let Some(reported) = usage(id, &info["last_token_usage"], at, &model)
                     {
                         session.usage.push(reported);
                     }
@@ -467,7 +466,7 @@ pub(super) fn parse(path: &Path, records: &[Value]) -> (Session, Option<Version>
     (session.started, session.ended) = span.bounds();
     session.turns = timing::turns(&events);
     let version = header
-        .and_then(|record| time(record["timestamp"].as_str()?))
+        .and_then(|record| timestamp::parse(record["timestamp"].as_str()?))
         .map(|created| Version {
             thread,
             created,
@@ -584,7 +583,10 @@ mod tests {
         assert_eq!((usage.input, usage.cached, usage.output), (96, 4, 7));
         assert_eq!(usage.model, "gpt-6-luna");
         assert_eq!(session.turns.len(), 1);
-        assert_eq!(session.turns[0].working, Some(chrono::Duration::seconds(6)));
+        assert_eq!(
+            session.turns[0].working,
+            Some(time::SignedDuration::seconds(6))
+        );
     }
 
     #[test]
@@ -699,7 +701,7 @@ mod tests {
         assert_eq!(session.turns.len(), 1);
         assert_eq!(
             session.turns[0].working,
-            Some(chrono::Duration::seconds(10))
+            Some(time::SignedDuration::seconds(10))
         );
     }
 
