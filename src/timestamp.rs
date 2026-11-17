@@ -5,7 +5,7 @@ use time::{OffsetDateTime, UtcDateTime, UtcOffset};
 
 /// Read a record's RFC 3339 timestamp and apply its offset.
 pub(crate) fn parse(text: &str) -> Option<UtcDateTime> {
-    // The clients separate the date and time with T, t, or a space.
+    // `time` accepts any separator; keep chrono's T, t, or space.
     if !matches!(text.as_bytes().get(10), Some(b'T' | b't' | b' ')) {
         return None;
     }
@@ -17,8 +17,8 @@ pub(crate) fn format(at: UtcDateTime) -> String {
     let (hour, minute, second, nanos) = at.as_hms_nano();
     let fraction = match nanos {
         0 => String::new(),
-        n if n.is_multiple_of(1_000_000) => format!(".{:03}", at.millisecond()),
-        n if n.is_multiple_of(1_000) => format!(".{:06}", at.microsecond()),
+        n if n.is_multiple_of(1_000_000) => format!(".{:03}", n / 1_000_000),
+        n if n.is_multiple_of(1_000) => format!(".{:06}", n / 1_000),
         n => format!(".{n:09}"),
     };
     format!(
