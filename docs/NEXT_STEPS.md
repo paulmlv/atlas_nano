@@ -26,9 +26,8 @@ What is left to test and decide for Atlas Nano. The [command line](CLI.md), [rep
 - Run-to-run variation of Astra and Luna, and of Opus and Haiku on more than the one
   [measurement](LABELING_EXPERIMENTS.md#model-comparison) so far.
 - Moving the labeling instructions into the Codex instructions file.
-- Before the label lists are frozen, a person's check of the reworded type-of-work definitions
-  (which did not raise agreement), the split between Backend and APIs and Data storage and
-  pipelines, and Translating and Creative work.
+- Before the label lists are frozen, a person's check of the split between Backend and APIs and Data
+  storage and pipelines, and of Translating and Creative work.
 
 ## Known limits
 
