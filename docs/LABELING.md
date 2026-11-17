@@ -163,11 +163,14 @@ references its parent's history without copying it, the text is rebuilt from the
   `usage`, and `total_cost_usd`.
 - Codex writes the answer to the answer file and reports usage in its `turn.completed` event, priced
   per call from the price table.
-- A call fails when it is rejected, runs longer than ten minutes, or returns an answer that does not
-  match the schema. A call past ten minutes is stopped. Once every call has run, each failed call is
-  tried again, and this repeats up to `retries` times (1 by default, set in `config.toml` or with
-  `--retries`). Only the failed call is tried again, not the other chunks of its session. Every
-  try's tokens and cost count in the labeling summary, so retries can cost more than the estimate.
+- Atlas sends the prompt while reading standard output and standard error, each capped at 8 MiB.
+  When the client exits, Atlas collects its buffered output even if a helper holds a pipe open.
+- A call fails when it is rejected, exceeds an output limit, runs longer than ten minutes, or
+  returns an answer that does not match the schema. A timeout stops the direct client. Its helpers
+  can keep running. Once every call has run, each failed call is tried again, and this repeats up to
+  `retries` times (1 by default, set in `config.toml` or with `--retries`). Only the failed call is
+  retried. The summary adds the usage Atlas reads from each attempt. A timeout or output-limit
+  failure records zero usage. Retries can cost more than the estimate.
 - A call that still fails after its last try is logged, its session counts as unlabeled, and the run
   continues. A session split into chunks is unlabeled when any of its calls fails.
 - Labeling calls are not saved as local sessions. The no-save flags are the only mechanism, and
