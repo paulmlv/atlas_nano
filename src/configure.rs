@@ -138,8 +138,7 @@ fn test_call(paint: Paint, client: Client, model: &str, pull_requests: bool) -> 
             Ok(())
         }
         Err(Failure::Invalid(reason)) => Err(format!(
-            "the test call with {model} returned no usable label ({reason}). \
-             Run `atlas-nano configure` to try again"
+            "the test call with {model} returned no usable label ({reason})"
         )),
         Err(Failure::Rejected(reason)) => {
             Err(format!("the test call with {model} was rejected: {reason}"))

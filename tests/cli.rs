@@ -158,6 +158,7 @@ fn configure_requires_a_usable_label_before_saving() {
     assert!(!missing_prs.status.success());
     assert!(text(&missing_prs.stderr).contains("the answer's `prs` is not a list"));
     assert!(!config.exists());
+    // Answer no to "Include PRs?" and accept the other defaults.
     assert!(configure("\nn\n\n\n\n\n").status.success());
     let saved = fs::read(&config).unwrap();
 
