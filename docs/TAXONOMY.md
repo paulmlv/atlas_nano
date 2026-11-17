@@ -54,11 +54,12 @@ conversation and the two models' label pairs in random order, without the model 
 which model chose each pair, the reviewer revisited the six cases where they had accepted one pair
 or neither.
 
-| Model           | Pairs accepted blind | Final pair matches | Final topic matches | Final type-of-work matches |
-| --------------- | -------------------: | -----------------: | ------------------: | -------------------------: |
-| GPT-6.2 Astra   |                15/20 |              16/20 |               18/20 |                      16/20 |
-| Claude Opus 5.5 |                16/20 |              16/20 |               18/20 |                      18/20 |
+| Model           | Pairs accepted blind | Pairs accepted after | Topics accepted after | Types of work accepted after |
+| --------------- | -------------------: | -------------------: | --------------------: | ---------------------------: |
+| GPT-6.2 Astra   |                15/20 |                16/20 |                 18/20 |                        16/20 |
+| Claude Opus 5.5 |                16/20 |                16/20 |                 18/20 |                        18/20 |
 
-Blind, the reviewer accepted 75% of Astra's pairs and 80% of Opus's. After the revisit, both models
-matched 80% of the final pairs and 90% of the topics, and Opus matched two more types of work.
-Twenty conversations from one person's history are too few to rank the two models.
+Blind, the reviewer accepted 75% of Astra's pairs and 80% of Opus's. On the revisit they changed
+their mind on one case, accepting one more Astra pair. After it, the reviewer accepted 80% of each
+model's pairs and 90% of each model's topics, and two more types of work from Opus. Twenty
+conversations from one person's history are too few to rank the two models.
