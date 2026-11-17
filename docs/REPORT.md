@@ -55,15 +55,12 @@ Prices checked 2026-11-03
 - **Category tables:** labels are listed under their group or domain, largest spend first. Sessions
   without a label are in an `Unlabeled` row, and Codex safety reviews in an `Automatic reviews` row.
   The `Subagents` column counts subagents and reviews.
-- **Incomplete usage** is marked wherever a session or group has a known gap in its usage records.
-  For example, `$2.10+` means the recorded requests cost $2.10 and some usage is missing. A `?`
-  means none of the affected total could be measured. A zero with complete usage is `0` or `$0.00`.
-  Token counts follow the same rules. Spend shares are `?` when their denominator is incomplete. The
-  model and day tables show only recorded requests, since a gap cannot be assigned to a model or
-  day. Rankings use recorded spend.
-- **Empty rows** are left out when usage is complete and there are no tokens and, in a table with a
-  `Convs` column, no conversations either. Rows with missing usage or tokens on an unpriced model
-  stay.
+- **Incomplete usage** is flagged on the overall spend in both views. For example, `$2.10+` means
+  the recorded requests cost $2.10 and some usage is missing. A `?` means the period contains a gap
+  and no measured requests. Tables, rankings and spend percentages use the recorded amounts.
+- **Empty rows** are left out of every table: a row with no tokens, so no spend, and in the tables
+  with a `Convs` column, no conversations either. A row with tokens on a model without a price
+  stays.
 - **Shares** are whole percentages. `0%` means none; a share too small to round to 1% shows `<1%`.
 - **Ranked tables:** By client / model, By project, By repo, the conversations, and the pull
   requests leave out empty rows, then show their 10 largest rows by spend and put the rest in one

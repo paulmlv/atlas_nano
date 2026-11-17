@@ -17,9 +17,9 @@ fn truncate(text: &str, limit: usize) -> String {
 }
 
 /// Render each kept part as `[role] text`. Without `tools`, tool calls are left out.
-pub fn render<'a>(items: impl IntoIterator<Item = &'a Item>, tools: bool) -> Vec<(Role, String)> {
+pub fn render(items: &[Item], tools: bool) -> Vec<(Role, String)> {
     items
-        .into_iter()
+        .iter()
         .filter(|item| tools || item.role != Role::Tool)
         .map(|item| (item.role, format!("{} {}", item.role.marker(), item.text)))
         .collect()

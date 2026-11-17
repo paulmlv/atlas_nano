@@ -2,16 +2,14 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
-use std::iter::Sum;
-use std::ops::AddAssign;
 
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::{Decimal, RoundingStrategy};
 use time::{SignedDuration, UtcDateTime};
 
-use crate::account::{Cost, Tokens, Totals, UsageCoverage};
+use crate::account::{Cost, Tokens, Totals};
 use crate::label::Labeling;
-use crate::model::{Kind, Label, Session, first_request, short_title};
+use crate::model::{Kind, Label, Role, Session};
 #[cfg(test)]
 use crate::paint::Theme;
 use crate::paint::{self, Paint, Tone};
@@ -64,72 +62,14 @@ pub(crate) fn money(amount: Decimal) -> String {
     format!("${grouped}.{fraction:0<2}")
 }
 
-/// Mark a recorded subtotal and leave a wholly unknown quantity unnumbered.
-pub(crate) fn measured(value: String, coverage: UsageCoverage) -> String {
-    if coverage.unknown() {
-        "?".to_string()
-    } else if coverage.missing {
-        format!("{value}+")
+/// Display the period's recorded spend and flag missing usage once, in the totals.
+pub(crate) fn total_spend(all: &Totals) -> String {
+    if all.coverage.unknown() {
+        "?".into()
+    } else if all.coverage.missing {
+        format!("{}+", money(all.spend))
     } else {
-        value
-    }
-}
-
-pub(crate) fn spend_share(part: Decimal, whole: Decimal, coverage: UsageCoverage) -> String {
-    if coverage.missing {
-        "?".to_string()
-    } else {
-        share(part, whole)
-    }
-}
-
-/// The usage attributed to a conversation, a pull request, or a slice in the interactive view.
-#[derive(Clone, Copy, Default)]
-pub(crate) struct Subtotal {
-    pub(crate) tokens: u64,
-    pub(crate) spend: Decimal,
-    pub(crate) coverage: UsageCoverage,
-}
-
-impl Subtotal {
-    pub(crate) fn display_spend(self) -> String {
-        measured(money(self.spend), self.coverage)
-    }
-
-    pub(crate) fn pr_spend(self, split: bool) -> String {
-        let spend = self.display_spend();
-        if split && !self.coverage.unknown() {
-            format!("~{spend}")
-        } else {
-            spend
-        }
-    }
-}
-
-impl From<&Cost> for Subtotal {
-    fn from(cost: &Cost) -> Self {
-        Self {
-            tokens: cost.tokens.total(),
-            spend: cost.spend,
-            coverage: cost.coverage,
-        }
-    }
-}
-
-impl AddAssign for Subtotal {
-    fn add_assign(&mut self, other: Self) {
-        self.tokens += other.tokens;
-        self.spend += other.spend;
-        self.coverage += other.coverage;
-    }
-}
-
-impl Sum for Subtotal {
-    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-        iter.fold(Self::default(), |mut total, part| {
-            total += part;
-            total
-        })
+        money(all.spend)
     }
 }
 
@@ -235,21 +175,15 @@ fn cells(paint: Paint, strong: bool, name: &str, totals: &Totals, all: &Totals) 
         cell(Tone::Plain, totals.turns.to_string()),
         cell(Tone::Plain, span(totals.working)),
         cell(Tone::Plain, span(totals.wall)),
-        cell(
-            Tone::Plain,
-            measured(count(totals.tokens.total()), totals.coverage),
-        ),
-        cell(Tone::Money, measured(money(totals.spend), totals.coverage)),
-        cell(
-            Tone::Dim,
-            spend_share(totals.spend, all.spend, all.coverage),
-        ),
+        cell(Tone::Plain, count(totals.tokens.total())),
+        cell(Tone::Money, money(totals.spend)),
+        cell(Tone::Dim, share(totals.spend, all.spend)),
     ]
 }
 
 /// Whether a row has no conversations and no tokens, so no spend; such rows are left out.
 fn empty(totals: &Totals) -> bool {
-    totals.conversations == 0 && totals.tokens.total() == 0 && !totals.coverage.missing
+    totals.conversations == 0 && totals.tokens.total() == 0
 }
 
 /// A ranked table's title, saying how many rows it shows when they are limited.
@@ -415,15 +349,18 @@ pub(crate) fn category(
 /// A session's title, else the first line of its first user message, else of the task an agent gave
 /// it, as one short line.
 pub fn title(session: &Session) -> String {
-    let text = session
-        .title
-        .as_deref()
-        .or_else(|| first_request(&session.items));
-    let line = short_title(text.unwrap_or_default());
+    let first = [Role::User, Role::Agent]
+        .into_iter()
+        .find_map(|role| session.items.iter().find(|item| item.role == role));
+    let text = match &session.title {
+        Some(title) => title.as_str(),
+        None => first.map_or("", |item| item.text.lines().next().unwrap_or_default()),
+    };
+    let line: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if line.is_empty() {
         "Untitled".to_string()
     } else {
-        line
+        line.chars().take(60).collect()
     }
 }
 
@@ -432,9 +369,11 @@ pub(crate) struct PrSpend {
     pub(crate) url: String,
     /// The rows of the sessions that worked on it.
     pub(crate) rows: Vec<usize>,
-    pub(crate) total: Subtotal,
+    pub(crate) spend: Decimal,
     /// Whether any of the spend comes from a session that worked on several pull requests.
     pub(crate) split: bool,
+    /// The tokens of those sessions; a pull request with none is left out.
+    tokens: u64,
 }
 
 /// The pull requests a session worked on, each of which gets an even share of its spend.
@@ -457,22 +396,18 @@ pub(crate) fn pull_requests(rows: &[Row]) -> Vec<PrSpend> {
             let pr = found.entry(url).or_insert_with(|| PrSpend {
                 url: url.to_string(),
                 rows: Vec::new(),
-                total: Subtotal::default(),
+                spend: Decimal::ZERO,
                 split: false,
+                tokens: 0,
             });
             pr.rows.push(n);
-            pr.total += Subtotal {
-                spend: row.cost.spend / Decimal::from(worked.len()),
-                ..Subtotal::from(&row.cost)
-            };
+            pr.spend += row.cost.spend / Decimal::from(worked.len());
             pr.split |= worked.len() > 1;
+            pr.tokens += row.cost.tokens.total();
         }
     }
-    let mut listed: Vec<PrSpend> = found
-        .into_values()
-        .filter(|pr| pr.total.tokens > 0 || pr.total.coverage.missing)
-        .collect();
-    listed.sort_by(|a, b| b.total.spend.cmp(&a.total.spend).then(a.url.cmp(&b.url)));
+    let mut listed: Vec<PrSpend> = found.into_values().filter(|pr| pr.tokens > 0).collect();
+    listed.sort_by(|a, b| b.spend.cmp(&a.spend).then(a.url.cmp(&b.url)));
     listed
 }
 
@@ -556,19 +491,20 @@ pub(crate) fn bar(spend: Decimal, top: Decimal) -> String {
 
 /// The chats the user started, by row, each with the spend of the sessions it started, largest
 /// first. A subagent whose chat was not loaded is its own root, but it is not a conversation. A chat
-/// whose usage is complete and has no tokens is left out.
-pub(crate) fn chats(rows: &[Row]) -> Vec<(usize, Subtotal)> {
-    let mut found: HashMap<usize, Subtotal> = HashMap::new();
+/// that, with its subagents, used no tokens is left out.
+pub(crate) fn chats(rows: &[Row]) -> Vec<(usize, Decimal)> {
+    let mut found: HashMap<usize, (Decimal, u64)> = HashMap::new();
     for row in rows {
-        *found.entry(row.root).or_default() += Subtotal::from(&row.cost);
+        let entry = found.entry(row.root).or_default();
+        entry.0 += row.cost.spend;
+        entry.1 += row.cost.tokens.total();
     }
-    let mut chats: Vec<(usize, Subtotal)> = found
+    let mut chats: Vec<(usize, Decimal)> = found
         .into_iter()
-        .filter(|&(root, total)| {
-            rows[root].session.kind == Kind::Primary && (total.tokens > 0 || total.coverage.missing)
-        })
+        .filter(|&(root, (_, tokens))| rows[root].session.kind == Kind::Primary && tokens > 0)
+        .map(|(root, (spend, _))| (root, spend))
         .collect();
-    chats.sort_by(|a, b| b.1.spend.cmp(&a.1.spend).then(a.0.cmp(&b.0)));
+    chats.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
     chats
 }
 
@@ -653,15 +589,25 @@ impl Report<'_> {
         };
         // Labels are dim so the values stand out.
         let (d, b) = (|text: &str| p.dim(text), |text: String| p.bold(&text));
-        let tokens = |n| b(measured(count(n), all.coverage));
         writeln!(out, "{}", p.tone(Tone::Heading, "Totals")).unwrap();
         writeln!(
             out,
             "  {}  {}{unpriced}",
             d("Spend (API-equivalent)"),
-            p.styled(Tone::Money, true, &measured(money(all.spend), all.coverage))
+            p.styled(Tone::Money, true, &total_spend(all))
         )
         .unwrap();
+        if all.coverage.missing {
+            writeln!(
+                out,
+                "  {}",
+                p.tone(
+                    Tone::Warning,
+                    "Incomplete usage. Tables and percentages use recorded amounts."
+                )
+            )
+            .unwrap();
+        }
         writeln!(
             out,
             "  {}    {} {}{unknown}{dot}{} {}",
@@ -677,20 +623,15 @@ impl Report<'_> {
             "  {}  {} {}{dot}{} {}{dot}{} {}{dot}{} {}",
             d("Tokens"),
             d("in"),
-            tokens(input),
+            b(count(input)),
             d("cached"),
-            tokens(cached),
+            b(count(cached)),
             d("cache-write"),
-            tokens(cache_write),
+            b(count(cache_write)),
             d("out"),
-            tokens(output)
+            b(count(output))
         )
         .unwrap();
-        if all.coverage.missing {
-            writeln!(out, "  {}", p.tone(Tone::Warning,
-                "Incomplete usage. + marks recorded subtotals and ? means unknown. Model and day tables show recorded requests only."
-            )).unwrap();
-        }
         writeln!(
             out,
             "  {} {}{dot}{} {}{dot}{} {}\n",
@@ -739,7 +680,7 @@ impl Report<'_> {
                     p.tone(Tone::Plain, &model.requests.to_string()),
                     p.tone(Tone::Plain, &count(model.tokens)),
                     spend,
-                    p.dim(&spend_share(model.spend, all.spend, all.coverage)),
+                    p.dim(&share(model.spend, all.spend)),
                 ]
             })
             .collect();
@@ -789,25 +730,25 @@ impl Report<'_> {
         let shown = shown(chats.len(), self.top);
         let mut rows: Vec<Vec<String>> = chats[..shown]
             .iter()
-            .map(|&(root, total)| {
+            .map(|&(root, spend)| {
                 let session = self.rows[root].session;
                 let day = session.started.map_or(String::new(), local_day);
                 vec![
                     p.tone(Tone::Plain, &format!("  {}", title(session))),
                     p.dim(&day),
                     p.tone(Tone::Plain, &self.rows[root].place.project),
-                    p.tone(Tone::Money, &total.display_spend()),
+                    p.tone(Tone::Money, &money(spend)),
                 ]
             })
             .collect();
         let rest = &chats[shown..];
         if !rest.is_empty() {
-            let total: Subtotal = rest.iter().map(|chat| chat.1).sum();
+            let spend: Decimal = rest.iter().map(|chat| chat.1).sum();
             rows.push(vec![
                 p.tone(Tone::Plain, &others(rest.len())),
                 String::new(),
                 String::new(),
-                p.tone(Tone::Money, &total.display_spend()),
+                p.tone(Tone::Money, &money(spend)),
             ]);
         }
         table(
@@ -835,26 +776,27 @@ impl Report<'_> {
         )
         .unwrap();
         let shown = shown(listed.len(), self.top);
-        let line = |name: &str, sessions: String, total: Subtotal, split: bool| {
+        let line = |name: &str, sessions: String, spend: Decimal, split: bool| {
+            let mark = if split { "~" } else { "" };
             vec![
                 p.tone(Tone::Plain, name),
                 p.tone(Tone::Plain, &sessions),
-                p.tone(Tone::Money, &total.pr_spend(split)),
+                p.tone(Tone::Money, &format!("{mark}{}", money(spend))),
             ]
         };
         let mut rows: Vec<Vec<String>> = listed[..shown]
             .iter()
             .map(|pr| {
                 let name = format!("  {}", pr.url);
-                line(&name, pr.rows.len().to_string(), pr.total, pr.split)
+                line(&name, pr.rows.len().to_string(), pr.spend, pr.split)
             })
             .collect();
         // A session can work on several of the rest, so their sessions are not added up.
         let rest = &listed[shown..];
         if !rest.is_empty() {
-            let total = rest.iter().map(|pr| pr.total).sum();
+            let spend = rest.iter().map(|pr| pr.spend).sum();
             let split = rest.iter().any(|pr| pr.split);
-            rows.push(line(&others(rest.len()), String::new(), total, split));
+            rows.push(line(&others(rest.len()), String::new(), spend, split));
         }
         table(out, p, &["  Pull request", "Sessions", "Spend"], &rows);
         out.push('\n');
@@ -1216,9 +1158,10 @@ mod tests {
         assert!(out.contains("Spend (API-equivalent)  $0.51+"), "{out}");
         assert!(
             out.lines()
-                .any(|line| line.contains("  Unknown ") && line.ends_with('?')),
+                .any(|line| line.contains("app") && line.split_whitespace().last() == Some("100%")),
             "{out}"
         );
+        assert_eq!(out.matches("$0.51+").count(), 1);
         assert!(out.contains("Incomplete usage."), "{out}");
     }
 
@@ -1402,7 +1345,7 @@ mod tests {
     }
 
     #[test]
-    fn leaves_out_chats_and_pull_requests_with_zero_usage_but_keeps_unknowns() {
+    fn leaves_out_models_chats_and_pull_requests_with_no_tokens() {
         use crate::account::{cost, tests::session};
         use crate::model::{PrRole, PullRequest};
 
@@ -1414,10 +1357,6 @@ mod tests {
         idle.usage[0].model = "idle-model".to_string();
         idle.usage[0].input = 0;
         idle.usage[0].output = 0;
-        let mut missing = session("missing", Kind::Primary, None, 4);
-        missing.title = Some("Missing chat".to_string());
-        missing.usage.clear();
-        missing.usage_missing = true;
         let label = |url: &str| Label {
             work: "Writing code".to_string(),
             topic: "Backend and APIs".to_string(),
@@ -1429,27 +1368,22 @@ mod tests {
             from_cache: false,
         };
         let (busy_pr, idle_pr) = (label("https://pr/busy"), label("https://pr/idle"));
-        let missing_pr = label("https://pr/missing");
         let prices = PriceTable::built_in();
         let place = Place {
             project: "app".to_string(),
             repo: "app".to_string(),
         };
-        let rows = [
-            (&used, &busy_pr),
-            (&idle, &idle_pr),
-            (&missing, &missing_pr),
-        ]
-        .into_iter()
-        .enumerate()
-        .map(|(root, (session, label))| Row {
-            session,
-            cost: cost(session, &prices),
-            label: Some(label),
-            root,
-            place: &place,
-        })
-        .collect();
+        let rows = [(&used, &busy_pr), (&idle, &idle_pr)]
+            .into_iter()
+            .enumerate()
+            .map(|(root, (session, label))| Row {
+                session,
+                cost: cost(session, &prices),
+                label: Some(label),
+                root,
+                place: &place,
+            })
+            .collect();
         let report = Report {
             period: "test",
             rows,
@@ -1466,13 +1400,6 @@ mod tests {
         }
         for dropped in ["idle-model", "Idle chat", "https://pr/idle"] {
             assert!(!out.contains(dropped), "{dropped} shown:\n{out}");
-        }
-        for unknown in ["Missing chat", "https://pr/missing"] {
-            assert!(
-                out.lines()
-                    .any(|line| line.contains(unknown) && line.ends_with('?')),
-                "{out}"
-            );
         }
     }
 

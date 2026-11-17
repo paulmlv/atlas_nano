@@ -74,9 +74,10 @@ Requires a saved configuration; without one it stops and says to run `configure`
 
 ### Missing usage
 
-Atlas keeps every readable token measurement. If another reply is missing usage, the report shows
-the recorded subtotal with a `+` suffix, such as `$0.50+`. If it cannot read any usage for a session
-with a gap, it shows `?`. The [exports](REPORT.md#csv) include the same distinction.
+When a reply is missing usage, the overall spend shows the recorded subtotal with a `+` suffix, such
+as `$0.50+`. A `?` means usage is missing and no request in the period could be measured. Spend
+percentages use the recorded spend. The [exports](REPORT.md#csv) identify each session's usage
+status.
 
 Claude can write several blocks for one response, and forks can repeat a response. One readable
 measurement covers that response. Codex can record usage per response or, in older logs, through

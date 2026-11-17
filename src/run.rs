@@ -12,7 +12,7 @@ use crate::config::{self, Config, Output};
 use crate::dashboard;
 use crate::ingest;
 use crate::label;
-use crate::model::{Client, first_request, short_title};
+use crate::model::{Client, Session};
 use crate::paint::{Paint, Tone};
 use crate::place::{self, Place};
 use crate::prices::PriceTable;
@@ -58,12 +58,7 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
     }
     let now = UtcDateTime::now();
     let home = config::home()?;
-    let mode = if args.no_label {
-        ingest::TextMode::Titles
-    } else {
-        ingest::TextMode::Full
-    };
-    let loaded = ingest::load_for_run(&home, &config.coverage, mode);
+    let loaded = ingest::load(&home, &config.coverage);
     // Paths are quoted with escapes, so a file name cannot send control characters to the terminal.
     let errors = Paint::stderr(config.theme);
     for (path, error) in &loaded.unreadable {
@@ -72,7 +67,7 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
             errors.tone(Tone::Warning, "warning:")
         );
     }
-    let mut sessions = loaded.sessions;
+    let sessions = loaded.sessions;
     let roots = account::roots(&sessions);
     let cutoff = hours(args.period).map(|hours| now - SignedDuration::hours(hours));
     let in_period = account::in_period(&sessions, &roots, cutoff);
@@ -104,21 +99,14 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
             );
         }
     }
-    let history = ingest::History::new(&sessions);
-    for &n in &covered {
-        if sessions[n].history_base.is_some() && sessions[n].title.is_none() {
-            sessions[n].title = first_request(history.items(&sessions, n)).map(short_title);
-        }
-    }
     let prices = PriceTable::built_in();
     let taxonomy = Taxonomy::built_in();
     let outcome = if args.no_label {
         None
     } else {
-        Some(label::label_selected(
-            covered
-                .iter()
-                .map(|&n| (&sessions[n], history.items(&sessions, n))),
+        let selected: Vec<&Session> = covered.iter().map(|&n| &sessions[n]).collect();
+        Some(label::label(
+            &selected,
             &config,
             &taxonomy,
             &prices,

@@ -9,8 +9,8 @@ use serde_json::Value;
 use time::UtcDateTime;
 
 use super::timing::{self, Event, Signal};
-use super::{Evidence, Span, TextMode, TitleCandidates, known, optional_count, stem};
-use crate::model::{Client, HistoryBase, Kind, Role, Session, SessionRef, Usage};
+use super::{Evidence, Span, known, optional_count, stem};
+use crate::model::{Client, HistoryBase, Item, Kind, Role, Session, SessionRef, Usage};
 use crate::timestamp;
 
 const TOOL_CALLS: [&str; 6] = [
@@ -35,25 +35,6 @@ static SHELL_COMMAND: LazyLock<Regex> = LazyLock::new(|| {
 });
 static IMAGE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)<image\b[^>]*>.*?</image>").unwrap());
-
-/// Only user and agent messages can supply a report title. Other response items need their
-/// envelope and IDs for accounting, but not their tool arguments, outputs or model text.
-pub(super) fn discard_bodies(record: &mut Value) {
-    if record["type"] != "response_item" {
-        return;
-    }
-    let payload = &record["payload"];
-    let title = payload["type"] == "agent_message"
-        || (payload["type"] == "message" && payload["role"] == "user");
-    if !title && let Some(fields) = record.get_mut("payload").and_then(Value::as_object_mut) {
-        fields.retain(|key, _| {
-            matches!(
-                key.as_str(),
-                "type" | "role" | "id" | "call_id" | "response_id" | "turn_id"
-            )
-        });
-    }
-}
 
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
 enum UsageTurn<'a> {
@@ -257,7 +238,6 @@ pub(super) fn link_parents(sessions: &mut [Session], versions: &[Option<Version>
 pub(super) fn parse(
     path: &Path,
     records: &[Value],
-    mode: TextMode,
     evidence: &mut Evidence,
 ) -> (Session, Option<Version>) {
     let (thread, rollout) = ids(path);
@@ -314,7 +294,6 @@ pub(super) fn parse(
     let mut turn: Option<&str> = None; // the recorded run, which a fork's copy keeps
     let mut anonymous_start = 0;
     let mut readings: HashMap<UsageTurn, TurnReadings> = HashMap::new();
-    let mut titles = TitleCandidates::default();
     let mut run_closed = false;
     let mut running = false; // whether a turn has started and not ended
     let mut turn_requests = 0u32; // a user message in a turn that already has a request is a steer
@@ -391,7 +370,13 @@ pub(super) fn parse(
             events.push(Event { signal, at, run });
         };
         let mut keep = |role: Role, text: String| {
-            titles.keep(mode, &mut session.items, position, role, text);
+            if !text.is_empty() {
+                session.items.push(Item {
+                    position,
+                    role,
+                    text,
+                });
+            }
         };
         match (record_type, subtype) {
             ("turn_context", _) => {
@@ -518,28 +503,26 @@ pub(super) fn parse(
                 if id.is_none_or(|id| tools.insert(id)) {
                     session.tool_calls += 1;
                 }
-                if mode == TextMode::Full {
-                    let input = ["arguments", "input", "action"]
-                        .iter()
-                        .find_map(|name| payload.get(*name))
-                        .map(|input| {
-                            input
-                                .as_str()
-                                .map_or_else(|| input.to_string(), str::to_string)
-                        });
-                    let name = payload["name"].as_str().unwrap_or(subtype);
-                    keep(
-                        Role::Tool,
-                        format!("{name} {}", input.unwrap_or_default())
-                            .trim()
-                            .to_string(),
-                    );
-                }
+                let input = ["arguments", "input", "action"]
+                    .iter()
+                    .find_map(|name| payload.get(*name))
+                    .map(|input| {
+                        input
+                            .as_str()
+                            .map_or_else(|| input.to_string(), str::to_string)
+                    });
+                let name = payload["name"].as_str().unwrap_or(subtype);
+                keep(
+                    Role::Tool,
+                    format!("{name} {}", input.unwrap_or_default())
+                        .trim()
+                        .to_string(),
+                );
             }
             ("response_item", _) if WORK.contains(&subtype) => signal(Signal::Activity, event_run),
             ("response_item", "message") if role == "assistant" => {
                 signal(Signal::Activity, event_run);
-                if mode == TextMode::Full && record["metadata"]["compaction_output"].is_null() {
+                if record["metadata"]["compaction_output"].is_null() {
                     keep(
                         Role::Assistant,
                         text(&payload["content"]).trim().to_string(),
@@ -606,7 +589,7 @@ mod tests {
     use super::*;
 
     fn parse(path: &Path, records: &[Value]) -> (Session, Option<Version>) {
-        super::parse(path, records, TextMode::Full, &mut Evidence::default())
+        super::parse(path, records, &mut Evidence::default())
     }
 
     const THREAD: &str = "00000037-0205-7016-8024-000000000001";
@@ -785,6 +768,29 @@ mod tests {
         let (session, _) = parse(&path(), &records);
         let ids: Vec<_> = session.usage.iter().map(|u| u.id.as_str()).collect();
         assert_eq!(ids, ["t1:100:7", "resp_b"]);
+    }
+
+    #[test]
+    fn repeating_the_first_turns_total_does_not_count_its_response_again() {
+        let mut repeated = tokens(5, 100, 7);
+        repeated["payload"]["turn_id"] = json!("t2");
+        let records = [
+            event("task_started", 1, json!({})),
+            json!({"type":"token_usage_record", "timestamp":"2026-01-01T00:00:02Z",
+                "payload":{"turn_id":"t1","response_id":"first",
+                    "usage":{"input_tokens":100,"output_tokens":7}}}),
+            tokens(2, 100, 7),
+            event("task_complete", 3, json!({})),
+            event("task_started", 4, json!({"turn_id":"t2"})),
+            repeated,
+        ];
+        let (session, _) = parse(&path(), &records);
+        assert_eq!(session.usage.len(), 1);
+        let usage = &session.usage[0];
+        assert_eq!(
+            (usage.id.as_str(), usage.input, usage.output),
+            ("first", 100, 7)
+        );
     }
 
     #[test]

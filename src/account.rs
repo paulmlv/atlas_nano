@@ -41,11 +41,6 @@ pub struct UsageCoverage {
 }
 
 impl UsageCoverage {
-    pub(crate) const RECORDED: Self = Self {
-        recorded: true,
-        missing: false,
-    };
-
     pub fn unknown(self) -> bool {
         self.missing && !self.recorded
     }

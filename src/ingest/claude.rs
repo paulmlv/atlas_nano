@@ -9,8 +9,8 @@ use serde_json::Value;
 use time::UtcDateTime;
 
 use super::timing::{self, Event, Signal};
-use super::{Evidence, Span, TextMode, TitleCandidates, known, optional_count, stem};
-use crate::model::{Client, Kind, Role, Session, SessionRef, Usage};
+use super::{Evidence, Span, known, optional_count, stem};
+use crate::model::{Client, Item, Kind, Role, Session, SessionRef, Usage};
 use crate::timestamp;
 
 const INTERRUPTIONS: [&str; 2] = [
@@ -114,27 +114,6 @@ fn is_turn(text: &str) -> bool {
     }
 }
 
-/// Discard bodies that an accounting-only read never uses. Keep block types and tool IDs for
-/// turn timing, usage evidence and tool counts.
-pub(super) fn discard_bodies(record: &mut Value) {
-    let assistant = record["type"] == "assistant";
-    if let Some(fields) = record.as_object_mut() {
-        fields.remove("toolUseResult");
-    }
-    if let Some(blocks) = record
-        .pointer_mut("/message/content")
-        .and_then(Value::as_array_mut)
-    {
-        for block in blocks {
-            if (assistant || matches!(block["type"].as_str(), Some("tool_result" | "image")))
-                && let Some(fields) = block.as_object_mut()
-            {
-                fields.retain(|key, _| matches!(key.as_str(), "type" | "id"));
-            }
-        }
-    }
-}
-
 fn recorded_owner(record: &Value) -> Option<&str> {
     record["forkedFrom"]["sessionId"]
         .as_str()
@@ -168,12 +147,7 @@ fn usage(record: &Value, at: UtcDateTime) -> Option<Usage> {
 /// Describe one transcript. A file under a `subagents` directory is a subagent of the session its
 /// records name, or else of the session whose directory holds it: a fork or resume can copy the
 /// file under another session. A fork is dated from its own records after the copied prefix.
-pub(super) fn parse(
-    path: &Path,
-    records: &[Value],
-    mode: TextMode,
-    evidence: &mut Evidence,
-) -> Session {
+pub(super) fn parse(path: &Path, records: &[Value], evidence: &mut Evidence) -> Session {
     let owner = path
         .ancestors()
         .find(|folder| folder.file_name().is_some_and(|name| name == "subagents"))
@@ -213,7 +187,6 @@ pub(super) fn parse(
     let mut seen: HashSet<&str> = HashSet::new();
     let mut tools: HashSet<&str> = HashSet::new();
     let mut usage_at: HashMap<String, usize> = HashMap::new();
-    let mut titles = TitleCandidates::default();
     let mut events: Vec<Event> = Vec::new();
     let mut last_complete: Option<&str> = None;
     let (mut custom_title, mut ai_title) = ("", "");
@@ -242,7 +215,13 @@ pub(super) fn parse(
             session.branch = known(&record["gitBranch"]);
         }
         let mut keep = |role: Role, text: String| {
-            titles.keep(mode, &mut session.items, position, role, text);
+            if !text.is_empty() {
+                session.items.push(Item {
+                    position,
+                    role,
+                    text,
+                });
+            }
         };
         let event = |signal: Signal| Event {
             signal,
@@ -292,7 +271,7 @@ pub(super) fn parse(
                 let reply = &record["message"];
                 for block in reply["content"].as_array().into_iter().flatten() {
                     match block["type"].as_str() {
-                        Some("text") if mode == TextMode::Full => {
+                        Some("text") => {
                             let text = block["text"].as_str().unwrap_or_default().trim();
                             keep(Role::Assistant, text.to_string());
                         }
@@ -300,10 +279,8 @@ pub(super) fn parse(
                             if block["id"].as_str().is_none_or(|id| tools.insert(id)) {
                                 session.tool_calls += 1;
                             }
-                            if mode == TextMode::Full {
-                                let name = block["name"].as_str().unwrap_or_default();
-                                keep(Role::Tool, format!("{name} {}", block["input"]));
-                            }
+                            let name = block["name"].as_str().unwrap_or_default();
+                            keep(Role::Tool, format!("{name} {}", block["input"]));
                         }
                         _ => {}
                     }
@@ -361,7 +338,6 @@ mod tests {
         parse(
             Path::new("/home/.claude/projects/p/abc.jsonl"),
             records,
-            TextMode::Full,
             &mut Evidence::default(),
         )
     }
@@ -445,7 +421,7 @@ mod tests {
                 "origin": {"kind": "human"}, "prompt": "also this"}}),
         ];
         let path = Path::new("/home/.claude/projects/p/parent-id/subagents/agent-1.jsonl");
-        let session = parse(path, &records, TextMode::Full, &mut Evidence::default());
+        let session = parse(path, &records, &mut Evidence::default());
         assert_eq!(
             rendered(&session),
             [
