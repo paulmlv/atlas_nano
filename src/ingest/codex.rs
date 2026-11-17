@@ -47,7 +47,7 @@ enum UsageTurn<'a> {
 struct TurnReadings<'a> {
     first_reply: Option<usize>,
     reply_ids: Vec<(&'a str, usize)>,
-    per_response: bool,
+    per_response: Vec<&'a str>,
     bad_response: bool,
     running_totals: Vec<usize>,
     bad_totals: Vec<(Option<String>, usize)>,
@@ -61,63 +61,46 @@ impl<'a> TurnReadings<'a> {
             .chain(earlier.first_reply)
             .min();
         self.reply_ids.extend(earlier.reply_ids);
-        self.per_response |= earlier.per_response;
+        self.per_response.extend(earlier.per_response);
         self.bad_response |= earlier.bad_response;
         self.running_totals.extend(earlier.running_totals);
         self.bad_totals.extend(earlier.bad_totals);
     }
 }
 
-/// A resumed rollout can contain both formats in the same turn. Prefer readable response
-/// records and keep the running-total readings only in turns without a usable response record.
-fn finish_usage(
-    turns: HashMap<UsageTurn, TurnReadings>,
-    usage: &mut Vec<Usage>,
-    evidence: &mut Evidence,
-) {
-    let mut replaced = HashSet::new();
+/// Keep both identities until the selected rollouts can be checked for copies of each reading.
+fn finish_usage(thread: &str, turns: HashMap<UsageTurn, TurnReadings>, evidence: &mut Evidence) {
     for (scope, turn) in turns {
         let id = match scope {
-            UsageTurn::Named(id) => Some(id),
+            UsageTurn::Named(id) => Some(format!("{thread}:{id}")),
             UsageTurn::Unnamed(_) => None,
         };
+        let per_response = !turn.per_response.is_empty();
         let legacy = !turn.running_totals.is_empty();
-        if turn.per_response || legacy {
-            evidence.measured_turns.extend(id.map(str::to_owned));
+        if per_response || legacy {
+            evidence.measured_turns.extend(id);
         } else if !turn.bad_response
             && turn.bad_totals.is_empty()
             && turn.reply_ids.is_empty()
             && let Some(line) = turn.first_reply
         {
-            evidence.missing_turn(id, line);
+            evidence.missing_turn(id.as_deref(), line);
         }
-        if legacy && !turn.per_response && !turn.reply_ids.is_empty() {
-            let totals = turn
-                .running_totals
-                .iter()
-                .map(|&n| usage[n].id.clone())
-                .collect();
-            evidence.legacy_turn(turn.reply_ids, totals);
-        } else {
-            for (id, line) in turn.reply_ids {
+        if per_response || !legacy {
+            for &(id, line) in &turn.reply_ids {
                 evidence.missing_response(Some(id), None, line);
             }
         }
-        if turn.per_response {
-            replaced.extend(turn.running_totals);
-        } else {
+        if legacy {
+            let mut responses = turn.per_response;
+            responses.extend(turn.reply_ids.into_iter().map(|(id, _)| id));
+            evidence.legacy_turn(responses, turn.running_totals);
+        }
+        if !per_response {
             for (id, line) in turn.bad_totals {
                 evidence.missing_response(id.as_deref(), None, line);
             }
         }
-    }
-    if !replaced.is_empty() {
-        let mut index = 0;
-        usage.retain(|_| {
-            let keep = !replaced.contains(&index);
-            index += 1;
-            keep
-        });
     }
 }
 
@@ -313,6 +296,17 @@ pub(super) fn parse(
         usage_missing: false,
     };
     let mut span = Span::default();
+    // Edits share their filename's thread. A fork in a new thread can name its source explicitly.
+    let usage_thread = if thread == session.id {
+        session
+            .history_base
+            .as_ref()
+            .map(|base| base.rollout.as_str())
+            .or_else(|| meta["forked_from_id"].as_str())
+            .unwrap_or(&thread)
+    } else {
+        &thread
+    };
     let mut events: Vec<Event> = Vec::new();
     let mut run: Option<String> = None; // the run later records belong to
     let mut turn: Option<&str> = None; // the recorded run, which a fork's copy keeps
@@ -459,7 +453,11 @@ pub(super) fn parse(
                         unknown_model.push((session.usage.len(), id));
                     }
                     session.usage.push(reported);
-                    readings.entry(scope).or_default().per_response = true;
+                    readings
+                        .entry(scope)
+                        .or_default()
+                        .per_response
+                        .push(response);
                 } else {
                     let reading = readings.entry(scope).or_default();
                     reading.bad_response = true;
@@ -486,12 +484,12 @@ pub(super) fn parse(
                         continue;
                     }
                     let id = format!(
-                        "{}:{}:{}",
-                        turn_id.unwrap_or(&thread),
+                        "{usage_thread}:{}:{}:{}",
+                        turn_id.unwrap_or_default(),
                         total["input_tokens"],
                         total["output_tokens"]
                     );
-                    if running && !readings.get(&scope).is_some_and(|r| r.per_response) {
+                    if running {
                         let reading = readings.entry(scope).or_default();
                         if let Some(reported) = usage(&id, &info["last_token_usage"], at, &model) {
                             reading.running_totals.push(session.usage.len());
@@ -607,7 +605,7 @@ pub(super) fn parse(
             None => session.usage[index].model.clear(),
         }
     }
-    finish_usage(readings, &mut session.usage, evidence);
+    finish_usage(usage_thread, readings, evidence);
     (session.started, session.ended) = span.bounds();
     session.turns = timing::turns(&events);
     let version = header
@@ -627,7 +625,13 @@ mod tests {
     use super::*;
 
     fn parse(path: &Path, records: &[Value]) -> (Session, Option<Version>) {
-        super::parse(path, records, &mut Evidence::default())
+        let mut evidence = Evidence::default();
+        let (mut session, version) = super::parse(path, records, &mut evidence);
+        crate::ingest::completeness::count_requests_once(
+            std::slice::from_mut(&mut session),
+            std::slice::from_ref(&evidence),
+        );
+        (session, version)
     }
 
     const THREAD: &str = "00000037-0205-7016-8024-000000000001";
@@ -805,7 +809,7 @@ mod tests {
         ];
         let (session, _) = parse(&path(), &records);
         let ids: Vec<_> = session.usage.iter().map(|u| u.id.as_str()).collect();
-        assert_eq!(ids, ["t1:100:7", "resp_b"]);
+        assert_eq!(ids, [format!("{THREAD}:t1:100:7"), "resp_b".into()]);
     }
 
     #[test]
@@ -865,7 +869,7 @@ mod tests {
                 .iter()
                 .map(|u| u.id.as_str())
                 .collect::<Vec<_>>(),
-            ["t1:30:7"]
+            [format!("{THREAD}:t1:30:7")]
         );
         // Explicit response IDs can arrive without a turn ID. They still belong to this task.
         rows.push(
@@ -909,7 +913,7 @@ mod tests {
             tokens(3, 100, 7),
         ];
         let (session, _) = parse(&path(), &records);
-        assert_eq!(session.usage[0].id, "t1:100:7");
+        assert_eq!(session.usage[0].id, format!("{THREAD}:t1:100:7"));
     }
 
     #[test]

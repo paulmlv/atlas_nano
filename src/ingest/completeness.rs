@@ -19,8 +19,8 @@ struct Gap {
 
 /// A legacy turn may also appear in a newer copy with per-response measurements.
 struct LegacyTurn {
-    responses: Vec<(String, usize)>,
-    totals: Vec<String>,
+    responses: Vec<String>,
+    totals: Vec<usize>,
 }
 
 #[derive(Default)]
@@ -31,12 +31,14 @@ pub(super) struct Evidence {
 }
 
 impl Evidence {
-    pub fn legacy_turn(&mut self, replies: Vec<(&str, usize)>, totals: Vec<String>) {
+    pub fn legacy_turn(&mut self, mut replies: Vec<&str>, totals: Vec<usize>) {
+        if replies.is_empty() {
+            return;
+        }
+        replies.sort_unstable();
+        replies.dedup();
         self.legacy.push(LegacyTurn {
-            responses: replies
-                .into_iter()
-                .map(|(id, line)| (id.to_owned(), line))
-                .collect(),
+            responses: replies.into_iter().map(str::to_owned).collect(),
             totals,
         });
     }
@@ -80,7 +82,7 @@ type Owners = HashMap<Client, HashMap<String, (usize, usize)>>;
 /// keeps the request. A request repeated within one session also counts once.
 pub(super) fn count_requests_once(
     sessions: &mut [Session],
-    evidence: &mut [Evidence],
+    evidence: &[Evidence],
 ) -> Vec<Option<usize>> {
     let mut owners = Owners::new();
     for (index, session) in sessions.iter().enumerate() {
@@ -96,7 +98,7 @@ pub(super) fn count_requests_once(
             }
         }
     }
-    prefer_response_records(evidence, &mut owners);
+    deduplicate_running_totals(sessions, evidence, &mut owners);
     let lines = resolve_gaps(sessions, evidence, &owners);
     for (index, session) in sessions.iter_mut().enumerate() {
         let owner = &owners[&session.client];
@@ -109,27 +111,40 @@ pub(super) fn count_requests_once(
     lines
 }
 
-/// A response ID ties a fork's per-response measurement to a legacy fallback. Turn names alone can repeat
-/// in unrelated rollouts.
-fn prefer_response_records(evidence: &mut [Evidence], requests: &mut Owners) {
+/// A copied response can have two IDs: a cumulative token count and an explicit response ID.
+/// When only part of the turn has per-response readings, remove one matching count per response.
+fn deduplicate_running_totals(sessions: &[Session], evidence: &[Evidence], requests: &mut Owners) {
     let Some(readings) = requests.get_mut(&Client::Codex) else {
         return;
     };
-    for source in evidence {
-        for legacy in std::mem::take(&mut source.legacy) {
-            if legacy
+    let mut replaced = HashSet::new();
+    for (session, source) in sessions.iter().zip(evidence) {
+        for legacy in &source.legacy {
+            let measured: Vec<_> = legacy
                 .responses
                 .iter()
-                .any(|(id, _)| readings.contains_key(id))
-            {
-                for id in legacy.totals {
-                    readings.remove(&id);
-                }
-                for (id, line) in legacy.responses {
-                    source.missing_response(Some(&id), None, line);
+                .filter_map(|id| readings.get(id))
+                .map(|&(s, r)| &sessions[s].usage[r])
+                .collect();
+            if measured.is_empty() {
+                continue;
+            }
+            let mut remaining: Vec<_> = legacy.totals.iter().map(|&n| &session.usage[n]).collect();
+            if measured.len() == legacy.responses.len() && measured.len() >= remaining.len() {
+                replaced.extend(remaining.iter().map(|u| u.id.as_str()));
+            } else {
+                for response in measured {
+                    if let Some(index) = remaining.iter().position(|u| {
+                        u.prompt() == response.prompt() && u.output == response.output
+                    }) {
+                        replaced.insert(remaining.remove(index).id.as_str());
+                    }
                 }
             }
         }
+    }
+    for id in replaced {
+        readings.remove(id);
     }
 }
 

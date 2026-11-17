@@ -271,7 +271,7 @@ pub fn load(home: &Path, clients: &[Client]) -> Loaded {
         files.push((copy.path, copy.issues));
     }
     codex::link_parents(&mut sessions, &versions);
-    let missing = completeness::count_requests_once(&mut sessions, &mut evidence);
+    let missing = completeness::count_requests_once(&mut sessions, &evidence);
     let mut issues = Vec::new();
     for (n, ((path, mut records), line)) in files.into_iter().zip(missing).enumerate() {
         if let Some(line) = line {
@@ -472,7 +472,7 @@ mod tests {
         // A replayed request within one session.
         parent.usage.push(parent.usage[0].clone());
         let mut sessions = vec![fork, parent];
-        completeness::count_requests_once(&mut sessions, &mut []);
+        completeness::count_requests_once(&mut sessions, &[]);
         assert!(sessions[0].usage.is_empty());
         let ids: Vec<&str> = sessions[1]
             .usage
@@ -811,12 +811,91 @@ mod tests {
         assert_eq!(
             usage,
             [
+                (false, format!("{old}:t1:10:1")),
                 (false, "resp_old".to_string()),
-                (false, "t1:10:1".to_string()),
+                (true, format!("{old}:t1:10:2")),
                 (true, "resp_new".to_string()),
-                (true, "t1:10:2".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn mixed_codex_forks_count_each_reading_once_and_keep_unrelated_gaps() {
+        let home = home("mixed-fork-usage");
+        let folder = home.join(".codex/sessions");
+        let row = |kind, payload: Value| json!({"type":kind,"timestamp":"2026-01-01T00:00:01Z","payload":payload});
+        let start = row("event_msg", json!({"type":"task_started","turn_id":"t"}));
+        let reply = |id: Option<&str>| {
+            row(
+                "response_item",
+                json!({
+                    "type":"message","role":"assistant","response_id":id
+                }),
+            )
+        };
+        let total = |last: u64, sum: u64| {
+            row(
+                "event_msg",
+                json!({
+                    "type":"token_count","info":{"last_token_usage":{"input_tokens":last,"output_tokens":last/10},
+                    "total_token_usage":{"input_tokens":sum,"output_tokens":sum/10}}
+                }),
+            )
+        };
+        let modern = row(
+            "token_usage_record",
+            json!({
+                "response_id":"first","usage":{"input_tokens":100,"output_tokens":10}
+            }),
+        );
+        let save = |name: &str, rows: &[Value]| {
+            write(&folder.join(format!("{name}.jsonl")), rows, false);
+        };
+        save(
+            "parent",
+            &[
+                start.clone(),
+                reply(Some("first")),
+                total(100, 100),
+                reply(Some("second")),
+                total(300, 400),
+            ],
+        );
+        save("parent_fork", &[start.clone(), modern]);
+
+        // A different thread has the same turn name and running total. Its fork explicitly
+        // identifies the response even though the parent's damaged record has no response ID.
+        let damaged = row("token_usage_record", json!({"usage":{"input_tokens":100}}));
+        save(
+            "another",
+            &[start.clone(), reply(None), total(100, 100), damaged],
+        );
+        let measured = row(
+            "token_usage_record",
+            json!({
+                "response_id":"another-first","usage":{"input_tokens":100,"output_tokens":10}
+            }),
+        );
+        save("another_edit", &[start.clone(), measured, total(100, 100)]);
+        save("unrelated", &[start.clone(), reply(None)]);
+        save("independent", &[start, total(100, 100)]);
+
+        let loaded = load(&home, &[Client::Codex]);
+        fs::remove_dir_all(home).unwrap();
+        let reading = |id| {
+            let s = loaded.sessions.iter().find(|s| s.id == id).unwrap();
+            (
+                s.usage.iter().map(|u| u.input).sum::<u64>(),
+                s.usage.iter().map(|u| u.output).sum::<u64>(),
+                s.usage_missing,
+            )
+        };
+        assert_eq!(reading("parent"), (300, 30, false));
+        assert_eq!(reading("fork"), (100, 10, false));
+        assert_eq!(reading("another"), (0, 0, true));
+        assert_eq!(reading("edit"), (100, 10, false));
+        assert_eq!(reading("unrelated"), (0, 0, true));
+        assert_eq!(reading("independent"), (100, 10, false));
     }
 
     #[test]

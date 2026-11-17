@@ -83,9 +83,11 @@ status.
 
 Claude can write several blocks for one response, and forks can repeat a response. One readable
 measurement covers that response. Codex can record usage per response or, in older logs, through
-running totals. Atlas checks for model output in turns with no readable measurement and for
-malformed usage records. When the log identifies only the turn, Atlas cannot establish how many
-individual responses a measurement covers. A recorded zero is valid usage.
+running totals. If a fork supplies only some per-response counts, the other recorded counts still
+contribute to spend. Unrelated threads can reuse a turn name without hiding each other's gaps. Atlas
+checks for model output in turns with no readable measurement and for malformed usage records. When
+the log identifies only the turn, Atlas cannot establish how many individual responses a measurement
+covers. A recorded zero is valid usage.
 
 Warnings on standard error identify the file and line of malformed records and the first unresolved
 usage gap in each affected session. An unfinished final JSON record is identified separately because
