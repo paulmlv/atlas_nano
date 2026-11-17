@@ -99,5 +99,12 @@ Labels are stored in `~/.cache/atlas-nano/labels.jsonl`, or under `$XDG_CACHE_HO
 set. A stored label is reused only when everything sent to the labeler (the instructions, the label
 lists, the answer schema, and the conversation's text), the labeler, its effort, the unit and the
 Atlas Nano version are unchanged, so a conversation that grew, any change to the prompt, or a new
-release labels it again. A session whose call failed is not stored, so the next run tries it again.
-When the file cannot be written, the run warns once and its new labels are not stored.
+release labels it again.
+
+For now, invalidating labels on every release is deliberate, even when the release does not change
+the labeling prompt. The next labeling run relabels the eligible sessions in its selected period
+using the new release and consumes model usage through the chosen client. `--no-label` still makes
+no model calls.
+
+A session whose call failed is not stored, so the next run tries it again. When the file cannot be
+written, the run warns once and its new labels are not stored.
