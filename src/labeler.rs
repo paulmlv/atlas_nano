@@ -523,7 +523,7 @@ mod tests {
 
     #[test]
     fn an_inherited_pipe_cannot_delay_a_finished_answer() {
-        let command = shell("sleep 3 & printf answer; printf warning >&2");
+        let command = shell("(sleep 3; printf late) & printf answer; printf warning >&2");
         let (ok, out, err) = run(command, "", Duration::from_secs(1)).unwrap();
         assert!(ok);
         assert_eq!(out, "answer");
