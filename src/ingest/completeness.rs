@@ -17,16 +17,33 @@ struct Gap {
     line: usize,
 }
 
+/// A legacy turn may also appear in a newer copy with per-response measurements.
+struct LegacyTurn {
+    responses: Vec<(String, usize)>,
+    totals: Vec<String>,
+}
+
 #[derive(Default)]
 pub(super) struct Evidence {
     gaps: Vec<Gap>,
     pub measured_turns: HashSet<String>,
+    legacy: Vec<LegacyTurn>,
 }
 
 impl Evidence {
+    pub fn legacy_turn(&mut self, replies: Vec<(&str, usize)>, totals: Vec<String>) {
+        self.legacy.push(LegacyTurn {
+            responses: replies
+                .into_iter()
+                .map(|(id, line)| (id.to_owned(), line))
+                .collect(),
+            totals,
+        });
+    }
+
     /// Use a shorter copy only for responses that appear in the chosen transcript.
     pub fn recover_from_copy(&self, session: &mut Session, other: Vec<Usage>) {
-        if self.gaps.is_empty() || other.is_empty() {
+        if (self.gaps.is_empty() && self.legacy.is_empty()) || other.is_empty() {
             return;
         }
         let mut wanted: HashSet<&str> = self
@@ -36,6 +53,11 @@ impl Evidence {
                 Some(Key::Response(id)) => Some(id.as_str()),
                 _ => None,
             })
+            .chain(
+                self.legacy
+                    .iter()
+                    .flat_map(|turn| turn.responses.iter().map(|(id, _)| id.as_str())),
+            )
             .collect();
         for usage in &session.usage {
             wanted.remove(usage.id.as_str());
@@ -84,7 +106,7 @@ type Owners = HashMap<Client, HashMap<String, (usize, usize)>>;
 /// keeps the request. A request repeated within one session also counts once.
 pub(super) fn count_requests_once(
     sessions: &mut [Session],
-    evidence: &[Evidence],
+    evidence: &mut [Evidence],
 ) -> Vec<Option<usize>> {
     let mut owners = Owners::new();
     for (index, session) in sessions.iter().enumerate() {
@@ -100,15 +122,41 @@ pub(super) fn count_requests_once(
             }
         }
     }
+    prefer_response_records(evidence, &mut owners);
     let lines = resolve_gaps(sessions, evidence, &mut owners);
     for (index, session) in sessions.iter_mut().enumerate() {
         let owner = &owners[&session.client];
         let mut seen = HashSet::new();
-        session
-            .usage
-            .retain(|usage| owner[&usage.id].0 == index && seen.insert(usage.id.clone()));
+        session.usage.retain(|usage| {
+            owner.get(&usage.id).is_some_and(|held| held.0 == index)
+                && seen.insert(usage.id.clone())
+        });
     }
     lines
+}
+
+/// A response ID ties a recovered measurement to a legacy fallback. Turn names alone can repeat
+/// in unrelated rollouts.
+fn prefer_response_records(evidence: &mut [Evidence], requests: &mut Owners) {
+    let Some(readings) = requests.get_mut(&Client::Codex) else {
+        return;
+    };
+    for source in evidence {
+        for legacy in std::mem::take(&mut source.legacy) {
+            if legacy
+                .responses
+                .iter()
+                .any(|(id, _)| readings.contains_key(id))
+            {
+                for id in legacy.totals {
+                    readings.remove(&id);
+                }
+                for (id, line) in legacy.responses {
+                    source.missing_response(Some(&id), None, line);
+                }
+            }
+        }
+    }
 }
 
 /// Return the first unresolved usage gap in each session. Streaming blocks, resumed sessions,

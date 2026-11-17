@@ -53,6 +53,21 @@ struct TurnReadings<'a> {
     bad_totals: Vec<(Option<String>, usize)>,
 }
 
+impl<'a> TurnReadings<'a> {
+    fn include(&mut self, earlier: Self) {
+        self.first_reply = self
+            .first_reply
+            .into_iter()
+            .chain(earlier.first_reply)
+            .min();
+        self.reply_ids.extend(earlier.reply_ids);
+        self.per_response |= earlier.per_response;
+        self.bad_response |= earlier.bad_response;
+        self.running_totals.extend(earlier.running_totals);
+        self.bad_totals.extend(earlier.bad_totals);
+    }
+}
+
 /// A resumed rollout can contain both formats in the same turn. Prefer readable response
 /// records and keep the running-total readings only in turns without a usable response record.
 fn finish_usage(
@@ -66,15 +81,24 @@ fn finish_usage(
             UsageTurn::Named(id) => Some(id),
             UsageTurn::Unnamed(_) => None,
         };
-        if turn.per_response || !turn.running_totals.is_empty() {
+        let legacy = !turn.running_totals.is_empty();
+        if turn.per_response || legacy {
             evidence.measured_turns.extend(id.map(str::to_owned));
         } else if !turn.bad_response
             && turn.bad_totals.is_empty()
+            && turn.reply_ids.is_empty()
             && let Some(line) = turn.first_reply
         {
             evidence.missing_turn(id, line);
         }
-        if turn.per_response || turn.bad_response {
+        if legacy && !turn.per_response && !turn.reply_ids.is_empty() {
+            let totals = turn
+                .running_totals
+                .iter()
+                .map(|&n| usage[n].id.clone())
+                .collect();
+            evidence.legacy_turn(turn.reply_ids, totals);
+        } else {
             for (id, line) in turn.reply_ids {
                 evidence.missing_response(Some(id), None, line);
             }
@@ -326,8 +350,18 @@ pub(super) fn parse(
                     .or_else(|| Some(format!("record {position}")));
                 run_closed = false;
             }
-            ("turn_context", _) if payload["turn_id"].is_string() => {
-                turn = payload["turn_id"].as_str();
+            ("turn_context", _) if let Some(id) = payload["turn_id"].as_str() => {
+                // Some clients send the task ID after its first usage events.
+                if running
+                    && turn.is_none()
+                    && let Some(early) = readings.remove(&UsageTurn::Unnamed(anonymous_start))
+                {
+                    readings
+                        .entry(UsageTurn::Named(id))
+                        .or_default()
+                        .include(early);
+                }
+                turn = Some(id);
                 run = turn.map(str::to_owned);
                 run_closed = false;
             }
@@ -427,7 +461,11 @@ pub(super) fn parse(
                     session.usage.push(reported);
                     readings.entry(scope).or_default().per_response = true;
                 } else {
-                    readings.entry(scope).or_default().bad_response = true;
+                    let reading = readings.entry(scope).or_default();
+                    reading.bad_response = true;
+                    if let Some(id) = id {
+                        reading.reply_ids.push((id, line_number));
+                    }
                     evidence.missing_response(id, None, line_number);
                 }
             }
@@ -768,6 +806,24 @@ mod tests {
         let (session, _) = parse(&path(), &records);
         let ids: Vec<_> = session.usage.iter().map(|u| u.id.as_str()).collect();
         assert_eq!(ids, ["t1:100:7", "resp_b"]);
+    }
+
+    #[test]
+    fn a_late_turn_id_unites_legacy_and_per_response_usage() {
+        let mut legacy = tokens(2, 100, 7);
+        legacy["payload"].as_object_mut().unwrap().remove("turn_id");
+        let rows = [
+            event("task_started", 1, json!({"turn_id":null})),
+            legacy,
+            json!({"type":"turn_context","payload":{"turn_id":"named","model":"gpt-6-luna"}}),
+            json!({"type":"token_usage_record","timestamp":"2026-01-01T00:00:04Z",
+                "payload":{"turn_id":"named","response_id":"first","usage":{"input_tokens":100,"output_tokens":7}}}),
+            event("task_complete", 5, json!({"turn_id":"named"})),
+        ];
+        let (session, _) = parse(&path(), &rows);
+        assert_eq!(session.usage.len(), 1);
+        assert_eq!(session.usage[0].id, "first");
+        assert_eq!((session.usage[0].input, session.usage[0].output), (100, 7));
     }
 
     #[test]

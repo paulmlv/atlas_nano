@@ -265,7 +265,7 @@ pub fn load(home: &Path, clients: &[Client]) -> Loaded {
         files.push((copy.path, copy.issues));
     }
     codex::link_parents(&mut sessions, &versions);
-    let missing = completeness::count_requests_once(&mut sessions, &evidence);
+    let missing = completeness::count_requests_once(&mut sessions, &mut evidence);
     let mut issues = Vec::new();
     for (n, ((path, mut records), line)) in files.into_iter().zip(missing).enumerate() {
         if let Some(line) = line {
@@ -464,7 +464,7 @@ mod tests {
         // A replayed request within one session.
         parent.usage.push(parent.usage[0].clone());
         let mut sessions = vec![fork, parent];
-        completeness::count_requests_once(&mut sessions, &[]);
+        completeness::count_requests_once(&mut sessions, &mut []);
         assert!(sessions[0].usage.is_empty());
         let ids: Vec<&str> = sessions[1]
             .usage
@@ -614,6 +614,57 @@ mod tests {
         fs::remove_dir_all(&home).unwrap();
         let ids: Vec<_> = sessions[0].usage.iter().map(|u| u.id.as_str()).collect();
         assert_eq!(ids, ["m1", "m2"]);
+    }
+
+    #[test]
+    fn codex_copies_recover_identified_responses_once_with_or_without_legacy_totals() {
+        let home = home("codex-complementary-copies");
+        let sessions = home.join(".codex/sessions");
+        let archive = home.join(".codex/archived_sessions");
+        for legacy in [false, true] {
+            let id = if legacy { "mixed" } else { "unmeasured" };
+            let at = "2026-01-01T00:00:01Z";
+            let row =
+                |kind, payload: Value| json!({"type":kind, "timestamp":at, "payload":payload});
+            let counts = json!({"input_tokens":100, "output_tokens":7});
+            let mut chosen = vec![
+                row("event_msg", json!({"type":"task_started","turn_id":id})),
+                row(
+                    "response_item",
+                    json!({"type":"message","role":"assistant","turn_id":id,"response_id":id}),
+                ),
+            ];
+            if legacy {
+                chosen.push(row(
+                    "event_msg",
+                    json!({"type":"token_count","turn_id":id,"info":{
+                    "last_token_usage":counts, "total_token_usage":counts}}),
+                ));
+                chosen.push(row(
+                    "token_usage_record",
+                    json!({"turn_id":id,"response_id":id,"usage":{}}),
+                ));
+            }
+            write(&sessions.join(format!("{id}.jsonl")), &chosen, false);
+            write(
+                &archive.join(format!("{id}.jsonl")),
+                &[row(
+                    "token_usage_record",
+                    json!({"turn_id":id,"response_id":id,"usage":counts}),
+                )],
+                false,
+            );
+        }
+        let loaded = load(&home, &[Client::Codex]);
+        fs::remove_dir_all(home).unwrap();
+        assert_eq!(loaded.sessions.len(), 2);
+        for session in loaded.sessions {
+            assert_eq!(session.usage.len(), 1, "{}", session.id);
+            let usage = &session.usage[0];
+            assert_eq!(usage.id, session.id);
+            assert_eq!((usage.input, usage.output), (100, 7));
+            assert!(!session.usage_missing, "{}", session.id);
+        }
     }
 
     #[test]
