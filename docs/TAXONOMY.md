@@ -3,8 +3,8 @@
 Atlas Nano gives each conversation one type of work and one topic, chosen by a labeling model from
 fixed lists. This page describes how labeling works and the pull request mapping. The lists and
 their definitions are in [prompts/labels.md](../prompts/labels.md), and the rules the model follows
-are in the [labeling prompt](../prompts/label.md). The [manual review](#manual-review) checks the
-labels against a person's choices.
+are in the [labeling prompt](../prompts/label.md). The [manual review](#manual-review) checks two
+models' labels against a person's choices.
 
 ## How labeling works
 
@@ -43,9 +43,10 @@ labels against a person's choices.
 
 ## Manual review
 
-On 2026-11-17, GPT-6.2 Astra and Claude Opus 5.5 labeled the same 100 conversations, sampled by
-spend from one person's history. That person reviewed 20 of them at random without knowing which
-model gave which labels, then revisited six cases after seeing the models.
+On 2026-11-17, GPT-6.2 Astra and Claude Opus 5.5 labeled the same 100 conversations from one
+person's history, sampled with spend as the weight. That person reviewed 20 of them at random
+without knowing which model gave which labels, then revisited six cases once the models were
+revealed.
 
 | Accepted, of 20 | Pairs (blind) | Pairs | Topics | Types of work |
 | --------------- | ------------: | ----: | -----: | ------------: |
