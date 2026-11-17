@@ -2,24 +2,23 @@
 //!
 //! The command lines are the required flags in `docs/LABELING.md`.
 
-mod process;
-
 use std::fs;
-use std::io::{self, Read as _};
-use std::os::unix::fs::OpenOptionsExt as _;
+use std::io::{self, Read, Write as _};
+use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use rust_decimal::Decimal;
+use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
 use serde_json::{Value, json};
 
 use crate::model::{Client, PrRole, PullRequest};
 use crate::prompt::Prompt;
 use crate::taxonomy::Taxonomy;
-use process::{OUTPUT_LIMIT, RESPONSE_TIMEOUT, check_deadline, run};
 
 /// The reasoning effort of every labeling call. It is part of the label cache key.
 pub const EFFORT: &str = "medium";
@@ -203,24 +202,123 @@ fn answer(value: &Value, schema: &Value) -> Result<Answer, Failure> {
     })
 }
 
-/// Codex writes its answer in the private call folder. Bound the read even if the file grows.
-fn read_answer(path: &Path) -> io::Result<String> {
-    let file = fs::File::options()
-        .read(true)
-        .custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32)
-        .open(path)?;
-    if !file.metadata()?.is_file() {
-        return Err(io::Error::other("expected a regular file"));
+/// How long one labeling call may run before it is stopped and its session left unlabeled.
+const TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Maximum bytes collected from each output pipe.
+const OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
+
+/// Reap the direct client on every return path, including a timeout or an I/O error.
+struct ClientProcess(Child);
+
+impl Drop for ClientProcess {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
     }
-    let mut text = String::new();
-    file.take(OUTPUT_LIMIT as u64 + 1)
-        .read_to_string(&mut text)?;
-    if text.len() > OUTPUT_LIMIT {
-        return Err(io::Error::other(format!(
-            "answer file exceeded {OUTPUT_LIMIT} bytes"
-        )));
+}
+
+fn nonblocking(pipe: &Option<impl AsFd>) -> io::Result<()> {
+    let pipe = pipe.as_ref().expect("client stdio is piped");
+    fcntl_setfl(pipe, fcntl_getfl(pipe)? | OFlags::NONBLOCK)?;
+    Ok(())
+}
+
+/// Read one chunk per pass so both pipes and the deadline get a turn. Once the client exits,
+/// its bytes are already buffered, even if a helper still holds the write end open.
+fn read_pipe(
+    pipe: &mut Option<impl Read>,
+    bytes: &mut Vec<u8>,
+    name: &str,
+    exited: bool,
+) -> io::Result<bool> {
+    let Some(source) = pipe else { return Ok(false) };
+    let mut buffer = [0; 8192];
+    match source.read(&mut buffer) {
+        Ok(0) => *pipe = None,
+        Ok(count) if bytes.len() + count > OUTPUT_LIMIT => {
+            return Err(io::Error::other(format!(
+                "{name} exceeded {OUTPUT_LIMIT} bytes"
+            )));
+        }
+        Ok(count) => bytes.extend_from_slice(&buffer[..count]),
+        Err(e) if exited && e.kind() == io::ErrorKind::WouldBlock => *pipe = None,
+        Err(e)
+            if matches!(
+                e.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+            ) =>
+        {
+            return Ok(false);
+        }
+        Err(error) => return Err(error),
     }
-    Ok(text)
+    Ok(true)
+}
+
+/// Send the prompt and collect stdout and stderr without blocking on any one pipe.
+fn run(
+    mut command: Command,
+    input: &str,
+    timeout: Duration,
+) -> Result<(bool, String, String), Failure> {
+    let program = command.get_program().to_string_lossy().into_owned();
+    let failed = |error| Failure::Rejected(format!("`{program}`: {error}"));
+    let deadline = Instant::now() + timeout;
+    let child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| Failure::Rejected(format!("could not run `{program}`: {error}")))?;
+    let mut child = ClientProcess(child);
+    let mut stdin = child.0.stdin.take();
+    let mut stdout = child.0.stdout.take();
+    let mut stderr = child.0.stderr.take();
+    nonblocking(&stdin).map_err(failed)?;
+    nonblocking(&stdout).map_err(failed)?;
+    nonblocking(&stderr).map_err(failed)?;
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let mut remaining = input.as_bytes();
+    loop {
+        let status = child.0.try_wait().map_err(failed)?;
+        let exited = status.is_some();
+        if !exited && Instant::now() >= deadline {
+            return Err(Failure::Rejected(format!(
+                "`{program}` was stopped after {timeout:?}"
+            )));
+        }
+        let mut progressed = false;
+        if remaining.is_empty() || exited {
+            stdin = None;
+        } else if let Some(pipe) = &mut stdin {
+            match pipe.write(remaining) {
+                Ok(count) => {
+                    remaining = &remaining[count..];
+                    progressed = count > 0;
+                }
+                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => stdin = None,
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                    ) => {}
+                Err(error) => return Err(failed(error)),
+            }
+        }
+        progressed |= read_pipe(&mut stdout, &mut out, "stdout", exited).map_err(failed)?;
+        progressed |= read_pipe(&mut stderr, &mut err, "stderr", exited).map_err(failed)?;
+        if let Some(status) = status
+            && stdout.is_none()
+            && stderr.is_none()
+        {
+            let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
+            return Ok((status.success(), text(&out), text(&err)));
+        }
+        if !progressed {
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
 }
 
 /// Per-call files are removed on every return path, including a spawn failure or timeout.
@@ -246,21 +344,15 @@ fn last_line(text: &str) -> &str {
 impl Labeler<'_> {
     /// Label one conversation, already rendered and wrapped as the prompt.
     pub fn call(&self, prompt: &str) -> Call {
-        let deadline = Instant::now() + RESPONSE_TIMEOUT;
         let mut spent = Spent::default();
         let answer = match self.client {
-            Client::Claude => self.claude(prompt, &mut spent, deadline),
-            Client::Codex => self.codex(prompt, &mut spent, deadline),
+            Client::Claude => self.claude(prompt, &mut spent),
+            Client::Codex => self.codex(prompt, &mut spent),
         };
         Call { answer, spent }
     }
 
-    fn claude(
-        &self,
-        prompt: &str,
-        spent: &mut Spent,
-        deadline: Instant,
-    ) -> Result<Answer, Failure> {
+    fn claude(&self, prompt: &str, spent: &mut Spent) -> Result<Answer, Failure> {
         let mut command = Command::new("claude");
         // Without this, an `@path` in the conversation makes Claude Code attach that file.
         command.env("CLAUDE_CODE_DISABLE_ATTACHMENTS", "1");
@@ -284,7 +376,7 @@ impl Labeler<'_> {
             "--json-schema",
             &self.schema.to_string(),
         ]);
-        let (succeeded, stdout, stderr) = run(command, prompt, deadline)?;
+        let (succeeded, stdout, stderr) = run(command, prompt, TIMEOUT)?;
         let result: Value = serde_json::from_str(stdout.trim()).unwrap_or(Value::Null);
         let usage = &result["usage"];
         let count = |name: &str| usage[name].as_u64().unwrap_or(0);
@@ -306,7 +398,7 @@ impl Labeler<'_> {
         answer(&result["structured_output"], &self.schema)
     }
 
-    fn codex(&self, prompt: &str, spent: &mut Spent, deadline: Instant) -> Result<Answer, Failure> {
+    fn codex(&self, prompt: &str, spent: &mut Spent) -> Result<Answer, Failure> {
         // Each call has its own files, so parallel calls never read a file another is writing.
         static CALLS: AtomicU64 = AtomicU64::new(0);
         let unique = CALLS.fetch_add(1, Ordering::Relaxed);
@@ -356,19 +448,13 @@ impl Labeler<'_> {
             .arg(answer_path);
         command.args(["--json", "-"]);
         let input = format!("{}\n{prompt}", self.prompt.instructions);
-        let (succeeded, stdout, stderr) = run(command, &input, deadline)?;
-        let written = read_answer(answer_path)
-            .map_err(|error| Failure::Invalid(format!("could not read codex's answer: {error}")));
-        let written = check_deadline(deadline).and(written);
-        let event = |name: &str| {
-            stdout
-                .lines()
-                .rev()
-                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-                .find(|event| event["type"] == name)
-        };
-        let completed = event("turn.completed").unwrap_or(Value::Null);
-        let usage = &completed["usage"];
+        let (succeeded, stdout, stderr) = run(command, &input, TIMEOUT)?;
+        let events: Vec<Value> = stdout
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect();
+        let event = |name: &str| events.iter().rev().find(|event| event["type"] == name);
+        let usage = event("turn.completed").map_or(&Value::Null, |event| &event["usage"]);
         let count = |name: &str| usage[name].as_u64().unwrap_or(0);
         *spent = Spent {
             input_tokens: count("input_tokens"),
@@ -376,6 +462,7 @@ impl Labeler<'_> {
             output_tokens: count("output_tokens"),
             cost: None,
         };
+        let written = fs::read_to_string(answer_path).ok();
         // A `Reconnecting...` error event is a retry: only a failed turn or no answer is a failure.
         if let Some(failed) = event("turn.failed") {
             let reason = failed["error"]["message"]
@@ -386,7 +473,7 @@ impl Labeler<'_> {
         if !succeeded {
             return Err(Failure::Rejected(format!("codex: {}", last_line(&stderr))));
         }
-        let text = written?;
+        let text = written.ok_or(Failure::Invalid("codex wrote no answer".to_string()))?;
         let value: Value = serde_json::from_str(text.trim())
             .map_err(|error| Failure::Invalid(format!("codex's answer is not JSON: {error}")))?;
         answer(&value, &self.schema)
@@ -415,6 +502,64 @@ pub fn no_save_support(client: Client) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn shell(script: &str) -> Command {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", script]);
+        command
+    }
+
+    #[test]
+    fn exchanges_more_than_a_pipe_can_hold() {
+        let input = "prompt ".repeat(50_000);
+        let command =
+            shell("dd if=/dev/zero bs=1024 count=128 2>/dev/null; cat; printf warning >&2");
+        let (ok, out, err) = run(command, &input, TIMEOUT).unwrap();
+        assert!(ok);
+        assert_eq!(out.len(), 128 * 1024 + input.len());
+        assert!(out.ends_with(&input));
+        assert_eq!(err, "warning");
+    }
+
+    #[test]
+    fn an_inherited_pipe_cannot_delay_a_finished_answer() {
+        let command = shell("sleep 3 & printf answer; printf warning >&2");
+        let (ok, out, err) = run(command, "", Duration::from_secs(1)).unwrap();
+        assert!(ok);
+        assert_eq!(out, "answer");
+        assert_eq!(err, "warning");
+    }
+
+    #[test]
+    fn a_client_that_ignores_stdin_times_out() {
+        let failure = run(
+            shell("exec sleep 5"),
+            &"x".repeat(1024 * 1024),
+            Duration::from_millis(100),
+        )
+        .unwrap_err();
+        assert!(failure.message().contains("stopped after"));
+    }
+
+    #[test]
+    fn each_output_pipe_has_its_own_limit() {
+        for (name, redirect) in [("stdout", "2>/dev/null"), ("stderr", ">&2 2>/dev/null")] {
+            let command = shell(&format!(
+                "exec dd if=/dev/zero bs=1048576 count=9 {redirect}"
+            ));
+            let failure = run(command, "", TIMEOUT).unwrap_err();
+            assert!(failure.message().contains(&format!("{name} exceeded")));
+        }
+    }
+
+    #[test]
+    fn early_exit_preserves_the_clients_status_and_error() {
+        let input = "x".repeat(1024 * 1024);
+        let (ok, _, err) = run(shell("printf denied >&2; exit 1"), &input, TIMEOUT).unwrap();
+        assert!(!ok);
+        assert_eq!(err, "denied");
+        assert!(run(shell("exit 0"), &input, TIMEOUT).unwrap().0);
+    }
 
     #[test]
     fn the_schema_lists_the_labels_and_adds_pull_requests_on_request() {
