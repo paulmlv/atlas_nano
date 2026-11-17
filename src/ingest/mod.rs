@@ -2,18 +2,21 @@
 
 mod claude;
 mod codex;
+mod completeness;
 mod timing;
 
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io;
+use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
 use serde_json::Value;
 use time::UtcDateTime;
 
-use crate::model::{Client, Item, Kind, Role, Session, SessionRef, Usage};
+use self::completeness::Evidence;
+use crate::model::{Client, Item, Kind, Session, SessionRef};
 
 /// The folders each client keeps its sessions in, relative to the user's home.
 pub const FOLDERS: [(Client, &str); 3] = [
@@ -49,6 +52,15 @@ fn known(value: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Clients omit unused token categories. A present, nonnumeric count is unreadable.
+fn optional_count(value: &Value) -> Option<u64> {
+    if value.is_null() {
+        Some(0)
+    } else {
+        value.as_u64()
+    }
+}
+
 /// Return a transcript's file name without `.jsonl` and an optional `.zst`.
 fn stem(path: &Path) -> String {
     let name = path
@@ -60,17 +72,52 @@ fn stem(path: &Path) -> String {
         .to_string()
 }
 
-/// Decode a JSON Lines file, which may be zstd-compressed. A line that is not JSON becomes `null`,
-/// so every record keeps its line's position, which fork cutoffs count by.
-fn read_jsonl(path: &Path) -> io::Result<Vec<Value>> {
-    let mut data = fs::read(path)?;
-    if path.extension().is_some_and(|extension| extension == "zst") {
-        data = zstd::decode_all(data.as_slice())?;
+/// A bad or blank record keeps its physical position for fork cutoffs.
+fn read_jsonl(path: &Path) -> io::Result<(Vec<Value>, Vec<LineIssue>)> {
+    let file = fs::File::open(path)?;
+    let compressed = path.extension().is_some_and(|extension| extension == "zst");
+    let mut reader: Box<dyn BufRead> = if compressed {
+        Box::new(BufReader::new(zstd::stream::read::Decoder::new(file)?))
+    } else {
+        Box::new(BufReader::new(file))
+    };
+    let (mut records, mut issues, mut line) = (Vec::new(), Vec::new(), Vec::new());
+    loop {
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(error) if records.is_empty() => return Err(error),
+            Err(_) => {
+                issues.push(LineIssue {
+                    line: records.len() + 1,
+                    reason: LineProblem::ReadError,
+                });
+                break;
+            }
+        }
+        let parsed = if line.iter().all(u8::is_ascii_whitespace) {
+            Ok(Value::Null)
+        } else {
+            match serde_json::from_slice::<Value>(&line) {
+                Ok(value) if value.is_object() => Ok(value),
+                Ok(_) => Err(LineProblem::NonObject),
+                Err(error) if !compressed && !line.ends_with(b"\n") && error.is_eof() => {
+                    Err(LineProblem::Unfinished)
+                }
+                Err(_) => Err(LineProblem::Malformed),
+            }
+        };
+        let record = parsed.unwrap_or_else(|reason| {
+            issues.push(LineIssue {
+                line: records.len() + 1,
+                reason,
+            });
+            Value::Null
+        });
+        records.push(record);
+        line.clear();
     }
-    Ok(data
-        .split(|byte| *byte == b'\n')
-        .map(|line| serde_json::from_slice(line).unwrap_or(Value::Null))
-        .collect())
+    Ok((records, issues))
 }
 
 /// List every transcript under `folder`, in path order.
@@ -110,6 +157,71 @@ pub struct Loaded {
     pub sessions: Vec<Session>,
     /// Files and folders that could not be read, with the reason.
     pub unreadable: Vec<(PathBuf, String)>,
+    /// Problems in the selected copy of a session.
+    pub issues: Vec<FileIssues>,
+}
+
+pub struct FileIssues {
+    pub session: usize,
+    pub path: PathBuf,
+    pub records: Vec<LineIssue>,
+}
+
+pub struct LineIssue {
+    pub line: usize,
+    pub reason: LineProblem,
+}
+
+pub enum LineProblem {
+    ReadError,
+    NonObject,
+    Unfinished,
+    Malformed,
+    MissingUsage,
+}
+
+impl std::fmt::Display for LineProblem {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        out.write_str(match self {
+            Self::ReadError => "could not finish reading the transcript",
+            Self::NonObject => "expected a JSON object",
+            Self::Unfinished => "unfinished final record; the client may still be writing it",
+            Self::Malformed => "malformed JSON record",
+            Self::MissingUsage => "missing or unreadable token usage",
+        })
+    }
+}
+
+struct Parsed {
+    session: Session,
+    version: Option<codex::Version>,
+    evidence: Evidence,
+    path: PathBuf,
+    issues: Vec<LineIssue>,
+    valid: usize,
+}
+
+impl Parsed {
+    fn quality(&self) -> (usize, Reverse<usize>) {
+        (self.valid, Reverse(self.issues.len()))
+    }
+}
+
+fn parse_file(client: Client, path: &Path) -> io::Result<Parsed> {
+    let (records, issues) = read_jsonl(path)?;
+    let mut evidence = Evidence::default();
+    let (session, version) = match client {
+        Client::Claude => (claude::parse(path, &records, &mut evidence), None),
+        Client::Codex => codex::parse(path, &records, &mut evidence),
+    };
+    Ok(Parsed {
+        session,
+        version,
+        evidence,
+        path: path.to_owned(),
+        issues,
+        valid: records.iter().filter(|r| !r.is_null()).count(),
+    })
 }
 
 /// Read every session of the covered clients beneath `home`.
@@ -129,56 +241,62 @@ pub fn load(home: &Path, clients: &[Client]) -> Loaded {
     }
     let parsed: Vec<_> = files
         .par_iter()
-        .map(|(client, path)| {
-            read_jsonl(path).map(|records| {
-                let parsed = match client {
-                    Client::Claude => (claude::parse(path, &records), None),
-                    Client::Codex => codex::parse(path, &records),
-                };
-                // Malformed lines keep their place for fork cutoffs but do not make a copy longer.
-                let valid = records.iter().filter(|record| !record.is_null()).count();
-                (valid, parsed)
-            })
-        })
+        .map(|(client, path)| parse_file(*client, path))
         .collect();
-    let mut longest = HashMap::new();
-    let mut order = Vec::new();
+    let mut indices = HashMap::new();
+    let mut chosen: Vec<Parsed> = Vec::new();
     for ((_, path), result) in files.iter().zip(parsed) {
         match result {
             Err(error) => unreadable.push((path.clone(), error.to_string())),
-            Ok((length, parsed)) => {
-                let key = parsed.0.key();
-                match longest.get(&key) {
-                    Some((best, _)) if *best >= length => {}
-                    Some(_) => drop(longest.insert(key, (length, parsed))),
-                    None => {
-                        order.push(key.clone());
-                        longest.insert(key, (length, parsed));
-                    }
+            Ok(copy) => {
+                let index = *indices
+                    .entry(copy.session.reference())
+                    .or_insert(chosen.len());
+                if index == chosen.len() {
+                    chosen.push(copy);
+                } else if copy.quality() > chosen[index].quality() {
+                    chosen[index] = copy;
                 }
             }
         }
     }
-    let (mut sessions, versions): (Vec<_>, Vec<_>) = order
-        .iter()
-        .filter_map(|key| Some(longest.remove(key)?.1))
-        .unzip();
-    codex::link_parents(&mut sessions, &versions);
-    // Flag before requests are kept once and forks inherit history: a Claude fork's copied usage
-    // still counts as its own, and a Codex fork's inherited replies do not.
-    for session in &mut sessions {
-        session.usage_missing = session.usage.is_empty()
-            && session
-                .items
-                .iter()
-                .any(|item| matches!(item.role, Role::Assistant | Role::Tool));
+    let mut sessions = Vec::with_capacity(chosen.len());
+    let mut versions = Vec::with_capacity(chosen.len());
+    let mut evidence = Vec::with_capacity(chosen.len());
+    let mut files = Vec::with_capacity(chosen.len());
+    for copy in chosen {
+        sessions.push(copy.session);
+        versions.push(copy.version);
+        evidence.push(copy.evidence);
+        files.push((copy.path, copy.issues));
     }
-    count_requests_once(&mut sessions);
+    codex::link_parents(&mut sessions, &versions);
+    let missing = completeness::count_requests_once(&mut sessions, &mut evidence);
+    let mut issues = Vec::new();
+    for (n, ((path, mut records), line)) in files.into_iter().zip(missing).enumerate() {
+        if let Some(line) = line {
+            records.push(LineIssue {
+                line,
+                reason: LineProblem::MissingUsage,
+            });
+        }
+        if !records.is_empty() {
+            sessions[n].usage_missing = records
+                .iter()
+                .any(|issue| !matches!(issue.reason, LineProblem::Unfinished));
+            issues.push(FileIssues {
+                session: n,
+                path,
+                records,
+            });
+        }
+    }
     inherit_history(&mut sessions);
     link_scratchpads(&mut sessions);
     Loaded {
         sessions,
         unreadable,
+        issues,
     }
 }
 
@@ -214,41 +332,6 @@ fn link_scratchpads(sessions: &mut [Session]) {
             id: owner,
         });
         chat.kind = Kind::Subagent;
-    }
-}
-
-/// Keep each model request once: in the session recorded with it, when that session holds a copy,
-/// or else in the earliest-started session that does.
-///
-/// A fork's copied history can start at its parent's time; on a tie the session with no parent
-/// keeps the request. A request repeated within one session also counts once.
-fn count_requests_once(sessions: &mut [Session]) {
-    // Every copy of a request records the same owner, so one usage ranks all its holders.
-    let keys: Vec<String> = sessions.iter().map(Session::key).collect();
-    let rank = |n: usize, usage: &Usage| {
-        let session = &sessions[n];
-        (
-            usage.owner.as_deref() != Some(session.id.as_str()),
-            session.started.is_none(),
-            session.started,
-            session.parent.is_some(),
-            &keys[n],
-        )
-    };
-    let mut owner: HashMap<String, usize> = HashMap::new();
-    for (index, session) in sessions.iter().enumerate() {
-        for usage in &session.usage {
-            let held = owner.entry(usage.id.clone()).or_insert(index);
-            if *held != index && rank(index, usage) < rank(*held, usage) {
-                *held = index;
-            }
-        }
-    }
-    for (index, session) in sessions.iter_mut().enumerate() {
-        let mut seen = HashSet::new();
-        session
-            .usage
-            .retain(|usage| owner[&usage.id] == index && seen.insert(usage.id.clone()));
     }
 }
 
@@ -389,7 +472,7 @@ mod tests {
         // A replayed request within one session.
         parent.usage.push(parent.usage[0].clone());
         let mut sessions = vec![fork, parent];
-        count_requests_once(&mut sessions);
+        completeness::count_requests_once(&mut sessions, &mut []);
         assert!(sessions[0].usage.is_empty());
         let ids: Vec<&str> = sessions[1]
             .usage
@@ -542,6 +625,95 @@ mod tests {
     }
 
     #[test]
+    fn codex_duplicates_only_count_usage_from_the_selected_copy() {
+        let home = home("codex-complementary-copies");
+        let sessions = home.join(".codex/sessions");
+        let archive = home.join(".codex/archived_sessions");
+        for legacy in [false, true] {
+            let id = if legacy { "mixed" } else { "unmeasured" };
+            let at = "2026-01-01T00:00:01Z";
+            let row =
+                |kind, payload: Value| json!({"type":kind, "timestamp":at, "payload":payload});
+            let counts = json!({"input_tokens":100, "output_tokens":7});
+            let mut chosen = vec![
+                row("event_msg", json!({"type":"task_started","turn_id":id})),
+                row(
+                    "response_item",
+                    json!({"type":"message","role":"assistant","turn_id":id,"response_id":id}),
+                ),
+            ];
+            if legacy {
+                chosen.push(row(
+                    "event_msg",
+                    json!({"type":"token_count","turn_id":id,"info":{
+                    "last_token_usage":counts, "total_token_usage":counts}}),
+                ));
+                chosen.push(row(
+                    "token_usage_record",
+                    json!({"turn_id":id,"response_id":id,"usage":{}}),
+                ));
+            }
+            write(&sessions.join(format!("{id}.jsonl")), &chosen, false);
+            write(
+                &archive.join(format!("{id}.jsonl")),
+                &[row(
+                    "token_usage_record",
+                    json!({"turn_id":id,"response_id":id,"usage":counts}),
+                )],
+                false,
+            );
+        }
+        let loaded = load(&home, &[Client::Codex]);
+        assert_eq!(loaded.sessions.len(), 2);
+        for session in loaded.sessions {
+            assert!(session.usage_missing);
+            if session.id == "mixed" {
+                assert_eq!(session.usage.len(), 1);
+                assert_eq!((session.usage[0].input, session.usage[0].output), (100, 7));
+            } else {
+                assert!(session.usage.is_empty());
+            }
+        }
+        // A separate rollout with the very same response ID supplies a real fork measurement.
+        fs::rename(archive.join("mixed.jsonl"), archive.join("fork.jsonl")).unwrap();
+        let loaded = load(&home, &[Client::Codex]);
+        let by_id = |id| loaded.sessions.iter().find(|s| s.id == id).unwrap();
+        assert!(by_id("mixed").usage.is_empty());
+        assert!(!by_id("mixed").usage_missing);
+        assert_eq!(by_id("fork").usage.len(), 1);
+        assert_eq!(by_id("fork").usage[0].id, "mixed");
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn a_shorter_copy_does_not_add_spend_to_the_selected_transcript() {
+        let home = home("complementary-copies");
+        let folder = home.join(".claude/projects");
+        let mut broken = reply("m2", 2);
+        broken["message"]["usage"]["cache_read_input_tokens"] = json!("unreadable");
+        write(
+            &folder.join("a/chat.jsonl"),
+            &[reply("m1", 1), broken, reply("m3", 3)],
+            false,
+        );
+        write(
+            &folder.join("b/chat.jsonl"),
+            &[reply("m2", 2), reply("outside", 4)],
+            false,
+        );
+        let loaded = load(&home, &[Client::Claude]);
+        assert!(loaded.sessions[0].usage_missing);
+        let mut ids: Vec<_> = loaded.sessions[0]
+            .usage
+            .iter()
+            .map(|u| u.id.as_str())
+            .collect();
+        ids.sort_unstable();
+        assert_eq!(ids, ["m1", "m3"]);
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
     fn a_claude_copy_belongs_to_the_session_recorded_with_it() {
         let home = home("claude-recorded-owner");
         let projects = home.join(".claude/projects/p");
@@ -639,12 +811,133 @@ mod tests {
         assert_eq!(
             usage,
             [
+                (false, format!("{old}:t1:10:1")),
                 (false, "resp_old".to_string()),
-                (false, "t1:10:1".to_string()),
+                (true, format!("{old}:t1:10:2")),
                 (true, "resp_new".to_string()),
-                (true, "t1:10:2".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn mixed_codex_forks_count_each_reading_once_and_keep_unrelated_gaps() {
+        let home = home("mixed-fork-usage");
+        let folder = home.join(".codex/sessions");
+        let row = |kind, payload: Value| json!({"type":kind,"timestamp":"2026-01-01T00:00:01Z","payload":payload});
+        let start = row("event_msg", json!({"type":"task_started","turn_id":"t"}));
+        let reply = |id: Option<&str>| {
+            row(
+                "response_item",
+                json!({
+                    "type":"message","role":"assistant","response_id":id
+                }),
+            )
+        };
+        let total = |last: u64, sum: u64| {
+            row(
+                "event_msg",
+                json!({
+                    "type":"token_count","info":{"last_token_usage":{"input_tokens":last,"output_tokens":last/10},
+                    "total_token_usage":{"input_tokens":sum,"output_tokens":sum/10}}
+                }),
+            )
+        };
+        let modern = row(
+            "token_usage_record",
+            json!({
+                "response_id":"first","usage":{"input_tokens":100,"output_tokens":10}
+            }),
+        );
+        let save = |name: &str, rows: &[Value]| {
+            write(&folder.join(format!("{name}.jsonl")), rows, false);
+        };
+        save(
+            "parent",
+            &[
+                start.clone(),
+                reply(Some("first")),
+                total(100, 100),
+                reply(Some("second")),
+                total(300, 400),
+            ],
+        );
+        save("parent_fork", &[start.clone(), modern]);
+
+        // A different thread has the same turn name and running total. Its fork explicitly
+        // identifies the response even though the parent's damaged record has no response ID.
+        let damaged = row("token_usage_record", json!({"usage":{"input_tokens":100}}));
+        save(
+            "another",
+            &[start.clone(), reply(None), total(100, 100), damaged],
+        );
+        let measured = row(
+            "token_usage_record",
+            json!({
+                "response_id":"another-first","usage":{"input_tokens":100,"output_tokens":10}
+            }),
+        );
+        save("another_edit", &[start.clone(), measured, total(100, 100)]);
+        save("unrelated", &[start.clone(), reply(None)]);
+        save("independent", &[start.clone(), total(100, 100)]);
+        let inherited = |parent| row("session_meta", json!({"forked_from_id":parent}));
+        save(
+            "child",
+            &[inherited("independent"), start.clone(), total(100, 100)],
+        );
+        save(
+            "grandchild",
+            &[inherited("child"), start.clone(), total(100, 100)],
+        );
+
+        let measured = |id, input: u64| {
+            row(
+                "token_usage_record",
+                json!({
+                    "response_id":id, "usage":{"input_tokens":input,"output_tokens":input/10}
+                }),
+            )
+        };
+        save(
+            "distinct",
+            &[
+                start.clone(),
+                reply(None),
+                total(100, 100),
+                measured("next", 300),
+            ],
+        );
+        save(
+            "gap",
+            &[
+                start.clone(),
+                reply(Some("known")),
+                total(100, 100),
+                reply(Some("missing")),
+            ],
+        );
+        save("gap_copy", &[start, measured("known", 100)]);
+
+        let loaded = load(&home, &[Client::Codex]);
+        fs::remove_dir_all(home).unwrap();
+        let reading = |id| {
+            let s = loaded.sessions.iter().find(|s| s.id == id).unwrap();
+            (
+                s.usage.iter().map(|u| u.input).sum::<u64>(),
+                s.usage.iter().map(|u| u.output).sum::<u64>(),
+                s.usage_missing,
+            )
+        };
+        assert_eq!(reading("parent"), (300, 30, false));
+        assert_eq!(reading("fork"), (100, 10, false));
+        assert_eq!(reading("another"), (0, 0, true));
+        assert_eq!(reading("edit"), (100, 10, false));
+        assert_eq!(reading("unrelated"), (0, 0, true));
+        assert_eq!(reading("independent"), (100, 10, false));
+        assert_eq!(reading("child"), (0, 0, false));
+        assert_eq!(reading("grandchild"), (0, 0, false));
+        assert_eq!(reading("distinct"), (400, 40, false));
+        assert_eq!(reading("gap"), (0, 0, true));
+        assert_eq!(reading("copy"), (100, 10, false));
     }
 
     #[test]
@@ -769,8 +1062,12 @@ mod tests {
         answer["sessionId"] = json!("with_usage");
         answer["message"]["content"] = json!([{"type": "text", "text": "hi"}]);
         let mut no_usage = answer.clone();
+        no_usage["message"]["id"] = json!("missing-usage");
+        no_usage["sessionId"] = json!("no_usage");
         no_usage["message"].as_object_mut().unwrap().remove("usage");
         let mut renamed = answer.clone();
+        renamed["message"]["id"] = json!("renamed-usage");
+        renamed["sessionId"] = json!("renamed");
         renamed["message"]["usage"] = json!({"input": 1, "output": 1});
         write(&projects.join("with_usage.jsonl"), &[answer.clone()], false);
         write(&projects.join("no_usage.jsonl"), &[no_usage], false);
@@ -792,15 +1089,15 @@ mod tests {
         let message = json!({"type": "response_item", "timestamp": "2026-01-01T00:00:01Z",
             "payload": {"type": "message", "role": "assistant",
                 "content": [{"type": "output_text", "text": "hi"}]}});
-        let record = |usage: Value| {
+        let record = |id: &str, usage: Value| {
             json!({"type": "token_usage_record", "timestamp": "2026-01-01T00:00:01Z",
-                "payload": {"response_id": "r1", "usage": usage}})
+                "payload": {"response_id": id, "usage": usage}})
         };
         let counts = json!({"input_tokens": 1, "output_tokens": 1});
-        write(&rollout(1), &[message.clone(), record(counts)], false);
+        write(&rollout(1), &[message.clone(), record("r1", counts)], false);
         write(&rollout(2), std::slice::from_ref(&message), false);
         let renamed = json!({"input": 1, "output": 1});
-        write(&rollout(3), &[message, record(renamed)], false);
+        write(&rollout(3), &[message, record("r3", renamed)], false);
         // A fork with no reply of its own inherits its base's replies but not their usage.
         let thread = "00000037-0205-7016-8024-000000000001";
         let forked = json!({"type": "session_meta", "payload": {
@@ -825,6 +1122,124 @@ mod tests {
                 "codex:00000037-0205-7016-8024-000000000003"
             ]
         );
+    }
+
+    #[test]
+    fn a_stream_or_fork_can_supply_the_missing_counts_of_one_claude_response() {
+        let home = home("usage-copies");
+        let folder = home.join(".claude/projects/p");
+        let mut missing = reply("copied", 1);
+        missing["message"].as_object_mut().unwrap().remove("usage");
+        missing["sessionId"] = json!("parent");
+        let mut readable = reply("copied", 2);
+        readable["forkedFrom"] = json!({"sessionId":"parent"});
+        let mut stream = reply("stream", 3);
+        stream["message"].as_object_mut().unwrap().remove("usage");
+        let mut synthetic = reply("local", 5);
+        synthetic["message"]["model"] = json!("<synthetic>");
+        synthetic["message"]
+            .as_object_mut()
+            .unwrap()
+            .remove("usage");
+        write(
+            &folder.join("parent.jsonl"),
+            &[missing, stream, reply("stream", 4), synthetic],
+            false,
+        );
+        write(&folder.join("fork.jsonl"), &[readable], false);
+
+        let loaded = load(&home, &[Client::Claude]);
+        assert!(loaded.issues.is_empty());
+        let by_id = |id| loaded.sessions.iter().find(|s| s.id == id).unwrap();
+        assert_eq!(by_id("parent").usage.len(), 1);
+        assert_eq!(by_id("parent").usage[0].id, "stream");
+        assert_eq!(by_id("fork").usage.len(), 1);
+        assert_eq!(by_id("fork").usage[0].id, "copied");
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn codex_checks_each_turn_and_explicit_response_without_counting_status_events() {
+        let home = home("usage-turns");
+        let folder = home.join(".codex/sessions");
+        let row = |kind: &str, payload: Value| json!({"timestamp":"2026-01-01T00:00:01Z","type":kind,"payload":payload});
+        let reply = |turn, response| {
+            row(
+                "response_item",
+                json!({"type":"message","role":"assistant","turn_id":turn,"response_id":response}),
+            )
+        };
+        let usage = |turn, response| {
+            row(
+                "token_usage_record",
+                json!({"turn_id":turn,"response_id":response,"usage":{"input_tokens":0,"output_tokens":0}}),
+            )
+        };
+        let start = |turn| row("event_msg", json!({"type":"task_started","turn_id":turn}));
+        let count = row(
+            "event_msg",
+            json!({"type":"token_count","turn_id":"old","info":{
+            "total_token_usage":{"input_tokens":10,"output_tokens":1},
+            "last_token_usage":{"input_tokens":10,"output_tokens":1}}}),
+        );
+        write(
+            &folder.join("complete.jsonl.zst"),
+            &[
+                start("old"),
+                reply("old", "old-response"),
+                row("event_msg", json!({"type":"token_count","info":null})),
+                count.clone(),
+                count,
+                start("new"),
+                reply("new", "new-response"),
+                usage("new", "new-response"),
+                row(
+                    "response_item",
+                    json!({"type":"function_call_output","turn_id":"tool-only"}),
+                ),
+            ],
+            true,
+        );
+        write(
+            &folder.join("partial.jsonl"),
+            &[
+                start("a"),
+                reply("a", "a1"),
+                usage("a", "a1"),
+                reply("a", "a2"),
+                row(
+                    "token_usage_record",
+                    json!({"turn_id":"a","response_id":"a3","usage":{"input_tokens":1}}),
+                ),
+            ],
+            false,
+        );
+        write(
+            &folder.join("unknown.jsonl"),
+            &[
+                start("b"),
+                row("response_item", json!({"type":"reasoning"})),
+                row("event_msg", json!({"type":"token_count","info":null})),
+            ],
+            false,
+        );
+        let loaded = load(&home, &[Client::Codex]);
+        let find = |id| loaded.sessions.iter().find(|s| s.id == id).unwrap();
+        assert!(!find("complete").usage_missing);
+        assert_eq!(find("complete").usage.len(), 2);
+        assert!(find("partial").usage_missing);
+        assert_eq!(find("partial").usage.len(), 1);
+        assert!(find("unknown").usage_missing);
+        assert!(find("unknown").usage.is_empty());
+        assert_eq!(
+            loaded
+                .issues
+                .iter()
+                .map(|f| f.records[0].line)
+                .collect::<Vec<_>>(),
+            [4, 2]
+        );
+        fs::remove_dir_all(home).unwrap();
     }
 
     #[test]

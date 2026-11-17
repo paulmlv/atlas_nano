@@ -9,7 +9,7 @@ use serde_json::Value;
 use time::UtcDateTime;
 
 use super::timing::{self, Event, Signal};
-use super::{Span, known, stem};
+use super::{Evidence, Span, known, optional_count, stem};
 use crate::model::{Client, Item, Kind, Role, Session, SessionRef, Usage};
 use crate::timestamp;
 
@@ -114,6 +114,12 @@ fn is_turn(text: &str) -> bool {
     }
 }
 
+fn recorded_owner(record: &Value) -> Option<&str> {
+    record["forkedFrom"]["sessionId"]
+        .as_str()
+        .or_else(|| record["sessionId"].as_str())
+}
+
 fn usage(record: &Value, at: UtcDateTime) -> Option<Usage> {
     let reply = &record["message"];
     let reported = reply.get("usage")?;
@@ -122,23 +128,17 @@ fn usage(record: &Value, at: UtcDateTime) -> Option<Usage> {
         reported["input_tokens"].as_u64()?,
         reported["output_tokens"].as_u64()?,
     );
-    let count = |name: &str| reported[name].as_u64().unwrap_or(0);
-    let hour = reported["cache_creation"]["ephemeral_1h_input_tokens"]
-        .as_u64()
-        .unwrap_or(0);
+    let hour = optional_count(&reported["cache_creation"]["ephemeral_1h_input_tokens"])?;
     Some(Usage {
-        id: reply["id"].as_str()?.to_string(),
+        id: known(&reply["id"])?,
         // A fork can relabel a copied record with its own ID but keeps where it came from.
-        owner: record["forkedFrom"]["sessionId"]
-            .as_str()
-            .or_else(|| record["sessionId"].as_str())
-            .map(str::to_string),
+        owner: recorded_owner(record).map(str::to_owned),
         at,
         model: reply["model"].as_str().unwrap_or_default().to_string(),
         fast: reported["speed"].as_str() == Some("fast"),
         input,
-        cached: count("cache_read_input_tokens"),
-        cache_write: count("cache_creation_input_tokens").saturating_sub(hour),
+        cached: optional_count(&reported["cache_read_input_tokens"])?,
+        cache_write: optional_count(&reported["cache_creation_input_tokens"])?.saturating_sub(hour),
         cache_write_1h: hour,
         output,
     })
@@ -147,7 +147,7 @@ fn usage(record: &Value, at: UtcDateTime) -> Option<Usage> {
 /// Describe one transcript. A file under a `subagents` directory is a subagent of the session its
 /// records name, or else of the session whose directory holds it: a fork or resume can copy the
 /// file under another session. A fork is dated from its own records after the copied prefix.
-pub fn parse(path: &Path, records: &[Value]) -> Session {
+pub(super) fn parse(path: &Path, records: &[Value], evidence: &mut Evidence) -> Session {
     let owner = path
         .ancestors()
         .find(|folder| folder.file_name().is_some_and(|name| name == "subagents"))
@@ -285,9 +285,9 @@ pub fn parse(path: &Path, records: &[Value]) -> Session {
                         _ => {}
                     }
                 }
-                if let Some(at) = at
-                    && let Some(reported) = usage(record, at)
-                {
+                let generated =
+                    reply["model"] != "<synthetic>" && record["isApiErrorMessage"] != true;
+                if let Some(reported) = at.and_then(|at| usage(record, at)) {
                     // Streaming writes a record per content block, each with the usage so far.
                     match usage_at.get(&reported.id) {
                         Some(&index) => session.usage[index] = reported,
@@ -296,6 +296,9 @@ pub fn parse(path: &Path, records: &[Value]) -> Session {
                             session.usage.push(reported);
                         }
                     }
+                } else if generated {
+                    let id = reply["id"].as_str().filter(|id| !id.is_empty());
+                    evidence.missing_response(id, recorded_owner(record), position as usize + 1);
                 }
                 let done = matches!(
                     reply["stop_reason"].as_str(),
@@ -332,7 +335,11 @@ mod tests {
     use super::*;
 
     fn parse_main(records: &[Value]) -> Session {
-        parse(Path::new("/home/.claude/projects/p/abc.jsonl"), records)
+        parse(
+            Path::new("/home/.claude/projects/p/abc.jsonl"),
+            records,
+            &mut Evidence::default(),
+        )
     }
 
     fn rendered(session: &Session) -> Vec<String> {
@@ -414,7 +421,7 @@ mod tests {
                 "origin": {"kind": "human"}, "prompt": "also this"}}),
         ];
         let path = Path::new("/home/.claude/projects/p/parent-id/subagents/agent-1.jsonl");
-        let session = parse(path, &records);
+        let session = parse(path, &records, &mut Evidence::default());
         assert_eq!(
             rendered(&session),
             [

@@ -581,7 +581,15 @@ impl<'r, 'a> Dashboard<'r, 'a> {
             Line::from(vec![
                 Span::styled("atlas-nano", p.style(Tone::Heading, false)),
                 format!(" · {} · ", self.report.period).into(),
-                Span::styled(money(all.spend), p.style(Tone::Money, true)),
+                Span::styled(report::total_spend(all), p.style(Tone::Money, true)),
+                Span::styled(
+                    if all.coverage.missing {
+                        " (incomplete usage, shares of recorded spend)"
+                    } else {
+                        ""
+                    },
+                    warning,
+                ),
                 caveat(
                     all.unpriced_requests,
                     "requests have no price and count as $0",

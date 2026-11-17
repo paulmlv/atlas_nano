@@ -73,6 +73,20 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
     let in_period = account::in_period(&sessions, &roots, cutoff);
     // The covered sessions' indexes, in order; a covered session's root is covered too.
     let covered: Vec<usize> = (0..sessions.len()).filter(|&n| in_period[n]).collect();
+    for file in &loaded.issues {
+        // If the root date itself was lost, warn even though a dated report cannot include it.
+        if in_period[file.session] || sessions[roots[file.session]].started.is_none() {
+            for issue in &file.records {
+                eprintln!(
+                    "{} {:?}, line {}: {}",
+                    errors.tone(Tone::Warning, "warning:"),
+                    file.path,
+                    issue.line,
+                    issue.reason
+                );
+            }
+        }
+    }
     for (client, name) in [(Client::Claude, "Claude Code"), (Client::Codex, "Codex")] {
         let missing = covered
             .iter()
@@ -80,8 +94,7 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
             .count();
         if missing > 0 {
             eprintln!(
-                "{} {missing} {name} session(s) have replies but no usage Atlas Nano could read, so \
-                 their spend is missing from this report",
+                "{} {missing} {name} session(s) have incomplete usage; totals include only recorded usage",
                 errors.tone(Tone::Warning, "warning:")
             );
         }

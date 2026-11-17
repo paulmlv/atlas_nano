@@ -55,6 +55,9 @@ Prices checked 2026-11-03
 - **Category tables:** labels are listed under their group or domain, largest spend first. Sessions
   without a label are in an `Unlabeled` row, and Codex safety reviews in an `Automatic reviews` row.
   The `Subagents` column counts subagents and reviews.
+- **Incomplete usage** is flagged on the overall spend in both views. For example, `$2.10+` means
+  the recorded requests cost $2.10 and some usage is missing. A `?` means the period contains a gap
+  and no measured requests. Tables, rankings and spend percentages use the recorded amounts.
 - **Empty rows** are left out of every table: a row with no tokens, so no spend, and in the tables
   with a `Convs` column, no conversations either. A row with tokens on a model without a price
   stays.
@@ -93,7 +96,7 @@ a file or a pipe, the saved setting prints instead, and `--output tui` stops the
 labeling. A `--csv` or `--json` file is still written first.
 
 - **Header:** the period, spend, counts, time, and tokens of the totals block, with its notes on
-  requests without a price and turns with no recorded completion.
+  incomplete usage, requests without a price, and turns with no recorded completion.
 - **Tabs:** one per table, in the printed order: type of work, topic, model, project, repo, day,
   conversations, and pull requests. `←`/`→`, `Tab`, or a number switches tabs.
 - **Rows:** the same rows as the printed tables, empty rows left out, but every row: `top` does not
@@ -118,7 +121,7 @@ labeling. A `--csv` or `--json` file is still written first.
 | Time     | `started`, `ended` (UTC), `working_seconds`, `wall_seconds`                             |
 | Counts   | `turns`, `untimed_turns`, `tool_calls`                                                  |
 | Tokens   | `input`, `cached`, `cache_write`, `output`                                              |
-| Spend    | `spend_usd`, `unpriced_requests`, `models`                                              |
+| Spend    | `spend_usd`, `unpriced_requests`, `models`, `usage_status`                              |
 | Labels   | `work`, `topic`, `prs`                                                                  |
 | Labeling | `label_model`, `label_from_cache`                                                       |
 
@@ -129,6 +132,11 @@ a Claude Code scratchpad. `project` and `repo` are the root chat's; `repo` is em
 repository and `(unknown)` when that cannot be told. `working_seconds` sums the turns with a known
 working time; `untimed_turns` counts the others. A text field starting with `=`, `+`, `-`, `@`, a
 tab, or a carriage return gets a leading `'`, so a spreadsheet shows it as text.
+
+`usage_status` is `complete` when the loaded records show no evidence of a gap, `partial` when a
+session has both recorded usage and a gap, or `unknown` when it has a gap and no recorded usage.
+Partial rows contain the recorded token counts and spend. Unknown rows leave those fields empty. The
+status describes the usage records. Pricing is tracked separately by `unpriced_requests`.
 
 ## JSON
 
@@ -152,6 +160,7 @@ and with its fields, typed and nested:
   "tool_calls": 12,
   "tokens": { "input": 1000, "cached": 90000, "cache_write": 5000, "output": 2000 },
   "spend_usd": 0.4123,
+  "usage_status": "complete",
   "unpriced_requests": 0,
   "models": ["claude-opus-5-5"],
   "label": {
@@ -166,7 +175,8 @@ and with its fields, typed and nested:
 
 Each object is on one line in the file. `parent` is null for a chat the user started, `label` for a
 session without a label, `repo` outside a repository, and a time or `wall_seconds` that was not
-recorded. `spend_usd` is a number rounded to six decimals. Text is not changed for spreadsheets.
+recorded. `spend_usd` is rounded to six decimals when known. When `usage_status` is `unknown`,
+`spend_usd` and the four fields inside `tokens` are null. Text is not changed for spreadsheets.
 
 ## Accounting
 
@@ -179,9 +189,9 @@ recorded. `spend_usd` is a number rounded to six decimals. Text is not changed f
   subscription charges.
 - **Prices:** the price table is built into the binary, and the report prints the date it was
   checked. Nothing is fetched from the network.
-- **Each request counts once:** a model request copied into several sessions, as a fork copies its
-  parent's history, counts only in the session that started first. Fork A into B after $10 and spend
-  $2 more in B: A shows $10 and B shows $2.
+- **Each request counts once.** A request copied across sessions is charged to its recorded owner
+  when that session holds a readable measurement, or to the earliest session holding one. If only a
+  fork records the measurement, the spend stays with the fork.
 - **Working time:** for each user request, the time from the request to the model's recorded
   completion, summed per session. It is unknown, not zero, for a turn with no recorded completion,
   an interrupted turn, a turn with work recorded after its completion, and a turn the user steered

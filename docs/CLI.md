@@ -76,10 +76,23 @@ Requires a saved configuration; without one it stops and says to run `configure`
 
 ### Missing usage
 
-A session in the period (a conversation, subagent, or review) that has replies but no usage Atlas
-Nano could read counts as $0, so the run prints a warning on standard error with the number of such
-sessions for each client. This happens, for example, when a client changes how it records usage or
-does not record it. Usage counts as read only when it has both input and output token counts.
+When a reply is missing usage, the overall spend shows the recorded subtotal with a `+` suffix, such
+as `$0.50+`. A `?` means usage is missing and no request in the period could be measured. Spend
+percentages use the recorded spend. The [exports](REPORT.md#csv) identify each session's usage
+status.
+
+Claude can write several blocks for one response, and forks can repeat a response. One readable
+measurement covers that response. Codex can record usage per response or, in older logs, through
+running totals. If a fork supplies only some per-response counts, the other recorded counts still
+contribute to spend. Unrelated threads can reuse a turn name without hiding each other's gaps. Atlas
+checks for model output in turns with no readable measurement and for malformed usage records. When
+the log identifies only the turn, Atlas cannot establish how many individual responses a measurement
+covers. A recorded zero is valid usage.
+
+Warnings on standard error identify the file and line of malformed records and the first unresolved
+usage gap in each affected session. An unfinished final JSON record is identified separately because
+the client may still be writing it. That warning alone leaves usage complete. A file with an
+unreadable start date can produce a warning even when Atlas cannot place it in the selected period.
 
 ### Labeling cost
 

@@ -62,6 +62,17 @@ pub(crate) fn money(amount: Decimal) -> String {
     format!("${grouped}.{fraction:0<2}")
 }
 
+/// Display the period's recorded spend and flag missing usage once, in the totals.
+pub(crate) fn total_spend(all: &Totals) -> String {
+    if all.coverage.unknown() {
+        "?".into()
+    } else if all.coverage.missing {
+        format!("{}+", money(all.spend))
+    } else {
+        money(all.spend)
+    }
+}
+
 /// A whole percentage; `0%` only for none, and `<1%` for a part too small to round to 1%.
 pub(crate) fn share(part: Decimal, whole: Decimal) -> String {
     if whole.is_zero() {
@@ -583,9 +594,20 @@ impl Report<'_> {
             out,
             "  {}  {}{unpriced}",
             d("Spend (API-equivalent)"),
-            p.styled(Tone::Money, true, &money(all.spend))
+            p.styled(Tone::Money, true, &total_spend(all))
         )
         .unwrap();
+        if all.coverage.missing {
+            writeln!(
+                out,
+                "  {}",
+                p.tone(
+                    Tone::Warning,
+                    "Incomplete usage. Tables and percentages use recorded amounts."
+                )
+            )
+            .unwrap();
+        }
         writeln!(
             out,
             "  {}    {} {}{unknown}{dot}{} {}",
@@ -810,12 +832,19 @@ impl Report<'_> {
         let mut out = String::from(
             "client,session_id,parent_client,parent_session_id,kind,project,repo,started,ended,working_seconds,\
              wall_seconds,turns,untimed_turns,tool_calls,input,cached,cache_write,output,spend_usd,\
-             unpriced_requests,models,work,topic,prs,label_model,label_from_cache\n",
+             unpriced_requests,models,work,topic,prs,label_model,label_from_cache,usage_status\n",
         );
         for row in &self.rows {
             let session = row.session;
             let models = models_of(session);
             let label = |pick: fn(&Label) -> String| row.label.map_or(String::new(), pick);
+            let usage = |value: String| {
+                if row.cost.coverage.unknown() {
+                    String::new()
+                } else {
+                    value
+                }
+            };
             let fields = [
                 session.client.name().to_string(),
                 session.id.clone(),
@@ -840,11 +869,11 @@ impl Report<'_> {
                 session.turns.len().to_string(),
                 untimed(session).to_string(),
                 session.tool_calls.to_string(),
-                row.cost.tokens.input.to_string(),
-                row.cost.tokens.cached.to_string(),
-                row.cost.tokens.cache_write.to_string(),
-                row.cost.tokens.output.to_string(),
-                row.cost.spend.round_dp(6).to_string(),
+                usage(row.cost.tokens.input.to_string()),
+                usage(row.cost.tokens.cached.to_string()),
+                usage(row.cost.tokens.cache_write.to_string()),
+                usage(row.cost.tokens.output.to_string()),
+                usage(row.cost.spend.round_dp(6).to_string()),
                 row.cost.unpriced_requests.to_string(),
                 models.join(" "),
                 label(|label| label.work.clone()),
@@ -858,6 +887,7 @@ impl Report<'_> {
                 }),
                 label(|label| label.model.clone()),
                 label(|label| label.from_cache.to_string()),
+                row.cost.coverage.status().to_string(),
             ];
             let quoted: Vec<String> = fields.iter().map(|field| quote(field)).collect();
             writeln!(out, "{}", quoted.join(",")).unwrap();
@@ -873,6 +903,7 @@ impl Report<'_> {
         for row in &self.rows {
             let session = row.session;
             let tokens = &row.cost.tokens;
+            let known = !row.cost.coverage.unknown();
             let parent = session.parent.as_ref().map(|parent| {
                 serde_json::json!({ "client": parent.client.name(), "session_id": parent.id })
             });
@@ -905,12 +936,13 @@ impl Report<'_> {
                 "untimed_turns": untimed(session),
                 "tool_calls": session.tool_calls,
                 "tokens": {
-                    "input": tokens.input,
-                    "cached": tokens.cached,
-                    "cache_write": tokens.cache_write,
-                    "output": tokens.output,
+                    "input": known.then_some(tokens.input),
+                    "cached": known.then_some(tokens.cached),
+                    "cache_write": known.then_some(tokens.cache_write),
+                    "output": known.then_some(tokens.output),
                 },
-                "spend_usd": row.cost.spend.round_dp(6).to_f64(),
+                "spend_usd": known.then(|| row.cost.spend.round_dp(6).to_f64()).flatten(),
+                "usage_status": row.cost.coverage.status(),
                 "unpriced_requests": row.cost.unpriced_requests,
                 "models": models_of(session),
                 "label": label,
@@ -1052,6 +1084,85 @@ mod tests {
         assert_eq!(quote("=1+1"), "'=1+1");
         assert_eq!(quote("@SUM(A1)"), "'@SUM(A1)");
         assert_eq!(quote("-x,y"), "\"'-x,y\"");
+    }
+
+    #[test]
+    fn distinguishes_recorded_zero_partial_and_unknown_spend_in_all_exports() {
+        use crate::account::{cost, tests::session};
+
+        let mut sessions = ["Zero", "Partial", "Unknown"].map(|name| {
+            let mut chat = session(name, Kind::Primary, None, 1);
+            chat.title = Some(name.to_string());
+            chat.usage.truncate(1);
+            chat
+        });
+        sessions[0].usage[0].input = 0;
+        sessions[0].usage[0].output = 0;
+        sessions[1].usage_missing = true;
+        sessions[2].usage.clear();
+        sessions[2].usage_missing = true;
+        let prices = PriceTable::built_in();
+        let place = Place {
+            project: "app".into(),
+            repo: String::new(),
+        };
+        let report = Report {
+            period: "test",
+            rows: sessions
+                .iter()
+                .enumerate()
+                .map(|(root, session)| Row {
+                    session,
+                    root,
+                    cost: cost(session, &prices),
+                    place: &place,
+                    label: None,
+                })
+                .collect(),
+            taxonomy: None,
+            labeling: None,
+            pull_requests: false,
+            top: None,
+            prices: &prices,
+            paint: Paint::OFF,
+        };
+
+        let csv = report.csv();
+        let mut lines = csv.lines();
+        let header: Vec<_> = lines.next().unwrap().split(',').collect();
+        let json = report.json();
+        let mut json_lines = json.lines();
+        for (status, input, spend) in [
+            ("complete", Some(0u64), Some(0.0)),
+            ("partial", Some(100_000), Some(0.51)),
+            ("unknown", None, None),
+        ] {
+            let fields: HashMap<_, _> = header
+                .iter()
+                .copied()
+                .zip(lines.next().unwrap().split(','))
+                .collect();
+            let json: serde_json::Value = serde_json::from_str(json_lines.next().unwrap()).unwrap();
+            assert_eq!(fields["usage_status"], status);
+            assert_eq!(json["usage_status"], status);
+            assert_eq!(
+                fields["input"],
+                input.map_or(String::new(), |n| n.to_string())
+            );
+            assert_eq!(json["tokens"]["input"], serde_json::json!(input));
+            assert_eq!(fields["spend_usd"].is_empty(), spend.is_none());
+            assert_eq!(fields["spend_usd"].parse::<f64>().ok(), spend);
+            assert_eq!(json["spend_usd"], serde_json::json!(spend));
+        }
+        let out = report.render();
+        assert!(out.contains("Spend (API-equivalent)  $0.51+"), "{out}");
+        assert!(
+            out.lines()
+                .any(|line| line.contains("app") && line.split_whitespace().last() == Some("100%")),
+            "{out}"
+        );
+        assert_eq!(out.matches("$0.51+").count(), 1);
+        assert!(out.contains("Incomplete usage."), "{out}");
     }
 
     #[test]

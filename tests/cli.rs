@@ -172,6 +172,61 @@ fn run_needs_a_configuration() {
 }
 
 #[test]
+fn partial_spend_keeps_the_recorded_subtotal_and_reports_damaged_lines() {
+    let sandbox = Sandbox::new("partial-records");
+    sandbox.session("chat", "A priced conversation", 1);
+    assert!(
+        sandbox
+            .answer(&["configure"], "\n\n\n\n\n\n")
+            .status
+            .success()
+    );
+    let export = sandbox.root.join("rows.json");
+    let run = || sandbox.run(&["run", "--no-label", "--json", export.to_str().unwrap()]);
+    let row = || serde_json::from_slice::<serde_json::Value>(&fs::read(&export).unwrap()).unwrap();
+    assert!(run().status.success());
+    let before = row();
+    assert_eq!(before["usage_status"], "complete");
+    let transcript = sandbox.root.join("home/.claude/projects/p/chat.jsonl");
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .open(&transcript)
+        .unwrap();
+    let timestamp = UtcDateTime::now().format(&Rfc3339).unwrap();
+    let unmeasured = json!({"type":"assistant","timestamp":timestamp,"message":{
+        "id":"second","model":"claude-haiku-5-5","content":[{"type":"thinking"}]}});
+    write!(file, "\n{{\"type\":").unwrap();
+    file.flush().unwrap();
+    let live = run();
+    assert!(live.status.success());
+    assert_eq!(row(), before);
+    assert!(text(&live.stderr).contains("line 3: unfinished final record"));
+    assert!(!text(&live.stdout).contains("Incomplete usage"));
+
+    write!(file, "\"notice\"}}\n{unmeasured}\nbad record\n{{\"type\":").unwrap();
+    drop(file);
+    let output = run();
+    assert!(output.status.success());
+    let after = row();
+    assert_eq!(after["usage_status"], "partial");
+    assert_eq!(after["spend_usd"], before["spend_usd"]);
+    assert_eq!(after["tokens"], before["tokens"]);
+    let warnings = text(&output.stderr);
+    for message in [
+        "line 4: missing or unreadable token usage",
+        "line 5: malformed JSON record",
+        "line 6: unfinished final record",
+    ] {
+        assert!(
+            warnings.contains(&format!("{transcript:?}, {message}")),
+            "{warnings}"
+        );
+    }
+    assert!(text(&output.stdout).contains("Incomplete usage"));
+    assert_eq!(sandbox.calls(), 1);
+}
+
+#[test]
 fn configure_requires_a_usable_label_before_saving() {
     let sandbox = Sandbox::new("configure-test-label");
     sandbox.session("chat", "A plain request", 1);
@@ -455,12 +510,12 @@ fn configure_then_run_labels_reports_and_reuses_the_cache() {
         .replace("\"usage\"", "\"moved\"");
     fs::write(&file, lines).unwrap();
     let recent = text(&sandbox.run(&["run", "--no-label"]).stderr);
-    assert!(!recent.contains("have replies but no usage"), "{recent}");
+    assert!(!recent.contains("incomplete usage"), "{recent}");
     let all = text(
         &sandbox
             .run(&["run", "--no-label", "--period", "all"])
             .stderr,
     );
-    let missing = "1 Claude Code session(s) have replies but no usage";
+    let missing = "1 Claude Code session(s) have incomplete usage";
     assert!(all.contains(missing), "{all}");
 }
