@@ -182,7 +182,12 @@ fn partial_spend_keeps_the_recorded_subtotal_and_reports_damaged_lines() {
             .success()
     );
     let export = sandbox.root.join("rows.json");
-    let run = || sandbox.run(&["run", "--no-label", "--json", export.to_str().unwrap()]);
+    let listed = |list: bool| {
+        let mut args = vec!["run", "--no-label", "--json", export.to_str().unwrap()];
+        args.extend(list.then_some("--list-warnings"));
+        sandbox.run(&args)
+    };
+    let run = || listed(true);
     let row = || serde_json::from_slice::<serde_json::Value>(&fs::read(&export).unwrap()).unwrap();
     assert!(run().status.success());
     let before = row();
@@ -223,6 +228,13 @@ fn partial_spend_keeps_the_recorded_subtotal_and_reports_damaged_lines() {
         );
     }
     assert!(text(&output.stdout).contains("Incomplete usage"));
+    // Without the flag, one line counts the record warnings instead.
+    let summary = text(&listed(false).stderr);
+    assert!(
+        summary.contains("3 record warning(s) in 1 session file(s); `--list-warnings` lists them"),
+        "{summary}"
+    );
+    assert!(!summary.contains("line 4:"), "{summary}");
     assert_eq!(sandbox.calls(), 1);
 }
 

@@ -73,9 +73,14 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
     let in_period = account::in_period(&sessions, &roots, cutoff);
     // The covered sessions' indexes, in order; a covered session's root is covered too.
     let covered: Vec<usize> = (0..sessions.len()).filter(|&n| in_period[n]).collect();
-    for file in &loaded.issues {
-        // If the root date itself was lost, warn even though a dated report cannot include it.
-        if in_period[file.session] || sessions[roots[file.session]].started.is_none() {
+    // If the root date itself was lost, warn even though a dated report cannot include it.
+    let problems: Vec<_> = loaded
+        .issues
+        .iter()
+        .filter(|file| in_period[file.session] || sessions[roots[file.session]].started.is_none())
+        .collect();
+    if args.list_warnings {
+        for file in &problems {
             for issue in &file.records {
                 eprintln!(
                     "{} {:?}, line {}: {}",
@@ -98,6 +103,14 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
                 errors.tone(Tone::Warning, "warning:")
             );
         }
+    }
+    if !args.list_warnings && !problems.is_empty() {
+        let count: usize = problems.iter().map(|file| file.records.len()).sum();
+        eprintln!(
+            "{} {count} record warning(s) in {} session file(s); `--list-warnings` lists them",
+            errors.tone(Tone::Warning, "warning:"),
+            problems.len()
+        );
     }
     let prices = PriceTable::built_in();
     let taxonomy = Taxonomy::built_in();

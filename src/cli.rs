@@ -55,6 +55,10 @@ pub struct RunArgs {
     /// How to show the report, instead of the saved setting.
     #[arg(long, value_enum, value_name = "MODE")]
     pub output: Option<Output>,
+
+    /// List each record warning's file and line, instead of their count.
+    #[arg(long)]
+    pub list_warnings: bool,
 }
 
 /// Which sessions a run covers, by when their conversation started.
@@ -97,6 +101,7 @@ mod tests {
         assert_eq!(run.json, None);
         assert_eq!(run.retries, None);
         assert_eq!(run.output, None);
+        assert!(!run.list_warnings);
     }
 
     #[test]
@@ -115,6 +120,7 @@ mod tests {
             "0",
             "--output",
             "print",
+            "--list-warnings",
         ]);
         assert_eq!(run.output, Some(Output::Print));
         assert_eq!(run.period, Period::Days30);
@@ -124,6 +130,7 @@ mod tests {
         assert_eq!(run.csv, Some(PathBuf::from("out.csv")));
         assert_eq!(run.json, Some(PathBuf::from("out.jsonl")));
         assert_eq!(run.retries, Some(0));
+        assert!(run.list_warnings);
     }
 
     #[test]
