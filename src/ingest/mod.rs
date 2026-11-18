@@ -1247,32 +1247,49 @@ mod tests {
         let home = home("review-result");
         let folder = home.join(".codex/sessions");
         let row = |kind: &str, payload: Value| json!({"timestamp":"2026-01-01T00:00:01Z","type":kind,"payload":payload});
+        let event = |payload: Value| row("event_msg", payload);
         let result = row(
             "response_item",
-            json!({"type":"message","role":"assistant",
-                "internal_chat_message_metadata_passthrough":{"turn_id":"parent"}}),
+            json!({"type":"message","role":"assistant"}),
         );
-        let exited = row(
-            "event_msg",
-            json!({"type":"item_completed","turn_id":"parent",
-                "item":{"type":"ExitedReviewMode"}}),
-        );
-        let start = row(
-            "event_msg",
-            json!({"type":"task_started","turn_id":"reviewer"}),
-        );
+        let start = |turn| event(json!({"type":"task_started","turn_id":turn}));
+        let exited = event(json!({"type":"item_completed","item":{"type":"ExitedReviewMode"}}));
+        let legacy_exit = event(json!({"type":"exited_review_mode","review_output":null}));
+        let legacy_result = event(json!({"type":"agent_message","message":"No findings."}));
+        let complete = event(json!({"type":"task_complete","turn_id":"reviewer"}));
         write(
             &folder.join("review.jsonl"),
-            &[start.clone(), exited, result.clone()],
+            &[start("reviewer"), exited.clone(), result.clone()],
             false,
         );
-        // Without the review's end, the same message is a reply whose usage is missing.
-        write(&folder.join("reply.jsonl"), &[start, result], false);
+        write(
+            &folder.join("legacy.jsonl"),
+            &[
+                start("reviewer"),
+                legacy_exit,
+                result.clone(),
+                legacy_result,
+            ],
+            false,
+        );
+        // Without the review's end, or once its turn is over, the message is a reply with no usage.
+        write(
+            &folder.join("reply.jsonl"),
+            &[start("reviewer"), result.clone()],
+            false,
+        );
+        write(
+            &folder.join("next.jsonl"),
+            &[start("reviewer"), exited, complete, start("next"), result],
+            false,
+        );
         let loaded = load(&home, &[Client::Codex]);
         let find = |id| loaded.sessions.iter().find(|s| s.id == id).unwrap();
         assert!(!find("review").usage_missing);
+        assert!(!find("legacy").usage_missing);
         assert!(find("reply").usage_missing);
-        assert_eq!(loaded.issues.len(), 1);
+        assert!(find("next").usage_missing);
+        assert_eq!(loaded.issues.len(), 2);
         fs::remove_dir_all(home).unwrap();
     }
 

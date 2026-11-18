@@ -318,7 +318,7 @@ pub(super) fn parse(
     let mut turn_models: HashMap<&str, &str> = HashMap::new();
     let mut unknown_model: Vec<(usize, &str)> = Vec::new(); // responses read before their turn's model
     let mut finished: HashSet<&str> = HashSet::new();
-    let mut reviews: HashSet<&str> = HashSet::new(); // turns whose review ran in its own thread
+    let mut review_ended = false; // the rest of the turn repeats a review's result
     let mut totals = &null;
     let mut seen: HashSet<&str> = HashSet::new();
     let mut tools: HashSet<&str> = HashSet::new();
@@ -375,25 +375,28 @@ pub(super) fn parse(
         let scope = turn_id.map_or(UsageTurn::Unnamed(anonymous_start), UsageTurn::Named);
         let line_number = line as usize + 1;
         // A review runs in its own reviewer thread, which records the usage. The parent then
-        // repeats the review's result as an assistant message no model call produced.
-        if record_type == "event_msg"
-            && subtype == "item_completed"
-            && payload["item"]["type"] == "ExitedReviewMode"
-        {
-            reviews.extend(payload["turn_id"].as_str());
+        // repeats the review's result, which no model call produced, until the turn ends.
+        match (record_type, subtype) {
+            ("event_msg", "item_completed") if payload["item"]["type"] == "ExitedReviewMode" => {
+                review_ended = true;
+            }
+            // Older rollouts record the end of review mode as its own event.
+            ("event_msg", "exited_review_mode") => review_ended = true,
+            ("event_msg", "task_started" | "task_complete" | "turn_aborted")
+            | ("turn_context", _) => {
+                review_ended = false;
+            }
+            _ => {}
         }
-        let review_result = payload["internal_chat_message_metadata_passthrough"]["turn_id"]
-            .as_str()
-            .is_some_and(|id| reviews.contains(id));
         let model_output = (record_type == "response_item"
             && ((is_message
                 && role == "assistant"
-                && !review_result
+                && !review_ended
                 && record["metadata"]["compaction_output"].is_null())
                 || subtype == "reasoning"
                 || TOOL_CALLS.contains(&subtype)))
             || (record_type == "event_msg"
-                && matches!(subtype, "agent_message" | "agent_reasoning"));
+                && (subtype == "agent_reasoning" || subtype == "agent_message" && !review_ended));
         if model_output {
             let reading = readings.entry(scope).or_default();
             reading.first_reply.get_or_insert(line_number);
