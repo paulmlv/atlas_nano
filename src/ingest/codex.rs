@@ -318,7 +318,10 @@ pub(super) fn parse(
     let mut turn_models: HashMap<&str, &str> = HashMap::new();
     let mut unknown_model: Vec<(usize, &str)> = Vec::new(); // responses read before their turn's model
     let mut finished: HashSet<&str> = HashSet::new();
-    let mut review_ended = false; // the rest of the turn repeats a review's result
+    // A turn running a review makes no model call itself; its reviewer thread records the usage.
+    let mut reviewing = false;
+    let mut review_turn: Option<&str> = None;
+    let mut reviewer_turns: HashSet<&str> = HashSet::new(); // turns forwarded from the reviewer
     let mut totals = &null;
     let mut seen: HashSet<&str> = HashSet::new();
     let mut tools: HashSet<&str> = HashSet::new();
@@ -374,29 +377,54 @@ pub(super) fn parse(
         let turn_id = payload["turn_id"].as_str().or(turn);
         let scope = turn_id.map_or(UsageTurn::Unnamed(anonymous_start), UsageTurn::Named);
         let line_number = line as usize + 1;
-        // A review runs in its own reviewer thread, which records the usage. The parent then
-        // repeats the review's result, which no model call produced, until the turn ends.
+        // While a turn runs a review, the parent shows the reviewer's progress and then repeats its
+        // result. None of it is a model call of the parent's own.
+        let own_turn = payload["turn_id"]
+            .as_str()
+            .or_else(|| payload["internal_chat_message_metadata_passthrough"]["turn_id"].as_str());
+        let review_mode = matches!(
+            payload["item"]["type"].as_str(),
+            Some("EnteredReviewMode" | "ExitedReviewMode")
+        );
         match (record_type, subtype) {
-            ("event_msg", "item_completed") if payload["item"]["type"] == "ExitedReviewMode" => {
-                review_ended = true;
+            ("event_msg", "item_completed") if review_mode => {
+                reviewing = true;
+                review_turn = review_turn.or(own_turn).or(turn);
             }
-            // Older rollouts record the end of review mode as its own event.
-            ("event_msg", "exited_review_mode") => review_ended = true,
-            ("event_msg", "task_started" | "task_complete" | "turn_aborted")
-            | ("turn_context", _) => {
-                review_ended = false;
+            // Older rollouts record entering and leaving review mode as events of their own.
+            ("event_msg", "entered_review_mode" | "exited_review_mode") => {
+                reviewing = true;
+                review_turn = review_turn.or(own_turn).or(turn);
+            }
+            ("event_msg", "task_started") if reviewing => {
+                if review_turn.is_some() && payload["root_turn_id"].as_str() == review_turn {
+                    reviewer_turns.extend(own_turn);
+                } else {
+                    reviewing = false;
+                }
+            }
+            ("event_msg", "task_complete" | "turn_aborted")
+                if reviewing && own_turn.is_none_or(|id| review_turn == Some(id)) =>
+            {
+                reviewing = false;
             }
             _ => {}
         }
-        let model_output = (record_type == "response_item"
-            && ((is_message
-                && role == "assistant"
-                && !review_ended
-                && record["metadata"]["compaction_output"].is_null())
-                || subtype == "reasoning"
-                || TOOL_CALLS.contains(&subtype)))
-            || (record_type == "event_msg"
-                && (subtype == "agent_reasoning" || subtype == "agent_message" && !review_ended));
+        if !reviewing {
+            review_turn = None;
+            reviewer_turns.clear();
+        }
+        let in_review = reviewing
+            && own_turn.is_none_or(|id| review_turn == Some(id) || reviewer_turns.contains(id));
+        let model_output = !in_review
+            && ((record_type == "response_item"
+                && ((is_message
+                    && role == "assistant"
+                    && record["metadata"]["compaction_output"].is_null())
+                    || subtype == "reasoning"
+                    || TOOL_CALLS.contains(&subtype)))
+                || (record_type == "event_msg"
+                    && matches!(subtype, "agent_message" | "agent_reasoning")));
         if model_output {
             let reading = readings.entry(scope).or_default();
             reading.first_reply.get_or_insert(line_number);

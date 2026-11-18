@@ -42,9 +42,10 @@ What is left to test and decide for Atlas Nano. The [command line](CLI.md), [rep
   parsed sessions would make a short period faster.
 - Claude Code sessions recorded only in its typed history, with no transcript, are not read.
 - A Codex reply aborted before its usage is recorded, as auto-approval (guardian) replies often are,
-  can be a gap the run warns about. If an earlier response in the same turn was measured, the turn
-  counts as measured and there is no warning; see [missing usage](CLI.md#missing-usage). Whether the
-  provider charges for an aborted reply is not known.
+  can be a gap the run warns about. If the log identifies the reply only by its turn and an earlier
+  response in that turn was measured, the turn counts as measured and there is no warning; see
+  [missing usage](CLI.md#missing-usage). Whether the provider charges for an aborted reply is not
+  known.
 - Atlas can flag a missing measurement when it recognizes a reply or a usage record. If a client
   moves both to an unfamiliar record type, the session can still go unflagged.
 - Codex rollouts migrated by Codex 0.149 can carry their messages and replies only in
