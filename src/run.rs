@@ -107,7 +107,7 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
     if !args.list_warnings && !problems.is_empty() {
         let count: usize = problems.iter().map(|file| file.records.len()).sum();
         eprintln!(
-            "{} {count} problem(s) in {} session file(s); `--list-warnings` lists each file and line",
+            "{} {count} record warning(s) in {} session file(s); `--list-warnings` lists them",
             errors.tone(Tone::Warning, "warning:"),
             problems.len()
         );

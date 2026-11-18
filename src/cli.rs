@@ -56,7 +56,7 @@ pub struct RunArgs {
     #[arg(long, value_enum, value_name = "MODE")]
     pub output: Option<Output>,
 
-    /// List the file and line of each problem found in the session files.
+    /// List each record warning's file and line, instead of their count.
     #[arg(long)]
     pub list_warnings: bool,
 }

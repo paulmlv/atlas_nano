@@ -65,7 +65,7 @@ Requires a saved configuration; without one it stops and says to run `configure`
 | `--confirm`       | no prompt  | Ask before labeling, after the estimate is printed                 |
 | `--retries <N>`   | saved      | Try a [failed call](LABELING.md#the-call) N more times; `0` is off |
 | `--output <M>`    | saved      | `tui` or `print`, instead of the saved setting                     |
-| `--list-warnings` | count only | List the file and line of each problem in the session files        |
+| `--list-warnings` | count only | List each record warning's file and line, instead of their count   |
 
 ### Period
 
@@ -90,12 +90,13 @@ checks for model output in turns with no readable measurement and for malformed 
 the log identifies only the turn, Atlas cannot establish how many individual responses a measurement
 covers. A recorded zero is valid usage.
 
-Warnings on standard error count the sessions with incomplete usage and the problems found in
-session files. With `--list-warnings`, they also identify the file and line of malformed records and
-the first unresolved usage gap in each affected session. An unfinished final JSON record is
-identified separately because the client may still be writing it. That warning alone leaves usage
-complete. A file with an unreadable start date can produce a warning even when Atlas cannot place it
-in the selected period.
+Warnings on standard error always count the sessions with incomplete usage and name the files that
+cannot be read. Record warnings point to the file and line of each malformed record and of the first
+unresolved usage gap in each affected session, so one gap is one warning however many replies lack
+usage. By default one line counts the record warnings; `--list-warnings` lists them instead. An
+unfinished final JSON record is identified separately because the client may still be writing it.
+That warning alone leaves usage complete. A file with an unreadable start date can produce a warning
+even when Atlas cannot place it in the selected period.
 
 ### Labeling cost
 

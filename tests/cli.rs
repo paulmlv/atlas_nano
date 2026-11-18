@@ -228,10 +228,10 @@ fn partial_spend_keeps_the_recorded_subtotal_and_reports_damaged_lines() {
         );
     }
     assert!(text(&output.stdout).contains("Incomplete usage"));
-    // Without the flag, one line counts the problems instead.
+    // Without the flag, one line counts the record warnings instead.
     let summary = text(&listed(false).stderr);
     assert!(
-        summary.contains("3 problem(s) in 1 session file(s); `--list-warnings` lists"),
+        summary.contains("3 record warning(s) in 1 session file(s); `--list-warnings` lists them"),
         "{summary}"
     );
     assert!(!summary.contains("line 4:"), "{summary}");
