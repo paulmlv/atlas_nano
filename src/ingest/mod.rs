@@ -1243,6 +1243,100 @@ mod tests {
     }
 
     #[test]
+    fn codex_does_not_expect_usage_from_a_turn_running_a_review() {
+        let home = home("review-result");
+        let folder = home.join(".codex/sessions");
+        let row = |kind: &str, payload: Value| json!({"timestamp":"2026-01-01T00:00:01Z","type":kind,"payload":payload});
+        let event = |payload: Value| row("event_msg", payload);
+        let item =
+            |kind| event(json!({"type":"item_completed","turn_id":"parent","item":{"type":kind}}));
+        let mode = |kind| event(json!({"type":kind,"turn_id":"parent"}));
+        let start = |turn, root: &str| {
+            event(json!({"type":"task_started","turn_id":turn,"root_turn_id":root}))
+        };
+        let complete = |turn| event(json!({"type":"task_complete","turn_id":turn}));
+        let progress = event(json!({"type":"agent_reasoning"}));
+        let message = event(json!({"type":"agent_message","message":"No findings."}));
+        let result = row(
+            "response_item",
+            json!({"type":"message","role":"assistant"}),
+        );
+        let tagged = row(
+            "response_item",
+            json!({"type":"message","role":"assistant",
+                "internal_chat_message_metadata_passthrough":{"turn_id":"parent"}}),
+        );
+        let other = row(
+            "response_item",
+            json!({"type":"message","role":"assistant","turn_id":"other","response_id":"r"}),
+        );
+        let sessions: [(&str, Vec<Value>); 6] = [
+            (
+                "paginated",
+                vec![
+                    item("EnteredReviewMode"),
+                    start("reviewer", "parent"),
+                    item("ExitedReviewMode"),
+                    tagged,
+                    complete("parent"),
+                ],
+            ),
+            (
+                "legacy",
+                vec![
+                    mode("entered_review_mode"),
+                    start("reviewer", "parent"),
+                    progress,
+                    message.clone(),
+                    mode("exited_review_mode"),
+                    result.clone(),
+                    message,
+                    complete("parent"),
+                ],
+            ),
+            // A late end of another turn does not end the review.
+            (
+                "late",
+                vec![
+                    mode("exited_review_mode"),
+                    complete("other"),
+                    result.clone(),
+                ],
+            ),
+            // A reply tagged with another turn is that turn's own.
+            ("other", vec![mode("entered_review_mode"), other]),
+            // Once the review's turn is over, or with no review, a reply needs usage.
+            (
+                "next",
+                vec![
+                    mode("exited_review_mode"),
+                    complete("parent"),
+                    start("next", "next"),
+                    result.clone(),
+                ],
+            ),
+            ("reply", vec![start("next", "next"), result]),
+        ];
+        for (name, records) in &sessions {
+            write(&folder.join(format!("{name}.jsonl")), records, false);
+        }
+        let loaded = load(&home, &[Client::Codex]);
+        let missing = |id| {
+            loaded
+                .sessions
+                .iter()
+                .find(|s| s.id == id)
+                .unwrap()
+                .usage_missing
+        };
+        for (name, _) in &sessions {
+            let expected = matches!(*name, "other" | "next" | "reply");
+            assert_eq!(missing(*name), expected, "{name}");
+        }
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
     fn a_fork_inherits_the_referenced_history_before_its_cutoff() {
         let home = home("fork");
         let folder = home.join(".codex/sessions");
