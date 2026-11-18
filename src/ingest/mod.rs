@@ -1243,6 +1243,40 @@ mod tests {
     }
 
     #[test]
+    fn codex_does_not_expect_usage_for_a_repeated_review_result() {
+        let home = home("review-result");
+        let folder = home.join(".codex/sessions");
+        let row = |kind: &str, payload: Value| json!({"timestamp":"2026-01-01T00:00:01Z","type":kind,"payload":payload});
+        let result = row(
+            "response_item",
+            json!({"type":"message","role":"assistant",
+                "internal_chat_message_metadata_passthrough":{"turn_id":"parent"}}),
+        );
+        let exited = row(
+            "event_msg",
+            json!({"type":"item_completed","turn_id":"parent",
+                "item":{"type":"ExitedReviewMode"}}),
+        );
+        let start = row(
+            "event_msg",
+            json!({"type":"task_started","turn_id":"reviewer"}),
+        );
+        write(
+            &folder.join("review.jsonl"),
+            &[start.clone(), exited, result.clone()],
+            false,
+        );
+        // Without the review's end, the same message is a reply whose usage is missing.
+        write(&folder.join("reply.jsonl"), &[start, result], false);
+        let loaded = load(&home, &[Client::Codex]);
+        let find = |id| loaded.sessions.iter().find(|s| s.id == id).unwrap();
+        assert!(!find("review").usage_missing);
+        assert!(find("reply").usage_missing);
+        assert_eq!(loaded.issues.len(), 1);
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
     fn a_fork_inherits_the_referenced_history_before_its_cutoff() {
         let home = home("fork");
         let folder = home.join(".codex/sessions");

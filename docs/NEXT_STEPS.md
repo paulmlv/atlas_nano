@@ -41,9 +41,8 @@ What is left to test and decide for Atlas Nano. The [command line](CLI.md), [rep
 - Every run reads every session file, which takes a few seconds on a large history. An index of
   parsed sessions would make a short period faster.
 - Claude Code sessions recorded only in its typed history, with no transcript, are not read.
-- Codex code reviews run with `codex exec` (seen in versions 0.166 and 0.167) record no usage, so
-  their spend is missing and the run warns. The commands they run appear only in `item_completed`
-  events, so they are not counted as tool calls either.
+- A Codex reply aborted before its usage is recorded, as auto-approval (guardian) sessions often
+  are, is a gap the run warns about. Whether the provider charges for it is not known.
 - Atlas can flag a missing measurement when it recognizes a reply or a usage record. If a client
   moves both to an unfamiliar record type, the session can still go unflagged.
 - Codex rollouts migrated by Codex 0.149 can carry their messages and replies only in
