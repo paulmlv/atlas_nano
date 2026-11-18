@@ -382,17 +382,16 @@ pub(super) fn parse(
         let own_turn = payload["turn_id"]
             .as_str()
             .or_else(|| payload["internal_chat_message_metadata_passthrough"]["turn_id"].as_str());
-        let review_mode = matches!(
-            payload["item"]["type"].as_str(),
-            Some("EnteredReviewMode" | "ExitedReviewMode")
-        );
+        // Older rollouts record entering and leaving review mode as events of their own.
+        let review_mode = record_type == "event_msg"
+            && (matches!(subtype, "entered_review_mode" | "exited_review_mode")
+                || subtype == "item_completed"
+                    && matches!(
+                        payload["item"]["type"].as_str(),
+                        Some("EnteredReviewMode" | "ExitedReviewMode")
+                    ));
         match (record_type, subtype) {
-            ("event_msg", "item_completed") if review_mode => {
-                reviewing = true;
-                review_turn = review_turn.or(own_turn).or(turn);
-            }
-            // Older rollouts record entering and leaving review mode as events of their own.
-            ("event_msg", "entered_review_mode" | "exited_review_mode") => {
+            _ if review_mode => {
                 reviewing = true;
                 review_turn = review_turn.or(own_turn).or(turn);
             }
