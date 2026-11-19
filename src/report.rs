@@ -464,6 +464,9 @@ pub(crate) fn days(rows: &[Row]) -> Vec<DaySpend> {
     let mut days: BTreeMap<String, (Decimal, Vec<usize>)> = BTreeMap::new();
     for (n, row) in rows.iter().enumerate() {
         for (usage, price) in row.session.usage.iter().zip(&row.cost.requests) {
+            if usage.tokens() == 0 {
+                continue;
+            }
             let day = days.entry(local_day(usage.at)).or_default();
             day.0 += price.unwrap_or_default();
             if day.1.last() != Some(&n) {
@@ -1401,6 +1404,38 @@ mod tests {
         for dropped in ["idle-model", "Idle chat", "https://pr/idle"] {
             assert!(!out.contains(dropped), "{dropped} shown:\n{out}");
         }
+    }
+
+    #[test]
+    fn leaves_out_days_with_no_tokens() {
+        use crate::account::{cost, tests::session};
+
+        let used = session("used", Kind::Primary, None, 1);
+        let mut idle = session("idle", Kind::Primary, None, 3);
+        idle.usage.truncate(1);
+        idle.usage[0].at += time::Duration::days(1);
+        idle.usage[0].input = 0;
+        idle.usage[0].output = 0;
+        let prices = PriceTable::built_in();
+        let place = Place {
+            project: "app".to_string(),
+            repo: "app".to_string(),
+        };
+        let rows: Vec<Row<'_>> = [&used, &idle]
+            .into_iter()
+            .enumerate()
+            .map(|(root, session)| Row {
+                session,
+                cost: cost(session, &prices),
+                label: None,
+                root,
+                place: &place,
+            })
+            .collect();
+        let by_day = days(&rows);
+        assert_eq!(by_day.len(), 1);
+        assert_eq!(by_day[0].day, local_day(used.usage[0].at));
+        assert_eq!(by_day[0].rows, [0]);
     }
 
     #[test]
