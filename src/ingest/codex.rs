@@ -353,6 +353,9 @@ pub(super) fn parse(
                     && turn.is_none()
                     && let Some(early) = readings.remove(&UsageTurn::Unnamed(anonymous_start))
                 {
+                    for &index in &early.running_totals {
+                        unknown_model.push((index, id));
+                    }
                     readings
                         .entry(UsageTurn::Named(id))
                         .or_default()
@@ -489,7 +492,7 @@ pub(super) fn parse(
                     && let Some(reported) = usage(response, &payload["usage"], at, &model)
                 {
                     // A turn's first response can be recorded before the turn's model.
-                    if let Some(id) = payload["turn_id"].as_str()
+                    if let Some(id) = turn_id
                         && turn_models.get(id) != Some(&model.as_str())
                     {
                         unknown_model.push((session.usage.len(), id));
@@ -534,6 +537,11 @@ pub(super) fn parse(
                     if running {
                         let reading = readings.entry(scope).or_default();
                         if let Some(reported) = usage(&id, &info["last_token_usage"], at, &model) {
+                            if let Some(turn_id) = turn_id
+                                && turn_models.get(turn_id) != Some(&model.as_str())
+                            {
+                                unknown_model.push((session.usage.len(), turn_id));
+                            }
                             reading.running_totals.push(session.usage.len());
                             session.usage.push(reported);
                         } else {
@@ -1013,5 +1021,43 @@ mod tests {
         assert_eq!(texts, ["/goal Ship it", "! ls -l"]);
         assert_eq!(session.items[0].position, 9);
         assert_eq!(session.turns.len(), 1);
+    }
+
+    #[test]
+    fn a_running_total_recorded_before_turn_context_takes_the_turns_model() {
+        let records = [
+            // Named turn: token_count arrives before turn_context.
+            event("task_started", 1, json!({"turn_id": "t1"})),
+            tokens(2, 100, 7),
+            json!({"type": "turn_context", "payload": {"turn_id": "t1", "model": "gpt-6-luna"}}),
+            event("task_complete", 3, json!({"turn_id": "t1"})),
+            // Unnamed turn: task_started and token_count have no turn_id; turn_context arrives later.
+            json!({"type": "event_msg", "timestamp": "2026-01-01T00:00:04Z",
+                "payload": {"type": "task_started"}}),
+            json!({"type": "event_msg", "timestamp": "2026-01-01T00:00:05Z",
+                "payload": {"type": "token_count", "info": {
+                    "last_token_usage": {"input_tokens": 150, "cached_input_tokens": 4, "output_tokens": 5},
+                    "total_token_usage": {"input_tokens": 250, "output_tokens": 12}}}}),
+            json!({"type": "turn_context", "payload": {"turn_id": "t2", "model": "gpt-6.2-sol"}}),
+            event("task_complete", 6, json!({"turn_id": "t2"})),
+        ];
+        let (session, _) = parse(&path(), &records);
+        let models: Vec<_> = session.usage.iter().map(|u| u.model.as_str()).collect();
+        assert_eq!(models, ["gpt-6-luna", "gpt-6.2-sol"]);
+    }
+
+    #[test]
+    fn a_response_inheriting_turn_id_from_task_started_takes_the_turns_model() {
+        let records = [
+            json!({"type": "turn_context", "payload": {"turn_id": "t0", "model": "gpt-6-luna"}}),
+            event("task_started", 1, json!({"turn_id": "t1"})),
+            json!({"type": "token_usage_record", "timestamp": "2026-01-01T00:00:02Z",
+                "payload": {"response_id": "resp_1", "usage": {"input_tokens": 10, "output_tokens": 5}}}),
+            json!({"type": "turn_context", "payload": {"turn_id": "t1", "model": "gpt-6.2-sol"}}),
+            event("task_complete", 3, json!({"turn_id": "t1"})),
+        ];
+        let (session, _) = parse(&path(), &records);
+        assert_eq!(session.usage.len(), 1);
+        assert_eq!(session.usage[0].model, "gpt-6.2-sol");
     }
 }
