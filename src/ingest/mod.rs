@@ -142,7 +142,7 @@ fn transcripts(folder: &Path, found: &mut Vec<PathBuf>, unreadable: &mut Vec<(Pa
             .and_then(|name| name.to_str())
             .unwrap_or_default()
             .to_string();
-        if path.is_dir() {
+        if path.symlink_metadata().is_ok_and(|meta| meta.is_dir()) {
             transcripts(&path, found, unreadable);
         } else if (name.ends_with(".jsonl") || name.ends_with(".jsonl.zst"))
             && !name.contains(".orphaned-")
@@ -1369,5 +1369,23 @@ mod tests {
             .collect();
         assert_eq!(texts, ["one", "two", "four"]);
         fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn symlink_cycles_do_not_recurse_forever() {
+        use std::os::unix::fs::symlink;
+
+        let root = home("symlink-cycle");
+        let sub = root.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        let transcript = sub.join("chat.jsonl");
+        fs::write(&transcript, "").unwrap();
+        symlink(&root, sub.join("loop")).unwrap();
+
+        let (mut found, mut unreadable) = (Vec::new(), Vec::new());
+        transcripts(&root, &mut found, &mut unreadable);
+        assert_eq!(found, [transcript]);
+        assert!(unreadable.is_empty());
+        fs::remove_dir_all(&root).unwrap();
     }
 }

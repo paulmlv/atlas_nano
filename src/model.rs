@@ -56,12 +56,15 @@ pub struct Usage {
 impl Usage {
     /// All input tokens of the request, cached and cache-write tokens included.
     pub fn prompt(&self) -> u64 {
-        self.input + self.cached + self.cache_write + self.cache_write_1h
+        self.input
+            .saturating_add(self.cached)
+            .saturating_add(self.cache_write)
+            .saturating_add(self.cache_write_1h)
     }
 
     /// All input and output tokens of the request.
     pub fn tokens(&self) -> u64 {
-        self.prompt() + self.output
+        self.prompt().saturating_add(self.output)
     }
 }
 
@@ -223,4 +226,27 @@ pub struct Label {
     pub prs: Vec<PullRequest>,
     pub model: String,
     pub from_cache: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn usage_token_sums_saturate_on_overflow() {
+        let usage = Usage {
+            id: "u1".to_string(),
+            owner: None,
+            at: UtcDateTime::UNIX_EPOCH,
+            model: "m".to_string(),
+            fast: false,
+            input: u64::MAX,
+            cached: 10,
+            cache_write: 20,
+            cache_write_1h: 30,
+            output: 40,
+        };
+        assert_eq!(usage.prompt(), u64::MAX);
+        assert_eq!(usage.tokens(), u64::MAX);
+    }
 }
