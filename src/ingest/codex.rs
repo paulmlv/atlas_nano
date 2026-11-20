@@ -340,6 +340,12 @@ pub(super) fn parse(
         let subtype = payload["type"].as_str().unwrap_or_default();
         let role = payload["role"].as_str().unwrap_or_default();
         let is_message = record_type == "response_item" && subtype == "message";
+        // A turn_context immediately followed by task_started opens that next turn, not an
+        // unclosed earlier one.
+        let opens_next_turn = record_type == "turn_context"
+            && records.get(line as usize + 1).is_some_and(|next| {
+                next["type"] == "event_msg" && next["payload"]["type"] == "task_started"
+            });
         match (record_type, subtype) {
             ("event_msg", "task_started") => {
                 turn = payload["turn_id"].as_str();
@@ -353,6 +359,7 @@ pub(super) fn parse(
                 // Some clients send the task ID after its first usage events.
                 if running
                     && turn.is_none()
+                    && !opens_next_turn
                     && let Some(early) = readings.remove(&UsageTurn::Unnamed(anonymous_start))
                 {
                     for &index in early.running_totals.iter().chain(&early.response_usage) {
@@ -457,7 +464,10 @@ pub(super) fn parse(
             ("turn_context", _) => {
                 if let Some(name) = payload["model"].as_str() {
                     model = name.to_string();
-                    if let Some(id) = payload["turn_id"].as_str().or(turn.filter(|_| running)) {
+                    if let Some(id) = payload["turn_id"]
+                        .as_str()
+                        .or(turn.filter(|_| running && !opens_next_turn))
+                    {
                         turn_models.insert(id, name);
                     }
                 }
@@ -1137,6 +1147,54 @@ mod tests {
             ),
         ];
         let (session, _) = parse(&path(), &records);
+        let models: Vec<_> = session.usage.iter().map(|u| u.model.as_str()).collect();
+        assert_eq!(models, ["gpt-6-luna", "gpt-6.2-sol"]);
+    }
+
+    #[test]
+    fn a_turn_context_opening_the_next_turn_does_not_relabel_an_unclosed_turn() {
+        // Case 1: ID-less turn_context opening t2 after an unclosed t1 does not apply sol to t1.
+        let idless_records = [
+            json!({"type": "turn_context", "payload": {"model": "gpt-6-luna"}}),
+            event("task_started", 1, json!({"turn_id": "t1"})),
+            event(
+                "token_count",
+                2,
+                json!({"turn_id": "t1", "info": {
+                    "last_token_usage": {"input_tokens": 10, "output_tokens": 2},
+                    "total_token_usage": {"input_tokens": 10, "output_tokens": 2}}}),
+            ),
+            json!({"type": "turn_context", "payload": {"model": "gpt-6.2-sol"}}),
+            event("task_started", 3, json!({"turn_id": "t2"})),
+            event(
+                "token_count",
+                4,
+                json!({"turn_id": "t2", "info": {
+                    "last_token_usage": {"input_tokens": 20, "output_tokens": 3},
+                    "total_token_usage": {"input_tokens": 30, "output_tokens": 5}}}),
+            ),
+            event("task_complete", 5, json!({"turn_id": "t2"})),
+        ];
+        let (session, _) = parse(&path(), &idless_records);
+        let models: Vec<_> = session.usage.iter().map(|u| u.model.as_str()).collect();
+        assert_eq!(models, ["", "gpt-6.2-sol"]);
+
+        // Case 2: named turn_context opening t2 after an unclosed unnamed turn does not merge or
+        // relabel the earlier turn's per-response usage.
+        let unnamed_records = [
+            json!({"type": "turn_context", "payload": {"turn_id": "t1", "model": "gpt-6-luna"}}),
+            json!({"type": "event_msg", "timestamp": "2026-01-01T00:00:01Z",
+                "payload": {"type": "task_started"}}),
+            json!({"type": "token_usage_record", "timestamp": "2026-01-01T00:00:02Z",
+                "payload": {"response_id": "resp_1", "usage": {"input_tokens": 10, "output_tokens": 5}}}),
+            json!({"type": "turn_context", "payload": {"turn_id": "t2", "model": "gpt-6.2-sol"}}),
+            json!({"type": "event_msg", "timestamp": "2026-01-01T00:00:03Z",
+                "payload": {"type": "task_started"}}),
+            json!({"type": "token_usage_record", "timestamp": "2026-01-01T00:00:04Z",
+                "payload": {"response_id": "resp_2", "usage": {"input_tokens": 20, "output_tokens": 5}}}),
+            event("task_complete", 5, json!({"turn_id": "t2"})),
+        ];
+        let (session, _) = parse(&path(), &unnamed_records);
         let models: Vec<_> = session.usage.iter().map(|u| u.model.as_str()).collect();
         assert_eq!(models, ["gpt-6-luna", "gpt-6.2-sol"]);
     }
