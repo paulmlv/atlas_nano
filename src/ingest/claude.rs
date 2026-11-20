@@ -318,8 +318,6 @@ pub(super) fn parse(path: &Path, records: &[Value], evidence: &mut Evidence) -> 
             // unmarked records.
             span = Span::default();
             events.clear();
-            last_complete = None;
-            tools.clear();
             session.tool_calls = 0;
         }
     }
