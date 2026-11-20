@@ -52,12 +52,24 @@ fn known(value: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Clients omit unused token categories. A present, nonnumeric count is unreadable.
+/// The largest token count accepted for one category of a single model request.
+///
+/// Anything larger is treated as unreadable rather than letting malformed counts overflow sums or
+/// inflate spend.
+const MAX_TOKEN_COUNT: u64 = 1_000_000_000_000;
+
+/// A required token count. Nonnumeric values or counts above `MAX_TOKEN_COUNT` are unreadable.
+fn token_count(value: &Value) -> Option<u64> {
+    value.as_u64().filter(|&count| count <= MAX_TOKEN_COUNT)
+}
+
+/// Clients omit unused token categories. A present, nonnumeric, or out-of-range count is
+/// unreadable.
 fn optional_count(value: &Value) -> Option<u64> {
     if value.is_null() {
         Some(0)
     } else {
-        value.as_u64()
+        token_count(value)
     }
 }
 
@@ -123,7 +135,29 @@ fn read_jsonl(path: &Path) -> io::Result<(Vec<Value>, Vec<LineIssue>)> {
 /// List every transcript under `folder`, in path order.
 ///
 /// A folder that does not exist holds nothing; one that cannot be read is reported in `unreadable`.
+/// Symlinked folders are followed once per canonical target so cycles cannot recurse forever.
 fn transcripts(folder: &Path, found: &mut Vec<PathBuf>, unreadable: &mut Vec<(PathBuf, String)>) {
+    let mut visited = HashSet::new();
+    collect_transcripts(folder, &mut visited, found, unreadable);
+}
+
+fn collect_transcripts(
+    folder: &Path,
+    visited: &mut HashSet<PathBuf>,
+    found: &mut Vec<PathBuf>,
+    unreadable: &mut Vec<(PathBuf, String)>,
+) {
+    let canonical = match fs::canonicalize(folder) {
+        Ok(path) => path,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return,
+        Err(error) => {
+            unreadable.push((folder.to_path_buf(), error.to_string()));
+            return;
+        }
+    };
+    if !visited.insert(canonical) {
+        return;
+    }
     let entries = match fs::read_dir(folder) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return,
@@ -143,7 +177,7 @@ fn transcripts(folder: &Path, found: &mut Vec<PathBuf>, unreadable: &mut Vec<(Pa
             .unwrap_or_default()
             .to_string();
         if path.is_dir() {
-            transcripts(&path, found, unreadable);
+            collect_transcripts(&path, visited, found, unreadable);
         } else if (name.ends_with(".jsonl") || name.ends_with(".jsonl.zst"))
             && !name.contains(".orphaned-")
         {
@@ -1369,5 +1403,75 @@ mod tests {
             .collect();
         assert_eq!(texts, ["one", "two", "four"]);
         fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn symlinks_follow_archived_folders_without_recursing_on_cycles() {
+        use std::os::unix::fs::symlink;
+
+        let base = home("symlink-traversal");
+        let root = base.join("root");
+        let sub = root.join("sub");
+        let archive = base.join("archive");
+        fs::create_dir_all(&sub).unwrap();
+        fs::create_dir_all(&archive).unwrap();
+
+        let local = sub.join("chat.jsonl");
+        fs::write(&local, "").unwrap();
+        let archived = archive.join("old.jsonl");
+        fs::write(&archived, "").unwrap();
+        symlink(&archive, root.join("linked")).unwrap();
+        symlink(&root, sub.join("loop")).unwrap();
+
+        let (mut found, mut unreadable) = (Vec::new(), Vec::new());
+        transcripts(&root, &mut found, &mut unreadable);
+        assert_eq!(found, [root.join("linked/old.jsonl"), local]);
+        assert!(unreadable.is_empty());
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn absurd_token_counts_are_rejected_as_unreadable_usage() {
+        let home = home("absurd-tokens");
+        let projects = home.join(".claude/projects/p");
+        let mut huge_input = reply("m1", 1);
+        huge_input["sessionId"] = json!("huge_input");
+        huge_input["message"]["usage"]["input_tokens"] = json!(u64::MAX);
+        let mut huge_cached = reply("m2", 1);
+        huge_cached["sessionId"] = json!("huge_cached");
+        huge_cached["message"]["usage"]["cache_read_input_tokens"] = json!(MAX_TOKEN_COUNT + 1);
+        write(&projects.join("huge_input.jsonl"), &[huge_input], false);
+        write(&projects.join("huge_cached.jsonl"), &[huge_cached], false);
+
+        let rollout = home.join(
+            ".codex/sessions/rollout-2026-01-01T00-00-00-00000037-0205-7016-8024-000000000099.jsonl",
+        );
+        let message = json!({"type": "response_item", "timestamp": "2026-01-01T00:00:01Z",
+            "payload": {"type": "message", "role": "assistant",
+                "content": [{"type": "output_text", "text": "hi"}]}});
+        let record = json!({"type": "token_usage_record", "timestamp": "2026-01-01T00:00:01Z",
+            "payload": {"response_id": "r1", "usage": {
+                "input_tokens": u64::MAX, "output_tokens": 10}}});
+        write(&rollout, &[message, record], false);
+
+        let loaded = load(&home, &[Client::Claude, Client::Codex]);
+        fs::remove_dir_all(&home).unwrap();
+        assert_eq!(loaded.sessions.len(), 3);
+        let prices = crate::prices::PriceTable::built_in();
+        for session in &loaded.sessions {
+            assert!(session.usage.is_empty());
+            assert!(session.usage_missing);
+            let cost = crate::account::cost(session, &prices);
+            assert_eq!(cost.tokens.total(), 0);
+            assert!(cost.coverage.unknown());
+        }
+        assert_eq!(loaded.issues.len(), 3);
+        for file in &loaded.issues {
+            assert!(
+                file.records
+                    .iter()
+                    .any(|issue| matches!(issue.reason, LineProblem::MissingUsage))
+            );
+        }
     }
 }

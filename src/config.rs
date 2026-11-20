@@ -178,9 +178,14 @@ impl Config {
 
 /// The user's home folder.
 pub fn home() -> Result<PathBuf, String> {
-    env::var_os("HOME")
+    home_from(env::var_os("HOME"))
+}
+
+fn home_from(value: Option<std::ffi::OsString>) -> Result<PathBuf, String> {
+    value
+        .filter(|value| Path::new(value).is_absolute())
         .map(PathBuf::from)
-        .ok_or("HOME is not set".to_string())
+        .ok_or_else(|| "HOME is not set to an absolute path".to_string())
 }
 
 /// An XDG base folder, or `fallback` under the home folder. As the XDG specification says, a
@@ -278,6 +283,20 @@ pub mod tests {
         assert_eq!(
             absolute(Path::new("/var/tmp")).unwrap(),
             Path::new("/var/tmp")
+        );
+    }
+
+    #[test]
+    fn home_rejects_missing_empty_and_relative_values() {
+        use std::ffi::OsString;
+
+        let expected = Err("HOME is not set to an absolute path".to_string());
+        assert_eq!(home_from(None), expected);
+        assert_eq!(home_from(Some(OsString::from(""))), expected);
+        assert_eq!(home_from(Some(OsString::from("relative/home"))), expected);
+        assert_eq!(
+            home_from(Some(OsString::from("/Users/test"))).unwrap(),
+            Path::new("/Users/test")
         );
     }
 

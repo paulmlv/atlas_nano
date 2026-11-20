@@ -9,7 +9,7 @@ use serde_json::Value;
 use time::UtcDateTime;
 
 use super::timing::{self, Event, Signal};
-use super::{Evidence, Span, known, optional_count, stem};
+use super::{Evidence, Span, known, optional_count, stem, token_count};
 use crate::model::{Client, HistoryBase, Item, Kind, Role, Session, SessionRef, Usage};
 use crate::timestamp;
 
@@ -161,8 +161,8 @@ fn request(text: &str) -> String {
 fn usage(id: &str, counts: &Value, at: Option<UtcDateTime>, model: &str) -> Option<Usage> {
     // Without its input and output counts the usage was not read, so the session is flagged.
     let (input, output) = (
-        counts["input_tokens"].as_u64()?,
-        counts["output_tokens"].as_u64()?,
+        token_count(&counts["input_tokens"])?,
+        token_count(&counts["output_tokens"])?,
     );
     let (cached, cache_write) = (
         optional_count(&counts["cached_input_tokens"])?,
