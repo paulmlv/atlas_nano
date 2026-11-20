@@ -1410,7 +1410,8 @@ mod tests {
     fn leaves_out_days_with_no_tokens() {
         use crate::account::{cost, tests::session};
 
-        let used = session("used", Kind::Primary, None, 1);
+        let mut used = session("used", Kind::Primary, None, 1);
+        used.usage.truncate(1);
         let mut idle = session("idle", Kind::Primary, None, 3);
         idle.usage.truncate(1);
         idle.usage[0].at += time::Duration::days(1);
