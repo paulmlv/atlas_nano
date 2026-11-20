@@ -197,22 +197,7 @@ pub(super) fn parse(path: &Path, records: &[Value], evidence: &mut Evidence) -> 
             continue;
         }
         let at = record["timestamp"].as_str().and_then(timestamp::parse);
-        let copied = session.kind == Kind::Primary
-            && (record["forkedFrom"]["sessionId"].is_string()
-                || record["sessionId"]
-                    .as_str()
-                    .is_some_and(|id| id != session.id));
-        if copied {
-            // Discard timestamps, turns, and tool counts from the copied prefix, including its
-            // unmarked records.
-            span = Span::default();
-            events.clear();
-            last_complete = None;
-            tools.clear();
-            session.tool_calls = 0;
-        } else {
-            span.add(at);
-        }
+        span.add(at);
         if session.cwd.is_none() {
             session.cwd = known(&record["cwd"]);
         }
@@ -241,27 +226,23 @@ pub(super) fn parse(path: &Path, records: &[Value], evidence: &mut Evidence) -> 
             "custom-title" => custom_title = record["customTitle"].as_str().unwrap_or_default(),
             "ai-title" => ai_title = record["aiTitle"].as_str().unwrap_or_default(),
             "system" if record["subtype"].as_str() == Some("api_error") => {
-                if !copied {
-                    events.push(event(Signal::Interrupted));
-                }
+                events.push(event(Signal::Interrupted));
             }
             "user" if record["isCompactSummary"].as_bool() != Some(true) => {
                 let content = &record["message"]["content"];
                 let is_result = content
                     .as_array()
                     .is_some_and(|blocks| blocks.iter().any(|b| b["type"] == "tool_result"));
-                if !copied {
-                    if content
-                        .as_str()
-                        .is_some_and(|text| INTERRUPTIONS.contains(&text.trim()))
-                    {
-                        events.push(event(Signal::Interrupted));
-                    } else if is_result {
-                        events.push(event(Signal::Activity));
-                    }
+                if content
+                    .as_str()
+                    .is_some_and(|text| INTERRUPTIONS.contains(&text.trim()))
+                {
+                    events.push(event(Signal::Interrupted));
+                } else if is_result {
+                    events.push(event(Signal::Activity));
                 }
                 if let Some((role, text)) = message(&record["origin"], text(content), record) {
-                    if !copied && role == Role::User && is_turn(&text) && !text.is_empty() {
+                    if role == Role::User && is_turn(&text) && !text.is_empty() {
                         events.push(event(Signal::Request { steer: false }));
                     }
                     keep(role, text);
@@ -271,7 +252,7 @@ pub(super) fn parse(path: &Path, records: &[Value], evidence: &mut Evidence) -> 
                 let queued = &record["attachment"];
                 let human = queued["origin"]["kind"].as_str() == Some("human");
                 let text = text(&queued["prompt"]);
-                if !copied && human && !text.is_empty() {
+                if human && !text.is_empty() {
                     events.push(event(Signal::Request { steer: true }));
                 }
                 keep(if human { Role::User } else { Role::Agent }, text);
@@ -285,7 +266,7 @@ pub(super) fn parse(path: &Path, records: &[Value], evidence: &mut Evidence) -> 
                             keep(Role::Assistant, text.to_string());
                         }
                         Some("tool_use") => {
-                            if !copied && block["id"].as_str().is_none_or(|id| tools.insert(id)) {
+                            if block["id"].as_str().is_none_or(|id| tools.insert(id)) {
                                 session.tool_calls += 1;
                             }
                             let name = block["name"].as_str().unwrap_or_default();
@@ -309,25 +290,37 @@ pub(super) fn parse(path: &Path, records: &[Value], evidence: &mut Evidence) -> 
                     let id = reply["id"].as_str().filter(|id| !id.is_empty());
                     evidence.missing_response(id, recorded_owner(record), position as usize + 1);
                 }
-                if !copied {
-                    let done = matches!(
-                        reply["stop_reason"].as_str(),
-                        Some("end_turn" | "stop_sequence")
-                    );
-                    let id = reply["id"].as_str();
-                    // Each block's record repeats its response's stop reason: one completion, at the last.
-                    if done && id.is_some() && last_complete == id {
-                        events.pop();
-                    }
-                    events.push(event(if done {
-                        Signal::Complete
-                    } else {
-                        Signal::Activity
-                    }));
-                    last_complete = id.filter(|_| done);
+                let done = matches!(
+                    reply["stop_reason"].as_str(),
+                    Some("end_turn" | "stop_sequence")
+                );
+                let id = reply["id"].as_str();
+                // Each block's record repeats its response's stop reason: one completion, at the last.
+                if done && id.is_some() && last_complete == id {
+                    events.pop();
                 }
+                events.push(event(if done {
+                    Signal::Complete
+                } else {
+                    Signal::Activity
+                }));
+                last_complete = id.filter(|_| done);
             }
             _ => {}
+        }
+        if session.kind == Kind::Primary
+            && (record["forkedFrom"]["sessionId"].is_string()
+                || record["sessionId"]
+                    .as_str()
+                    .is_some_and(|id| id != session.id))
+        {
+            // Discard timestamps, turns, and tool counts from the copied prefix, including its
+            // unmarked records.
+            span = Span::default();
+            events.clear();
+            last_complete = None;
+            tools.clear();
+            session.tool_calls = 0;
         }
     }
     (session.started, session.ended) = span.bounds();
@@ -465,10 +458,20 @@ mod tests {
     #[test]
     fn fork_counts_only_post_fork_turns_working_time_and_tool_calls() {
         let session = parse_main(&[
-            json!({"type": "user", "uuid": "1", "timestamp": "2026-01-01T00:00:00Z",
+            // Unmarked prefix records before any fork marker are also cleared.
+            json!({"type": "user", "uuid": "0a", "timestamp": "2026-01-01T00:00:00Z",
+                "origin": {"kind": "human"},
+                "message": {"content": "Unmarked pre-fork question"}}),
+            json!({"type": "assistant", "uuid": "0b", "timestamp": "2026-01-01T00:00:03Z",
+                "message": {"id": "m0", "model": "claude-haiku-5-5", "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 5, "output_tokens": 1},
+                    "content": [
+                        {"type": "tool_use", "id": "t0", "name": "Glob", "input": {"pattern": "*"}},
+                        {"type": "text", "text": "Unmarked pre-fork answer"}]}}),
+            json!({"type": "user", "uuid": "1", "timestamp": "2026-01-01T00:00:10Z",
                 "sessionId": "parent", "origin": {"kind": "human"},
                 "message": {"content": "Pre-fork question"}}),
-            json!({"type": "assistant", "uuid": "2", "timestamp": "2026-01-01T00:00:10Z",
+            json!({"type": "assistant", "uuid": "2", "timestamp": "2026-01-01T00:00:20Z",
                 "forkedFrom": {"sessionId": "parent"},
                 "message": {"id": "m1", "model": "claude-haiku-5-5", "stop_reason": "end_turn",
                     "usage": {"input_tokens": 10, "output_tokens": 2},
@@ -493,10 +496,13 @@ mod tests {
         );
         assert_eq!(session.wall(), Some(time::SignedDuration::seconds(5)));
         assert_eq!(session.tool_calls, 1);
-        assert_eq!(session.usage.len(), 2);
+        assert_eq!(session.usage.len(), 3);
         assert_eq!(
             rendered(&session),
             [
+                "[user] Unmarked pre-fork question",
+                r#"[tool] Glob {"pattern":"*"}"#,
+                "[assistant] Unmarked pre-fork answer",
                 "[user] Pre-fork question",
                 r#"[tool] Bash {"command":"ls"}"#,
                 "[assistant] Pre-fork answer",
