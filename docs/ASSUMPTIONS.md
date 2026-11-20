@@ -21,3 +21,13 @@ the child, by the rollouts' own creation times. A recorded rollout link takes pr
 
 **Risk:** if an older rollout of the thread was still active and spawned the child, the child and
 its spend land with the newer version, possibly in the wrong period.
+
+## A Codex request recorded before its turn's model ran on the turn's first model
+
+A Codex turn names its model in a `turn_context` record, and records another when the model changes
+partway through. Some clients record a turn's first usage before its first `turn_context`. That
+usage is priced at the turn's first model; each later request at the turn's latest model.
+
+**Risk:** untested. In a check in November 2026, no local turn recorded more than one model. If a
+client wrote a turn's first `turn_context` only after a model change, the requests before it would
+be priced at the new model.
