@@ -317,7 +317,8 @@ pub(super) fn parse(
     let mut running = false; // whether a turn has started and not ended
     let mut turn_requests = 0u32; // a user message in a turn that already has a request is a steer
     let mut model = String::new();
-    let mut turn_models: HashMap<&str, &str> = HashMap::new();
+    let mut turn_models: HashMap<&str, &str> = HashMap::new(); // each turn's latest model
+    let mut first_models: HashMap<&str, &str> = HashMap::new(); // each turn's first model
     let mut unknown_model: Vec<(usize, &str)> = Vec::new(); // responses read before their turn's model
     let mut finished: HashSet<&str> = HashSet::new();
     // A turn running a review makes no model call itself; its reviewer thread records the usage.
@@ -476,6 +477,7 @@ pub(super) fn parse(
                         .or_else(|| turn.filter(|_| running && next_start.is_none()))
                     {
                         turn_models.insert(id, name);
+                        first_models.entry(id).or_insert(name);
                     }
                 }
             }
@@ -507,12 +509,16 @@ pub(super) fn parse(
             ("token_usage_record", _) => {
                 // Each record is one response; its ID survives a fork's copy.
                 let id = payload["response_id"].as_str().filter(|id| !id.is_empty());
+                // A response runs on its turn's model, once the turn has recorded one.
+                let turn_model = turn_id
+                    .and_then(|id| turn_models.get(id).copied())
+                    .unwrap_or(&model);
                 if let Some(response) = id
-                    && let Some(reported) = usage(response, &payload["usage"], at, &model)
+                    && let Some(reported) = usage(response, &payload["usage"], at, turn_model)
                 {
                     // A turn's first response can be recorded before the turn's model.
                     if let Some(id) = turn_id
-                        && turn_models.get(id) != Some(&model.as_str())
+                        && !turn_models.contains_key(id)
                     {
                         unknown_model.push((session.usage.len(), id));
                     }
@@ -553,9 +559,14 @@ pub(super) fn parse(
                     );
                     if running {
                         let reading = readings.entry(scope).or_default();
-                        if let Some(reported) = usage(&id, &info["last_token_usage"], at, &model) {
+                        let turn_model = turn_id
+                            .and_then(|id| turn_models.get(id).copied())
+                            .unwrap_or(&model);
+                        if let Some(reported) =
+                            usage(&id, &info["last_token_usage"], at, turn_model)
+                        {
                             if let Some(turn_id) = turn_id
-                                && turn_models.get(turn_id) != Some(&model.as_str())
+                                && !turn_models.contains_key(turn_id)
                             {
                                 unknown_model.push((session.usage.len(), turn_id));
                             }
@@ -675,7 +686,7 @@ pub(super) fn parse(
         }
     }
     for (index, turn) in unknown_model {
-        match turn_models.get(turn) {
+        match first_models.get(turn) {
             Some(name) => session.usage[index].model = name.to_string(),
             // A finished turn with no context of its own, such as a compaction, ran on the model
             // then current.
@@ -863,16 +874,22 @@ mod tests {
     }
 
     #[test]
-    fn a_response_recorded_before_its_turn_context_takes_the_turns_model() {
+    fn a_response_recorded_before_its_turn_context_takes_the_turns_first_model() {
         let records = [
             json!({"type": "turn_context", "payload": {"turn_id": "t0", "model": "gpt-6-luna"}}),
             event("task_started", 1, json!({})),
             json!({"type": "token_usage_record", "timestamp": "2026-01-01T00:00:02Z",
                 "payload": {"turn_id": "t1", "response_id": "resp_a", "usage": {"input_tokens": 0, "output_tokens": 0}}}),
             json!({"type": "turn_context", "payload": {"turn_id": "t1", "model": "gpt-6.1-sol"}}),
+            json!({"type": "token_usage_record", "timestamp": "2026-01-01T00:00:04Z",
+                "payload": {"turn_id": "t1", "response_id": "resp_b", "usage": {"input_tokens": 0, "output_tokens": 0}}}),
+            json!({"type": "turn_context", "payload": {"turn_id": "t1", "model": "gpt-6-astra"}}),
+            json!({"type": "token_usage_record", "timestamp": "2026-01-01T00:00:06Z",
+                "payload": {"turn_id": "t1", "response_id": "resp_c", "usage": {"input_tokens": 0, "output_tokens": 0}}}),
         ];
         let (session, _) = parse(&path(), &records);
-        assert_eq!(session.usage[0].model, "gpt-6.1-sol");
+        let models: Vec<_> = session.usage.iter().map(|u| u.model.as_str()).collect();
+        assert_eq!(models, ["gpt-6.1-sol", "gpt-6.1-sol", "gpt-6-astra"]);
     }
 
     #[test]
