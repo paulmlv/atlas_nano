@@ -329,6 +329,10 @@ pub(super) fn parse(
     let mut tools: HashSet<&str> = HashSet::new();
     let mut goals: HashSet<i64> = HashSet::new();
     let mut typed_goals: Vec<String> = Vec::new();
+    // User goals that made a request before any typed /goal claimed them: objective, the request's
+    // event index, and the record's position.
+    let mut app_goals: Vec<(String, usize, u64)> = Vec::new();
+    let (mut dropped_events, mut dropped_items) = (HashSet::new(), HashSet::new());
     for (line, record) in (0u64..).zip(records) {
         let position = record["ordinal"].as_u64().unwrap_or(line);
         let at = record["timestamp"].as_str().and_then(timestamp::parse);
@@ -451,6 +455,7 @@ pub(super) fn parse(
         }
         let mut signal = |signal: Signal, run: Option<String>| {
             events.push(Event { signal, at, run });
+            events.len() - 1
         };
         let mut keep = |role: Role, text: String| {
             if !text.is_empty() {
@@ -577,12 +582,14 @@ pub(super) fn parse(
                     .as_i64()
                     .is_some_and(|created| goals.insert(created));
                 if new && payload.get("turnId").is_none() {
-                    // An older client also records a typed /goal as a message: that is one goal.
+                    // An older client also records a typed /goal as a message, before or after
+                    // this event: the two are one goal, kept as the typed message.
                     if let Some(typed) = typed_goals.iter().position(|goal| *goal == objective) {
                         typed_goals.swap_remove(typed);
                     } else {
-                        signal(Signal::Request { steer: false }, None);
+                        let index = signal(Signal::Request { steer: false }, None);
                         keep(Role::User, format!("/goal {objective}"));
+                        app_goals.push((objective, index, position));
                     }
                 }
             }
@@ -617,7 +624,9 @@ pub(super) fn parse(
                         .to_string(),
                 );
             }
-            ("response_item", _) if WORK.contains(&subtype) => signal(Signal::Activity, event_run),
+            ("response_item", _) if WORK.contains(&subtype) => {
+                signal(Signal::Activity, event_run);
+            }
             ("response_item", "message") if role == "assistant" => {
                 signal(Signal::Activity, event_run);
                 if record["metadata"]["compaction_output"].is_null() {
@@ -647,7 +656,15 @@ pub(super) fn parse(
                         signal(Signal::Request { steer }, event_run);
                         turn_requests += 1;
                         if let Some(objective) = raw.strip_prefix("/goal ") {
-                            typed_goals.push(objective.trim().to_string());
+                            let objective = objective.trim();
+                            match app_goals.iter().position(|(goal, ..)| goal == objective) {
+                                Some(found) => {
+                                    let (_, index, at) = app_goals.swap_remove(found);
+                                    dropped_events.insert(index);
+                                    dropped_items.insert(at);
+                                }
+                                None => typed_goals.push(objective.to_string()),
+                            }
                         }
                     }
                     seen.extend(id);
@@ -670,6 +687,14 @@ pub(super) fn parse(
     evidence.usage_thread = Some(usage_thread.to_owned());
     finish_usage(readings, evidence);
     (session.started, session.ended) = span.bounds();
+    // A goal a later typed /goal claimed is that message's request, not one of its own.
+    let events: Vec<Event> = (0..)
+        .zip(events)
+        .filter_map(|(index, event)| (!dropped_events.contains(&index)).then_some(event))
+        .collect();
+    session
+        .items
+        .retain(|item| !(item.role == Role::User && dropped_items.contains(&item.position)));
     session.turns = timing::turns(&events);
     let version = header
         .and_then(|record| timestamp::parse(record["timestamp"].as_str()?))
@@ -1199,5 +1224,28 @@ mod tests {
         let (session, _) = parse(&path(), &unnamed_records);
         let models: Vec<_> = session.usage.iter().map(|u| u.model.as_str()).collect();
         assert_eq!(models, ["gpt-6-luna", "gpt-6.2-sol"]);
+    }
+
+    #[test]
+    fn a_typed_goal_after_its_goal_event_is_one_request() {
+        let goal = |second: u32, created: i64| {
+            json!({"type": "event_msg", "timestamp": format!("2026-01-01T00:00:{second:02}Z"),
+                "payload": {"type": "thread_goal_updated",
+                    "goal": {"createdAt": created, "objective": "Ship it"}}})
+        };
+        let mut records = vec![
+            goal(1, 1),
+            user("u1", 2, "/goal Ship it", true),
+            event("task_started", 3, json!({})),
+        ];
+        let (session, _) = parse(&path(), &records);
+        assert_eq!(session.turns.len(), 1);
+        let texts: Vec<&str> = session.items.iter().map(|i| i.text.as_str()).collect();
+        assert_eq!(texts, ["/goal Ship it"]);
+        assert_eq!(session.items[0].position, 1);
+        // A later goal with the same objective is the user's second goal.
+        records.push(goal(4, 2));
+        let (session, _) = parse(&path(), &records);
+        assert_eq!(session.turns.len(), 2);
     }
 }

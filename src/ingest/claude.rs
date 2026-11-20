@@ -97,21 +97,15 @@ fn message(origin: &Value, text: String, record: &Value) -> Option<(Role, String
     ))
 }
 
-/// Whether a user item is a turn: a typed prompt, or a command the model replies to.
-fn is_turn(text: &str) -> bool {
-    let command = |word: &str| {
-        word == "!"
-            || word.strip_prefix('/').is_some_and(|name| {
-                !name.is_empty()
-                    && name
-                        .chars()
-                        .all(|c| c.is_alphanumeric() || "_:-".contains(c))
-            })
-    };
-    match text.split_whitespace().next() {
-        Some(word) if command(word) => TURN_COMMANDS.contains(&word),
-        _ => true,
-    }
+/// Whether a user item is a turn: a typed prompt, or a command the model replies to. Claude Code
+/// tags the commands it runs, such as skills it loads, so only a tagged command can be a non-turn.
+/// Untagged text went to the model as a prompt, even when it starts with `/`.
+fn is_turn(text: &str, tagged: bool) -> bool {
+    !tagged
+        || text
+            .split_whitespace()
+            .next()
+            .is_some_and(|word| TURN_COMMANDS.contains(&word))
 }
 
 fn recorded_owner(record: &Value) -> Option<&str> {
@@ -190,14 +184,24 @@ pub(super) fn parse(path: &Path, records: &[Value], evidence: &mut Evidence) -> 
     let mut events: Vec<Event> = Vec::new();
     let mut last_complete: Option<&str> = None;
     let (mut custom_title, mut ai_title) = ("", "");
+    // A subagent forked from its parent's context opens with a `fork-context-ref` and a copy of the
+    // parent's reply that started it. That reply is the parent's: it adds no time or tool call.
+    let mut copying_parent = session.kind == Kind::Subagent
+        && records
+            .first()
+            .is_some_and(|record| record["type"] == "fork-context-ref");
     for (position, record) in (0u64..).zip(records) {
         if let Some(uuid) = record["uuid"].as_str()
             && !seen.insert(uuid)
         {
             continue;
         }
+        copying_parent &= position == 0 || record["type"] == "assistant";
+        let copied = copying_parent && position > 0;
         let at = record["timestamp"].as_str().and_then(timestamp::parse);
-        span.add(at);
+        if !copied {
+            span.add(at);
+        }
         if session.cwd.is_none() {
             session.cwd = known(&record["cwd"]);
         }
@@ -241,8 +245,10 @@ pub(super) fn parse(path: &Path, records: &[Value], evidence: &mut Evidence) -> 
                 } else if is_result {
                     events.push(event(Signal::Activity));
                 }
-                if let Some((role, text)) = message(&record["origin"], text(content), record) {
-                    if role == Role::User && is_turn(&text) && !text.is_empty() {
+                let body = text(content);
+                let tagged = typed_command(&body).is_some();
+                if let Some((role, text)) = message(&record["origin"], body, record) {
+                    if role == Role::User && is_turn(&text, tagged) && !text.is_empty() {
                         events.push(event(Signal::Request { steer: false }));
                     }
                     keep(role, text);
@@ -266,7 +272,7 @@ pub(super) fn parse(path: &Path, records: &[Value], evidence: &mut Evidence) -> 
                             keep(Role::Assistant, text.to_string());
                         }
                         Some("tool_use") => {
-                            if block["id"].as_str().is_none_or(|id| tools.insert(id)) {
+                            if !copied && block["id"].as_str().is_none_or(|id| tools.insert(id)) {
                                 session.tool_calls += 1;
                             }
                             let name = block["name"].as_str().unwrap_or_default();
@@ -290,21 +296,24 @@ pub(super) fn parse(path: &Path, records: &[Value], evidence: &mut Evidence) -> 
                     let id = reply["id"].as_str().filter(|id| !id.is_empty());
                     evidence.missing_response(id, recorded_owner(record), position as usize + 1);
                 }
-                let done = matches!(
-                    reply["stop_reason"].as_str(),
-                    Some("end_turn" | "stop_sequence")
-                );
-                let id = reply["id"].as_str();
-                // Each block's record repeats its response's stop reason: one completion, at the last.
-                if done && id.is_some() && last_complete == id {
-                    events.pop();
+                if !copied {
+                    let done = matches!(
+                        reply["stop_reason"].as_str(),
+                        Some("end_turn" | "stop_sequence")
+                    );
+                    let id = reply["id"].as_str();
+                    // Each block's record repeats its response's stop reason: one completion, at
+                    // the last.
+                    if done && id.is_some() && last_complete == id {
+                        events.pop();
+                    }
+                    events.push(event(if done {
+                        Signal::Complete
+                    } else {
+                        Signal::Activity
+                    }));
+                    last_complete = id.filter(|_| done);
                 }
-                events.push(event(if done {
-                    Signal::Complete
-                } else {
-                    Signal::Activity
-                }));
-                last_complete = id.filter(|_| done);
             }
             _ => {}
         }
@@ -509,5 +518,57 @@ mod tests {
                 "[assistant] Post-fork answer",
             ]
         );
+    }
+
+    #[test]
+    fn only_a_tagged_command_can_be_a_non_turn() {
+        let session = parse_main(&[
+            // Untagged text went to the model as a prompt, even with a leading slash.
+            json!({"type": "user", "uuid": "1", "timestamp": "2026-01-01T00:00:00Z",
+                "origin": {"kind": "human"}, "message": {"content": "/simplify"}}),
+            // A skill Claude Code loads is a tagged command without a slash, and no request.
+            json!({"type": "user", "uuid": "2", "timestamp": "2026-01-01T00:00:01Z",
+                "isMeta": true,
+                "message": {"content": "<command-message>skill</command-message>\n<command-name>skill</command-name>\n<skill-format>true</skill-format>"}}),
+            json!({"type": "user", "uuid": "3", "timestamp": "2026-01-01T00:00:02Z",
+                "origin": {"kind": "human"},
+                "message": {"content": "<command-name>/compact</command-name>"}}),
+            json!({"type": "user", "uuid": "4", "timestamp": "2026-01-01T00:00:03Z",
+                "origin": {"kind": "human"},
+                "message": {"content": "<command-name>/goal</command-name>\n<command-args>Ship it</command-args>"}}),
+        ]);
+        let seconds: Vec<u8> = session.turns.iter().map(|turn| turn.at.second()).collect();
+        assert_eq!(seconds, [0, 3]);
+    }
+
+    #[test]
+    fn a_subagent_forked_from_context_leaves_the_copied_reply_to_its_parent() {
+        let session = parse(
+            Path::new("/home/.claude/projects/p/parent/subagents/agent-1.jsonl"),
+            &[
+                json!({"type": "fork-context-ref", "uuid": "0", "sessionId": "parent"}),
+                json!({"type": "assistant", "uuid": "1", "sessionId": "parent",
+                    "timestamp": "2026-01-01T00:00:00Z",
+                    "message": {"id": "m0", "model": "claude-haiku-5-5", "stop_reason": "tool_use",
+                        "usage": {"input_tokens": 5, "output_tokens": 1},
+                        "content": [{"type": "tool_use", "id": "t0", "name": "Agent",
+                            "input": {"prompt": "Look"}}]}}),
+                json!({"type": "user", "uuid": "2", "sessionId": "parent",
+                    "timestamp": "2026-01-01T00:01:00Z", "origin": {"kind": "human"},
+                    "message": {"content": "Look"}}),
+                json!({"type": "assistant", "uuid": "3", "sessionId": "parent",
+                    "timestamp": "2026-01-01T00:01:05Z",
+                    "message": {"id": "m1", "model": "claude-haiku-5-5", "stop_reason": "end_turn",
+                        "usage": {"input_tokens": 10, "output_tokens": 2},
+                        "content": [{"type": "tool_use", "id": "t1", "name": "Read",
+                            "input": {"path": "a"}}]}}),
+            ],
+            &mut Evidence::default(),
+        );
+        assert_eq!(session.kind, Kind::Subagent);
+        assert_eq!(session.tool_calls, 1);
+        assert_eq!(session.wall(), Some(time::SignedDuration::seconds(5)));
+        assert_eq!(session.turns.len(), 1);
+        assert_eq!(session.usage.len(), 2);
     }
 }
