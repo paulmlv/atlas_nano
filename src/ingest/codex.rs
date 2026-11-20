@@ -241,6 +241,14 @@ pub(super) fn link_parents(sessions: &mut [Session], versions: &[Option<Version>
     }
 }
 
+/// The list without the elements at the dropped indices.
+fn without<T>(list: Vec<T>, dropped: &HashSet<usize>) -> Vec<T> {
+    (0..)
+        .zip(list)
+        .filter_map(|(index, element)| (!dropped.contains(&index)).then_some(element))
+        .collect()
+}
+
 /// Describe one rollout from its own records. Each rollout is its own session, so an edit of a
 /// thread is a separate conversation whose parent is the thread's first rollout.
 pub(super) fn parse(
@@ -331,8 +339,8 @@ pub(super) fn parse(
     let mut goals: HashSet<i64> = HashSet::new();
     let mut typed_goals: Vec<String> = Vec::new();
     // User goals that made a request before any typed /goal claimed them: objective, the request's
-    // event index, and the record's position.
-    let mut app_goals: Vec<(String, usize, u64)> = Vec::new();
+    // event index, and its item index.
+    let mut app_goals: Vec<(String, usize, usize)> = Vec::new();
     let (mut dropped_events, mut dropped_items) = (HashSet::new(), HashSet::new());
     for (line, record) in (0u64..).zip(records) {
         let position = record["ordinal"].as_u64().unwrap_or(line);
@@ -598,9 +606,9 @@ pub(super) fn parse(
                     if let Some(typed) = typed_goals.iter().position(|goal| *goal == objective) {
                         typed_goals.swap_remove(typed);
                     } else {
-                        let index = signal(Signal::Request { steer: false }, None);
+                        let event = signal(Signal::Request { steer: false }, None);
                         keep(Role::User, format!("/goal {objective}"));
-                        app_goals.push((objective, index, position));
+                        app_goals.push((objective, event, session.items.len() - 1));
                     }
                 }
             }
@@ -670,9 +678,9 @@ pub(super) fn parse(
                             let objective = objective.trim();
                             match app_goals.iter().position(|(goal, ..)| goal == objective) {
                                 Some(found) => {
-                                    let (_, index, at) = app_goals.swap_remove(found);
-                                    dropped_events.insert(index);
-                                    dropped_items.insert(at);
+                                    let (_, event, item) = app_goals.swap_remove(found);
+                                    dropped_events.insert(event);
+                                    dropped_items.insert(item);
                                 }
                                 None => typed_goals.push(objective.to_string()),
                             }
@@ -699,13 +707,8 @@ pub(super) fn parse(
     finish_usage(readings, evidence);
     (session.started, session.ended) = span.bounds();
     // A goal a later typed /goal claimed is that message's request, not one of its own.
-    let events: Vec<Event> = (0..)
-        .zip(events)
-        .filter_map(|(index, event)| (!dropped_events.contains(&index)).then_some(event))
-        .collect();
-    session
-        .items
-        .retain(|item| !(item.role == Role::User && dropped_items.contains(&item.position)));
+    let events = without(events, &dropped_events);
+    session.items = without(std::mem::take(&mut session.items), &dropped_items);
     session.turns = timing::turns(&events);
     let version = header
         .and_then(|record| timestamp::parse(record["timestamp"].as_str()?))
@@ -1264,5 +1267,10 @@ mod tests {
         records.push(goal(4, 2));
         let (session, _) = parse(&path(), &records);
         assert_eq!(session.turns.len(), 2);
+        // Only the claimed goal's item is dropped, even when the typed message has its position.
+        records[1]["ordinal"] = json!(0);
+        let (session, _) = parse(&path(), &records);
+        let positions: Vec<u64> = session.items.iter().map(|i| i.position).collect();
+        assert_eq!(positions, [0, 3]);
     }
 }

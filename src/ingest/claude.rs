@@ -69,18 +69,20 @@ fn typed_command(text: &str) -> Option<String> {
         .map(|shell| format!("! {}", shell[1].trim()))
 }
 
-/// What a `user` or `queued_command` record contributes: its role and text, if it is kept.
-fn message(origin: &Value, text: String, record: &Value) -> Option<(Role, String)> {
+/// What a `user` record contributes, if it is kept: its role, its text, and whether the text is a
+/// command Claude Code tagged.
+fn message(origin: &Value, text: String, record: &Value) -> Option<(Role, String, bool)> {
     let kind = origin["kind"].as_str();
     if let Some(kind) = kind.filter(|&kind| kind != "human") {
         let body = origin["body"].as_str().filter(|_| kind == "peer");
         return Some((
             Role::Agent,
             body.map_or(text, |body| body.trim().to_string()),
+            false,
         ));
     }
     if let Some(typed) = typed_command(&text) {
-        return Some((Role::User, typed));
+        return Some((Role::User, typed, true));
     }
     if record["isMeta"].as_bool() == Some(true)
         || record["isVisibleInTranscriptOnly"].as_bool() == Some(true)
@@ -94,6 +96,7 @@ fn message(origin: &Value, text: String, record: &Value) -> Option<(Role, String
             Role::Agent
         },
         text,
+        false,
     ))
 }
 
@@ -245,9 +248,9 @@ pub(super) fn parse(path: &Path, records: &[Value], evidence: &mut Evidence) -> 
                 } else if is_result {
                     events.push(event(Signal::Activity));
                 }
-                let body = text(content);
-                let tagged = typed_command(&body).is_some();
-                if let Some((role, text)) = message(&record["origin"], body, record) {
+                if let Some((role, text, tagged)) =
+                    message(&record["origin"], text(content), record)
+                {
                     if role == Role::User && is_turn(&text, tagged) && !text.is_empty() {
                         events.push(event(Signal::Request { steer: false }));
                     }
