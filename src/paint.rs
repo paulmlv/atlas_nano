@@ -248,7 +248,7 @@ fn reorders(c: char) -> bool {
 
 /// The width of `text` on screen, leaving out color codes.
 pub fn width(text: &str) -> usize {
-    let mut count = 0;
+    let mut plain = String::with_capacity(text.len());
     let mut in_code = false;
     for character in text.chars() {
         if in_code {
@@ -256,10 +256,10 @@ pub fn width(text: &str) -> usize {
         } else if character == '\x1b' {
             in_code = true;
         } else {
-            count += 1;
+            plain.push(character);
         }
     }
-    count
+    ratatui::text::Span::raw(plain).width()
 }
 
 #[cfg(test)]
@@ -341,5 +341,15 @@ mod tests {
             soft.tone(Tone::Money, "\u{7}"),
             "\x1b[38;5;108m\u{fffd}\x1b[0m"
         );
+    }
+
+    #[test]
+    fn width_counts_display_columns() {
+        let soft = Paint::colored(Theme::Soft);
+        assert_eq!(width("hello"), 5);
+        // Wide CJK characters take 2 columns each; combining marks take 0.
+        assert_eq!(width("日本語"), 6);
+        assert_eq!(width("e\u{0301}"), 1);
+        assert_eq!(width(&soft.tone(Tone::Heading, "日本語 e\u{0301}")), 8);
     }
 }
