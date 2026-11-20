@@ -197,17 +197,7 @@ pub(super) fn parse(path: &Path, records: &[Value], evidence: &mut Evidence) -> 
             continue;
         }
         let at = record["timestamp"].as_str().and_then(timestamp::parse);
-        if session.kind == Kind::Primary
-            && (record["forkedFrom"]["sessionId"].is_string()
-                || record["sessionId"]
-                    .as_str()
-                    .is_some_and(|id| id != session.id))
-        {
-            // Discard timestamps from the copied prefix, including its unmarked records.
-            span = Span::default();
-        } else {
-            span.add(at);
-        }
+        span.add(at);
         if session.cwd.is_none() {
             session.cwd = known(&record["cwd"]);
         }
@@ -317,6 +307,18 @@ pub(super) fn parse(path: &Path, records: &[Value], evidence: &mut Evidence) -> 
                 last_complete = id.filter(|_| done);
             }
             _ => {}
+        }
+        if session.kind == Kind::Primary
+            && (record["forkedFrom"]["sessionId"].is_string()
+                || record["sessionId"]
+                    .as_str()
+                    .is_some_and(|id| id != session.id))
+        {
+            // Discard timestamps, turns, and tool counts from the copied prefix, including its
+            // unmarked records.
+            span = Span::default();
+            events.clear();
+            session.tool_calls = 0;
         }
     }
     (session.started, session.ended) = span.bounds();
@@ -449,5 +451,63 @@ mod tests {
         let session = parse_main(&[block("1", 1), block("2", 9)]);
         assert_eq!(session.usage.len(), 1);
         assert_eq!(session.usage[0].output, 9);
+    }
+
+    #[test]
+    fn fork_counts_only_post_fork_turns_working_time_and_tool_calls() {
+        let session = parse_main(&[
+            // Unmarked prefix records before any fork marker are also cleared.
+            json!({"type": "user", "uuid": "0a", "timestamp": "2026-01-01T00:00:00Z",
+                "origin": {"kind": "human"},
+                "message": {"content": "Unmarked pre-fork question"}}),
+            json!({"type": "assistant", "uuid": "0b", "timestamp": "2026-01-01T00:00:03Z",
+                "message": {"id": "m0", "model": "claude-haiku-5-5", "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 5, "output_tokens": 1},
+                    "content": [
+                        {"type": "tool_use", "id": "t0", "name": "Glob", "input": {"pattern": "*"}},
+                        {"type": "text", "text": "Unmarked pre-fork answer"}]}}),
+            json!({"type": "user", "uuid": "1", "timestamp": "2026-01-01T00:00:10Z",
+                "sessionId": "parent", "origin": {"kind": "human"},
+                "message": {"content": "Pre-fork question"}}),
+            json!({"type": "assistant", "uuid": "2", "timestamp": "2026-01-01T00:00:20Z",
+                "forkedFrom": {"sessionId": "parent"},
+                "message": {"id": "m1", "model": "claude-haiku-5-5", "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 10, "output_tokens": 2},
+                    "content": [
+                        {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}},
+                        {"type": "text", "text": "Pre-fork answer"}]}}),
+            json!({"type": "user", "uuid": "3", "timestamp": "2026-01-01T01:00:00Z",
+                "sessionId": "abc", "origin": {"kind": "human"},
+                "message": {"content": "Post-fork question"}}),
+            json!({"type": "assistant", "uuid": "4", "timestamp": "2026-01-01T01:00:05Z",
+                "sessionId": "abc",
+                "message": {"id": "m2", "model": "claude-haiku-5-5", "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 20, "output_tokens": 3},
+                    "content": [
+                        {"type": "tool_use", "id": "t2", "name": "Read", "input": {"path": "a"}},
+                        {"type": "text", "text": "Post-fork answer"}]}}),
+        ]);
+        assert_eq!(session.turns.len(), 1);
+        assert_eq!(
+            session.turns[0].working,
+            Some(time::SignedDuration::seconds(5))
+        );
+        assert_eq!(session.wall(), Some(time::SignedDuration::seconds(5)));
+        assert_eq!(session.tool_calls, 1);
+        assert_eq!(session.usage.len(), 3);
+        assert_eq!(
+            rendered(&session),
+            [
+                "[user] Unmarked pre-fork question",
+                r#"[tool] Glob {"pattern":"*"}"#,
+                "[assistant] Unmarked pre-fork answer",
+                "[user] Pre-fork question",
+                r#"[tool] Bash {"command":"ls"}"#,
+                "[assistant] Pre-fork answer",
+                "[user] Post-fork question",
+                r#"[tool] Read {"path":"a"}"#,
+                "[assistant] Post-fork answer",
+            ]
+        );
     }
 }

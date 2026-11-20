@@ -191,7 +191,8 @@ recorded. `spend_usd` is rounded to six decimals when known. When `usage_status`
   checked. Nothing is fetched from the network.
 - **Each request counts once.** A request copied across sessions is charged to its recorded owner
   when that session holds a readable measurement, or to the earliest session holding one. If only a
-  fork records the measurement, the spend stays with the fork.
+  fork records the measurement, the spend stays with the fork. A fork's turns, tool calls, and time
+  always count only its own records after the fork, even when the parent is gone.
 - **Incomplete usage:** a model reply with no usage record is a gap. A Codex turn that runs a review
   makes no model call itself: the reviewer's progress and result it shows are not its replies, and
   the reviewer's own session records that usage.
