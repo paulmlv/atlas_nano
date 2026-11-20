@@ -74,20 +74,20 @@ conversation, `subagent` a subagent, `agent_created_thread` a chat an agent crea
 `guardian_review` a safety review. A chat started in a Claude Code session's scratchpad becomes a
 subagent of that session ([scratchpad chats](REPORT.md#accounting)).
 
-| Record                                                             | Rule                                                              |
-| ------------------------------------------------------------------ | ----------------------------------------------------------------- |
-| `response_item`, `payload.type: "message"`, role `assistant`       | `[assistant]`; drop when `metadata.compaction_output` is set      |
-| same, role `user`, text matches `<user_shell_command><command>...` | `[user] ! <command>`                                              |
-| same, role `user`, text starts with `<codex_internal_context`      | drop                                                              |
-| same, role `user`, `metadata.user_input_order` is null             | drop                                                              |
-| same, role `user`, `payload.id` already seen                       | drop                                                              |
-| same, role `user`, otherwise                                       | `[user]`, cleaned as below                                        |
-| same, role `developer`                                             | drop                                                              |
-| `response_item`, `payload.type: "agent_message"`                   | `[agent]` with the text of `payload.content`                      |
-| `response_item`, a tool call type                                  | `[tool] <payload.name or the type> <arguments, input, or action>` |
-| `response_item`, any other type (`reasoning`, `*_output`, ...)     | drop                                                              |
-| `event_msg`, `payload.type: "thread_goal_updated"`, no `turnId`    | `[user] /goal <goal.objective>`, once per `goal.createdAt`        |
-| every other record (`event_msg`, `session_meta`, `compacted`, ...) | drop                                                              |
+| Record                                                             | Rule                                                                                          |
+| ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------- |
+| `response_item`, `payload.type: "message"`, role `assistant`       | `[assistant]`; drop when `metadata.compaction_output` is set                                  |
+| same, role `user`, text matches `<user_shell_command><command>...` | `[user] ! <command>`                                                                          |
+| same, role `user`, text starts with `<codex_internal_context`      | drop                                                                                          |
+| same, role `user`, `metadata.user_input_order` is null             | drop                                                                                          |
+| same, role `user`, `payload.id` already seen                       | drop                                                                                          |
+| same, role `user`, otherwise                                       | `[user]`, cleaned as below                                                                    |
+| same, role `developer`                                             | drop                                                                                          |
+| `response_item`, `payload.type: "agent_message"`                   | `[agent]` with the text of `payload.content`                                                  |
+| `response_item`, a tool call type                                  | `[tool] <payload.name or the type> <arguments, input, or action>`                             |
+| `response_item`, any other type (`reasoning`, `*_output`, ...)     | drop                                                                                          |
+| `event_msg`, `payload.type: "thread_goal_updated"`, no `turnId`    | `[user] /goal <goal.objective>`, once per `goal.createdAt`, unless a typed `/goal` records it |
+| every other record (`event_msg`, `session_meta`, `compacted`, ...) | drop                                                                                          |
 
 Tool call types are `function_call`, `custom_tool_call`, `local_shell_call`, `tool_search_call`,
 `web_search_call`, and `image_generation_call`. Message text is the `text` of `input_text`,
@@ -95,6 +95,9 @@ Tool call types are `function_call`, `custom_tool_call`, `local_shell_call`, `to
 `<send_user_message_question_reply>` body is JSON and becomes `Answer: <answer>` lines; when the
 text contains `## My request:` only what follows is kept; `<image ...>...</image>` becomes
 `[image]`.
+
+Older clients also record a typed `/goal` as a user message, before or after its goal event. A
+message and an event with the same objective are one goal, kept as the typed message.
 
 Conversations recorded before Codex marked user messages have no `[user]` items. They are labeled
 from the model's replies and tool calls.

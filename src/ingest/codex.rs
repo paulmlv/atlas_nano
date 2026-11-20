@@ -241,6 +241,14 @@ pub(super) fn link_parents(sessions: &mut [Session], versions: &[Option<Version>
     }
 }
 
+/// The list without the elements at the dropped indices.
+fn without<T>(list: Vec<T>, dropped: &HashSet<usize>) -> Vec<T> {
+    (0..)
+        .zip(list)
+        .filter_map(|(index, element)| (!dropped.contains(&index)).then_some(element))
+        .collect()
+}
+
 /// Describe one rollout from its own records. Each rollout is its own session, so an edit of a
 /// thread is a separate conversation whose parent is the thread's first rollout.
 pub(super) fn parse(
@@ -317,7 +325,8 @@ pub(super) fn parse(
     let mut running = false; // whether a turn has started and not ended
     let mut turn_requests = 0u32; // a user message in a turn that already has a request is a steer
     let mut model = String::new();
-    let mut turn_models: HashMap<&str, &str> = HashMap::new();
+    let mut turn_models: HashMap<&str, &str> = HashMap::new(); // each turn's latest model
+    let mut first_models: HashMap<&str, &str> = HashMap::new(); // each turn's first model
     let mut unknown_model: Vec<(usize, &str)> = Vec::new(); // responses read before their turn's model
     let mut finished: HashSet<&str> = HashSet::new();
     // A turn running a review makes no model call itself; its reviewer thread records the usage.
@@ -329,6 +338,10 @@ pub(super) fn parse(
     let mut tools: HashSet<&str> = HashSet::new();
     let mut goals: HashSet<i64> = HashSet::new();
     let mut typed_goals: Vec<String> = Vec::new();
+    // User goals that made a request before any typed /goal claimed them: objective, the request's
+    // event index, and its item index.
+    let mut app_goals: Vec<(String, usize, usize)> = Vec::new();
+    let (mut dropped_events, mut dropped_items) = (HashSet::new(), HashSet::new());
     for (line, record) in (0u64..).zip(records) {
         let position = record["ordinal"].as_u64().unwrap_or(line);
         let at = record["timestamp"].as_str().and_then(timestamp::parse);
@@ -451,6 +464,7 @@ pub(super) fn parse(
         }
         let mut signal = |signal: Signal, run: Option<String>| {
             events.push(Event { signal, at, run });
+            events.len() - 1
         };
         let mut keep = |role: Role, text: String| {
             if !text.is_empty() {
@@ -471,6 +485,7 @@ pub(super) fn parse(
                         .or_else(|| turn.filter(|_| running && next_start.is_none()))
                     {
                         turn_models.insert(id, name);
+                        first_models.entry(id).or_insert(name);
                     }
                 }
             }
@@ -502,12 +517,16 @@ pub(super) fn parse(
             ("token_usage_record", _) => {
                 // Each record is one response; its ID survives a fork's copy.
                 let id = payload["response_id"].as_str().filter(|id| !id.is_empty());
+                // A response runs on its turn's model, once the turn has recorded one.
+                let turn_model = turn_id
+                    .and_then(|id| turn_models.get(id).copied())
+                    .unwrap_or(&model);
                 if let Some(response) = id
-                    && let Some(reported) = usage(response, &payload["usage"], at, &model)
+                    && let Some(reported) = usage(response, &payload["usage"], at, turn_model)
                 {
                     // A turn's first response can be recorded before the turn's model.
                     if let Some(id) = turn_id
-                        && turn_models.get(id) != Some(&model.as_str())
+                        && !turn_models.contains_key(id)
                     {
                         unknown_model.push((session.usage.len(), id));
                     }
@@ -548,9 +567,14 @@ pub(super) fn parse(
                     );
                     if running {
                         let reading = readings.entry(scope).or_default();
-                        if let Some(reported) = usage(&id, &info["last_token_usage"], at, &model) {
+                        let turn_model = turn_id
+                            .and_then(|id| turn_models.get(id).copied())
+                            .unwrap_or(&model);
+                        if let Some(reported) =
+                            usage(&id, &info["last_token_usage"], at, turn_model)
+                        {
                             if let Some(turn_id) = turn_id
-                                && turn_models.get(turn_id) != Some(&model.as_str())
+                                && !turn_models.contains_key(turn_id)
                             {
                                 unknown_model.push((session.usage.len(), turn_id));
                             }
@@ -577,12 +601,14 @@ pub(super) fn parse(
                     .as_i64()
                     .is_some_and(|created| goals.insert(created));
                 if new && payload.get("turnId").is_none() {
-                    // An older client also records a typed /goal as a message: that is one goal.
+                    // An older client also records a typed /goal as a message, before or after
+                    // this event: the two are one goal, kept as the typed message.
                     if let Some(typed) = typed_goals.iter().position(|goal| *goal == objective) {
                         typed_goals.swap_remove(typed);
                     } else {
-                        signal(Signal::Request { steer: false }, None);
+                        let event = signal(Signal::Request { steer: false }, None);
                         keep(Role::User, format!("/goal {objective}"));
+                        app_goals.push((objective, event, session.items.len() - 1));
                     }
                 }
             }
@@ -617,7 +643,9 @@ pub(super) fn parse(
                         .to_string(),
                 );
             }
-            ("response_item", _) if WORK.contains(&subtype) => signal(Signal::Activity, event_run),
+            ("response_item", _) if WORK.contains(&subtype) => {
+                signal(Signal::Activity, event_run);
+            }
             ("response_item", "message") if role == "assistant" => {
                 signal(Signal::Activity, event_run);
                 if record["metadata"]["compaction_output"].is_null() {
@@ -647,7 +675,15 @@ pub(super) fn parse(
                         signal(Signal::Request { steer }, event_run);
                         turn_requests += 1;
                         if let Some(objective) = raw.strip_prefix("/goal ") {
-                            typed_goals.push(objective.trim().to_string());
+                            let objective = objective.trim();
+                            match app_goals.iter().position(|(goal, ..)| goal == objective) {
+                                Some(found) => {
+                                    let (_, event, item) = app_goals.swap_remove(found);
+                                    dropped_events.insert(event);
+                                    dropped_items.insert(item);
+                                }
+                                None => typed_goals.push(objective.to_string()),
+                            }
                         }
                     }
                     seen.extend(id);
@@ -658,7 +694,7 @@ pub(super) fn parse(
         }
     }
     for (index, turn) in unknown_model {
-        match turn_models.get(turn) {
+        match first_models.get(turn) {
             Some(name) => session.usage[index].model = name.to_string(),
             // A finished turn with no context of its own, such as a compaction, ran on the model
             // then current.
@@ -670,6 +706,9 @@ pub(super) fn parse(
     evidence.usage_thread = Some(usage_thread.to_owned());
     finish_usage(readings, evidence);
     (session.started, session.ended) = span.bounds();
+    // A goal a later typed /goal claimed is that message's request, not one of its own.
+    let events = without(events, &dropped_events);
+    session.items = without(std::mem::take(&mut session.items), &dropped_items);
     session.turns = timing::turns(&events);
     let version = header
         .and_then(|record| timestamp::parse(record["timestamp"].as_str()?))
@@ -838,16 +877,22 @@ mod tests {
     }
 
     #[test]
-    fn a_response_recorded_before_its_turn_context_takes_the_turns_model() {
+    fn a_response_recorded_before_its_turn_context_takes_the_turns_first_model() {
         let records = [
             json!({"type": "turn_context", "payload": {"turn_id": "t0", "model": "gpt-6-luna"}}),
             event("task_started", 1, json!({})),
             json!({"type": "token_usage_record", "timestamp": "2026-01-01T00:00:02Z",
                 "payload": {"turn_id": "t1", "response_id": "resp_a", "usage": {"input_tokens": 0, "output_tokens": 0}}}),
             json!({"type": "turn_context", "payload": {"turn_id": "t1", "model": "gpt-6.1-sol"}}),
+            json!({"type": "token_usage_record", "timestamp": "2026-01-01T00:00:04Z",
+                "payload": {"turn_id": "t1", "response_id": "resp_b", "usage": {"input_tokens": 0, "output_tokens": 0}}}),
+            json!({"type": "turn_context", "payload": {"turn_id": "t1", "model": "gpt-6-astra"}}),
+            json!({"type": "token_usage_record", "timestamp": "2026-01-01T00:00:06Z",
+                "payload": {"turn_id": "t1", "response_id": "resp_c", "usage": {"input_tokens": 0, "output_tokens": 0}}}),
         ];
         let (session, _) = parse(&path(), &records);
-        assert_eq!(session.usage[0].model, "gpt-6.1-sol");
+        let models: Vec<_> = session.usage.iter().map(|u| u.model.as_str()).collect();
+        assert_eq!(models, ["gpt-6.1-sol", "gpt-6.1-sol", "gpt-6-astra"]);
     }
 
     #[test]
@@ -1199,5 +1244,33 @@ mod tests {
         let (session, _) = parse(&path(), &unnamed_records);
         let models: Vec<_> = session.usage.iter().map(|u| u.model.as_str()).collect();
         assert_eq!(models, ["gpt-6-luna", "gpt-6.2-sol"]);
+    }
+
+    #[test]
+    fn a_typed_goal_after_its_goal_event_is_one_request() {
+        let goal = |second: u32, created: i64| {
+            json!({"type": "event_msg", "timestamp": format!("2026-01-01T00:00:{second:02}Z"),
+                "payload": {"type": "thread_goal_updated",
+                    "goal": {"createdAt": created, "objective": "Ship it"}}})
+        };
+        let mut records = vec![
+            goal(1, 1),
+            user("u1", 2, "/goal Ship it", true),
+            event("task_started", 3, json!({})),
+        ];
+        let (session, _) = parse(&path(), &records);
+        assert_eq!(session.turns.len(), 1);
+        let texts: Vec<&str> = session.items.iter().map(|i| i.text.as_str()).collect();
+        assert_eq!(texts, ["/goal Ship it"]);
+        assert_eq!(session.items[0].position, 1);
+        // A later goal with the same objective is the user's second goal.
+        records.push(goal(4, 2));
+        let (session, _) = parse(&path(), &records);
+        assert_eq!(session.turns.len(), 2);
+        // Only the claimed goal's item is dropped, even when the typed message has its position.
+        records[1]["ordinal"] = json!(0);
+        let (session, _) = parse(&path(), &records);
+        let positions: Vec<u64> = session.items.iter().map(|i| i.position).collect();
+        assert_eq!(positions, [0, 3]);
     }
 }
