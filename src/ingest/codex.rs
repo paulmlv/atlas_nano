@@ -342,10 +342,11 @@ pub(super) fn parse(
         let is_message = record_type == "response_item" && subtype == "message";
         // A turn_context immediately followed by task_started opens that next turn, not an
         // unclosed earlier one.
-        let opens_next_turn = record_type == "turn_context"
-            && records.get(line as usize + 1).is_some_and(|next| {
-                next["type"] == "event_msg" && next["payload"]["type"] == "task_started"
-            });
+        let next_start = (record_type == "turn_context")
+            .then(|| records.get(line as usize + 1))
+            .flatten()
+            .filter(|next| next["type"] == "event_msg" && next["payload"]["type"] == "task_started")
+            .map(|next| &next["payload"]);
         match (record_type, subtype) {
             ("event_msg", "task_started") => {
                 turn = payload["turn_id"].as_str();
@@ -359,7 +360,7 @@ pub(super) fn parse(
                 // Some clients send the task ID after its first usage events.
                 if running
                     && turn.is_none()
-                    && !opens_next_turn
+                    && next_start.is_none()
                     && let Some(early) = readings.remove(&UsageTurn::Unnamed(anonymous_start))
                 {
                     for &index in early.running_totals.iter().chain(&early.response_usage) {
@@ -466,7 +467,8 @@ pub(super) fn parse(
                     model = name.to_string();
                     if let Some(id) = payload["turn_id"]
                         .as_str()
-                        .or(turn.filter(|_| running && !opens_next_turn))
+                        .or_else(|| next_start.and_then(|next| next["turn_id"].as_str()))
+                        .or_else(|| turn.filter(|_| running && next_start.is_none()))
                     {
                         turn_models.insert(id, name);
                     }
@@ -1153,7 +1155,8 @@ mod tests {
 
     #[test]
     fn a_turn_context_opening_the_next_turn_does_not_relabel_an_unclosed_turn() {
-        // Case 1: ID-less turn_context opening t2 after an unclosed t1 does not apply sol to t1.
+        // Case 1: ID-less turn_context opening t1 binds to t1 (so t1 keeps luna even while
+        // unclosed), and the next ID-less turn_context opening t2 binds to t2 without relabeling t1.
         let idless_records = [
             json!({"type": "turn_context", "payload": {"model": "gpt-6-luna"}}),
             event("task_started", 1, json!({"turn_id": "t1"})),
@@ -1173,11 +1176,10 @@ mod tests {
                     "last_token_usage": {"input_tokens": 20, "output_tokens": 3},
                     "total_token_usage": {"input_tokens": 30, "output_tokens": 5}}}),
             ),
-            event("task_complete", 5, json!({"turn_id": "t2"})),
         ];
         let (session, _) = parse(&path(), &idless_records);
         let models: Vec<_> = session.usage.iter().map(|u| u.model.as_str()).collect();
-        assert_eq!(models, ["", "gpt-6.2-sol"]);
+        assert_eq!(models, ["gpt-6-luna", "gpt-6.2-sol"]);
 
         // Case 2: named turn_context opening t2 after an unclosed unnamed turn does not merge or
         // relabel the earlier turn's per-response usage.
